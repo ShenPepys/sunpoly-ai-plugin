@@ -1,0 +1,173 @@
+{
+  "name": "my-ai-plugin",
+  "displayName": "AI 编程助手",
+  "description": "VS Code AI 编程助手插件，支持代码解释、Bug 修复、代码优化、续写和单测生成",
+  "version": "0.1.0",
+  "publisher": "my-ai-plugin",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Machine Learning",
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "my-ai-plugin-sidebar",
+          "title": "AI 编程助手",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "my-ai-plugin-sidebar": [
+        {
+          "type": "webview",
+          "id": "my-ai-plugin.chatView",
+          "name": "AI 对话"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "my-ai-plugin.explain",
+        "title": "AI: 解释代码"
+      },
+      {
+        "command": "my-ai-plugin.fix",
+        "title": "AI: 修复代码"
+      },
+      {
+        "command": "my-ai-plugin.optimize",
+        "title": "AI: 优化代码"
+      },
+      {
+        "command": "my-ai-plugin.complete",
+        "title": "AI: 续写代码"
+      },
+      {
+        "command": "my-ai-plugin.test",
+        "title": "AI: 生成单测"
+      },
+      {
+        "command": "my-ai-plugin.clearChat",
+        "title": "AI: 清空对话"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "my-ai-plugin.explain",
+          "group": "ai-plugin@1",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "my-ai-plugin.fix",
+          "group": "ai-plugin@2",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "my-ai-plugin.optimize",
+          "group": "ai-plugin@3",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "my-ai-plugin.test",
+          "group": "ai-plugin@4",
+          "when": "editorHasSelection"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "my-ai-plugin.explain",
+        "key": "ctrl+shift+e",
+        "when": "editorHasSelection"
+      },
+      {
+        "command": "my-ai-plugin.fix",
+        "key": "ctrl+shift+f",
+        "when": "editorHasSelection"
+      }
+    ],
+    "configuration": {
+      "title": "AI 编程助手",
+      "properties": {
+        "myAiPlugin.modelName": {
+          "type": "string",
+          "default": "DeepSeek Chat",
+          "description": "AI 模型显示名称"
+        },
+        "myAiPlugin.modelId": {
+          "type": "string",
+          "default": "deepseek-chat",
+          "description": "AI 模型 API 标识（如 deepseek-chat、gpt-4o）",
+          "enum": [
+            "deepseek-chat",
+            "deepseek-coder",
+            "gpt-4o",
+            "gpt-4o-mini",
+            "doubao-pro-32k",
+            "doubao-lite-32k"
+          ],
+          "enumDescriptions": [
+            "DeepSeek Chat（通用对话）",
+            "DeepSeek Coder（代码专用）",
+            "OpenAI GPT-4o",
+            "OpenAI GPT-4o Mini",
+            "豆包 Pro 32K",
+            "豆包 Lite 32K"
+          ]
+        },
+        "myAiPlugin.baseUrl": {
+          "type": "string",
+          "default": "https://api.deepseek.com",
+          "description": "AI 模型 API 端点地址"
+        },
+        "myAiPlugin.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "AI 模型 API 密钥（请妥善保管，不要泄露）"
+        },
+        "myAiPlugin.language": {
+          "type": "string",
+          "default": "中文",
+          "description": "AI 回复语言",
+          "enum": [
+            "中文",
+            "English"
+          ]
+        },
+        "myAiPlugin.maxTokens": {
+          "type": "number",
+          "default": 4096,
+          "description": "AI 单次回复的最大 token 数"
+        },
+        "myAiPlugin.temperature": {
+          "type": "number",
+          "default": 0.3,
+          "description": "AI 回复的随机性（0~1，越低越确定）"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "node esbuild.js --production",
+    "watch": "node esbuild.js --watch",
+    "lint": "eslint src --ext ts",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {}
+}

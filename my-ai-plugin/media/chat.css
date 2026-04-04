@@ -1,0 +1,414 @@
+/**
+ * AI 聊天面板样式
+ * 使用 VS Code CSS 变量（var(--vscode-*)）自动适配明暗主题
+ */
+
+/* ==================== 全局重置 ==================== */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, sans-serif);
+  font-size: var(--vscode-font-size, 13px);
+  color: var(--vscode-foreground);
+  background-color: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ==================== 主容器 ==================== */
+#chat-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+
+/* ==================== 消息列表区域 ==================== */
+#messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  scroll-behavior: smooth;
+}
+
+/* 滚动条样式 */
+#messages::-webkit-scrollbar {
+  width: 6px;
+}
+
+#messages::-webkit-scrollbar-thumb {
+  background: var(--vscode-scrollbarSlider-background);
+  border-radius: 3px;
+}
+
+#messages::-webkit-scrollbar-thumb:hover {
+  background: var(--vscode-scrollbarSlider-hoverBackground);
+}
+
+/* ==================== 欢迎消息 ==================== */
+.welcome-message {
+  padding: 16px;
+  margin-bottom: 12px;
+  border-radius: 8px;
+  background: var(--vscode-textBlockQuote-background, rgba(255, 255, 255, 0.05));
+  border-left: 3px solid var(--vscode-textLink-foreground, #3794ff);
+  line-height: 1.6;
+}
+
+.welcome-message p {
+  margin-bottom: 8px;
+}
+
+.welcome-message ul {
+  padding-left: 20px;
+}
+
+.welcome-message li {
+  margin-bottom: 4px;
+}
+
+.welcome-message kbd {
+  background: var(--vscode-keybindingLabel-background, #333);
+  border: 1px solid var(--vscode-keybindingLabel-border, #555);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 11px;
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+/* ==================== 单条消息 ==================== */
+.message {
+  margin-bottom: 16px;
+  animation: fadeIn 0.2s ease-in;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.message-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.message-header .role-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+/* 用户消息样式 */
+.message.user .role-icon {
+  background: var(--vscode-textLink-foreground, #3794ff);
+  color: #fff;
+}
+
+/* AI 消息样式 */
+.message.assistant .role-icon {
+  background: var(--vscode-charts-green, #4ec9b0);
+  color: #fff;
+}
+
+.message-body {
+  padding: 10px 14px;
+  border-radius: 8px;
+  line-height: 1.6;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+.message.user .message-body {
+  background: var(--vscode-input-background, #2a2a2a);
+  border: 1px solid var(--vscode-input-border, #444);
+}
+
+.message.assistant .message-body {
+  background: var(--vscode-textBlockQuote-background, rgba(255, 255, 255, 0.03));
+}
+
+/* ==================== Markdown 渲染样式 ==================== */
+
+/* 段落 */
+.message-body p {
+  margin-bottom: 8px;
+}
+
+.message-body p:last-child {
+  margin-bottom: 0;
+}
+
+/* 加粗和斜体 */
+.message-body strong {
+  font-weight: 700;
+  color: var(--vscode-foreground);
+}
+
+.message-body em {
+  font-style: italic;
+}
+
+/* 行内代码 */
+.message-body code:not(pre code) {
+  background: var(--vscode-textCodeBlock-background, rgba(255, 255, 255, 0.1));
+  padding: 2px 5px;
+  border-radius: 3px;
+  font-family: var(--vscode-editor-font-family, 'Consolas', 'Courier New', monospace);
+  font-size: 0.9em;
+}
+
+/* 代码块容器 */
+.code-block-wrapper {
+  position: relative;
+  margin: 10px 0;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--vscode-panel-border, #333);
+}
+
+/* 代码块头部（语言标签 + 操作按钮） */
+.code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px;
+  background: var(--vscode-editorGroupHeader-tabsBackground, #252526);
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground, #888);
+}
+
+.code-block-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.code-block-actions button {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--vscode-descriptionForeground, #888);
+  padding: 2px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.code-block-actions button:hover {
+  background: var(--vscode-button-secondaryHoverBackground, #444);
+  border-color: var(--vscode-panel-border, #555);
+  color: var(--vscode-foreground);
+}
+
+/* 代码块内容 */
+.code-block-wrapper pre {
+  margin: 0;
+  padding: 12px;
+  background: var(--vscode-editor-background, #1e1e1e);
+  overflow-x: auto;
+}
+
+.code-block-wrapper pre code {
+  font-family: var(--vscode-editor-font-family, 'Consolas', 'Courier New', monospace);
+  font-size: var(--vscode-editor-font-size, 13px);
+  line-height: 1.5;
+  color: var(--vscode-editor-foreground);
+  white-space: pre;
+}
+
+/* 引用块 */
+.message-body blockquote {
+  border-left: 3px solid var(--vscode-textLink-foreground, #3794ff);
+  padding: 4px 12px;
+  margin: 8px 0;
+  color: var(--vscode-descriptionForeground, #999);
+  background: var(--vscode-textBlockQuote-background, rgba(255, 255, 255, 0.03));
+  border-radius: 0 4px 4px 0;
+}
+
+/* 列表 */
+.message-body ul,
+.message-body ol {
+  padding-left: 20px;
+  margin: 6px 0;
+}
+
+.message-body li {
+  margin-bottom: 3px;
+}
+
+/* 标题 */
+.message-body h1, .message-body h2, .message-body h3 {
+  margin: 12px 0 6px;
+  font-weight: 600;
+}
+
+.message-body h1 { font-size: 1.3em; }
+.message-body h2 { font-size: 1.15em; }
+.message-body h3 { font-size: 1.05em; }
+
+/* 分隔线 */
+.message-body hr {
+  border: none;
+  border-top: 1px solid var(--vscode-panel-border, #333);
+  margin: 12px 0;
+}
+
+/* ==================== 加载动画 ==================== */
+#loading {
+  padding: 8px 12px;
+  flex-shrink: 0;
+}
+
+#loading.hidden {
+  display: none;
+}
+
+.loading-dots {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding: 8px 14px;
+}
+
+.loading-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--vscode-descriptionForeground, #888);
+  animation: dotPulse 1.2s ease-in-out infinite;
+}
+
+.loading-dots span:nth-child(2) { animation-delay: 0.2s; }
+.loading-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes dotPulse {
+  0%, 60%, 100% { opacity: 0.3; transform: scale(0.8); }
+  30% { opacity: 1; transform: scale(1); }
+}
+
+/* ==================== 输入区域 ==================== */
+#input-area {
+  display: flex;
+  flex-direction: column;
+  padding: 10px 12px;
+  flex-shrink: 0;
+  background: var(--vscode-input-background, #2a2a2a);
+  border: 1px solid var(--vscode-input-border, #3a3a3a);
+  border-radius: 10px;
+  margin: 8px 10px 10px;
+  transition: border-color 0.15s;
+}
+
+#input-area:focus-within {
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+#user-input {
+  resize: none;
+  background: transparent;
+  border: none;
+  color: var(--vscode-input-foreground, #ccc);
+  padding: 4px 4px 6px;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size, 13px);
+  line-height: 1.5;
+  outline: none;
+  min-height: 36px;
+  max-height: 150px;
+  width: 100%;
+}
+
+#user-input::placeholder {
+  color: var(--vscode-input-placeholderForeground, #666);
+}
+
+/* 输入框下方工具栏 */
+#input-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 4px;
+}
+
+.input-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.input-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 工具栏图标按钮（通用） */
+.toolbar-icon-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--vscode-descriptionForeground, #888);
+  padding: 3px 7px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  line-height: 1;
+}
+
+.toolbar-icon-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1));
+  color: var(--vscode-foreground);
+}
+
+.toolbar-icon-btn svg {
+  vertical-align: middle;
+}
+
+/* 模型名称标签 */
+.model-label {
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground, #888);
+  padding: 3px 6px;
+  cursor: default;
+  user-select: none;
+}
+
+/* 发送按钮（圆形） */
+.send-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: none;
+  background: var(--vscode-button-background, #0e639c);
+  color: var(--vscode-button-foreground, #fff);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  flex-shrink: 0;
+  transition: background 0.15s, opacity 0.15s;
+}
+
+.send-btn:hover {
+  background: var(--vscode-button-hoverBackground, #1177bb);
+}
+
+.send-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
