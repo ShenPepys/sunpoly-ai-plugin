@@ -104,25 +104,25 @@
     "keybindings": [
       {
         "command": "my-ai-plugin.explain",
-        "key": "ctrl+shift+e",
+        "key": "alt+e",
         "when": "editorHasSelection"
       },
       {
         "command": "my-ai-plugin.fix",
-        "key": "ctrl+shift+f",
+        "key": "alt+f",
         "when": "editorHasSelection"
       },
       {
         "command": "my-ai-plugin.focusChat",
-        "key": "ctrl+l"
+        "key": "alt+q"
       },
       {
         "command": "my-ai-plugin.switchMode",
-        "key": "ctrl+oem_period"
+        "key": "alt+m"
       },
       {
         "command": "my-ai-plugin.newChat",
-        "key": "ctrl+shift+n"
+        "key": "alt+n"
       }
     ],
     "configuration": {
@@ -190,6 +190,11 @@
           "type": "string",
           "default": "",
           "description": "HTTP/HTTPS 代理地址（如 http://127.0.0.1:7890），留空则不使用代理。也会自动读取 VS Code 的 http.proxy 配置。"
+        },
+        "myAiPlugin.panelTitle": {
+          "type": "string",
+          "default": "AI 编程助手",
+          "description": "侧边栏面板标题，可自定义为企业名称（如 SUERY AI、XXX 智能助手）"
         }
       }
     }

@@ -1373,9 +1373,9 @@
   var placeholderTexts = [
     '输入消息，或按 / 查看快捷命令...',
     '输入 @ 引用工作区文件...',
-    '按 Ctrl+L 随时聚焦到这里...',
+    '按 Alt+Q 随时聚焦到这里...',
     '选中代码后右键可快速调用 AI...',
-    '按 Ctrl+. 切换工作模式...',
+    '按 Alt+M 切换工作模式...',
   ];
   var placeholderIndex = 0;
   setInterval(function () {

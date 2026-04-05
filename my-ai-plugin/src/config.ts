@@ -278,3 +278,11 @@ export function getProxy(): string {
   const vscodeProxy = vscode.workspace.getConfiguration('http').get<string>('proxy', '');
   return vscodeProxy;
 }
+
+/**
+ * 获取面板标题
+ * 用户可自定义为企业名称，默认 "AI 编程助手"
+ */
+export function getPanelTitle(): string {
+  return get<string>('panelTitle', 'AI 编程助手');
+}

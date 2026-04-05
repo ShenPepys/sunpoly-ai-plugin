@@ -4,7 +4,7 @@
  */
 import * as vscode from 'vscode';
 import { initLogger, disposeLogger, info } from './logger';
-import { setExtensionPath, getAllModels, getActiveModelIndex } from './config';
+import { setExtensionPath, getAllModels, getActiveModelIndex, getPanelTitle } from './config';
 import { ChatViewProvider } from './webview/ChatViewProvider';
 import { executeCommand } from './commands/handler';
 import type { CommandType } from './commands/handler';
@@ -85,6 +85,8 @@ export function activate(context: vscode.ExtensionContext): void {
         const m = getAllModels();
         const idx = getActiveModelIndex();
         statusBarItem.text = `$(hubot) ${m[idx]?.name || 'AI'}`;
+        // 面板标题跟随配置动态更新
+        chatProvider.updatePanelTitle(getPanelTitle());
       }
     })
   );

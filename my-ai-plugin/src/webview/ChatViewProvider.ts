@@ -7,7 +7,7 @@
  */
 import * as vscode from 'vscode';
 import { info, error } from '../logger';
-import { getModelConfig, ensureApiKey, getMaxTokens, getTemperature, getAllModels, getActiveModelIndex, setActiveModelIndex } from '../config';
+import { getModelConfig, ensureApiKey, getMaxTokens, getTemperature, getAllModels, getActiveModelIndex, setActiveModelIndex, getPanelTitle } from '../config';
 import { sendStreamRequest } from '../api/client';
 import type { ApiClientConfig, AbortStreamFn } from '../api/client';
 import type { ChatMessageParam } from '../api/types';
@@ -58,6 +58,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * 动态更新面板标题（用户修改 panelTitle 配置时调用）
+   */
+  public updatePanelTitle(title: string): void {
+    if (this.webviewView) {
+      this.webviewView.title = title;
+    }
+  }
+
+  /**
    * VS Code 在侧边栏面板首次可见时调用此方法
    * 负责初始化 Webview 的 HTML 内容和消息监听
    */
@@ -67,6 +76,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     _token: vscode.CancellationToken,
   ): void {
     this.webviewView = webviewView;
+
+    // 设置可配置的面板标题（用户可在设置中自定义为企业名称）
+    webviewView.title = getPanelTitle();
 
     // 配置 Webview 权限
     webviewView.webview.options = {
@@ -831,14 +843,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     <!-- 消息列表区域 -->
     <div id="messages">
       <div class="welcome-message">
-        <p><strong>👋 你好！我是 AI 编程助手</strong></p>
+        <p><strong>👋 你好！我是 ${getPanelTitle()}</strong></p>
         <div class="welcome-section">
           <p class="welcome-subtitle">快捷键</p>
           <div class="welcome-shortcuts">
-            <div class="shortcut-item"><kbd>Ctrl</kbd>+<kbd>L</kbd><span>聚焦聊天</span></div>
-            <div class="shortcut-item"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd><span>解释代码</span></div>
-            <div class="shortcut-item"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd><span>修复代码</span></div>
-            <div class="shortcut-item"><kbd>↑</kbd> / <kbd>↓</kbd><span>浏览历史输入</span></div>
+            <div class="shortcut-item"><kbd>Alt</kbd>+<kbd>Q</kbd><span>聚焦聊天</span></div>
+            <div class="shortcut-item"><kbd>Alt</kbd>+<kbd>E</kbd><span>解释代码</span></div>
+            <div class="shortcut-item"><kbd>Alt</kbd>+<kbd>F</kbd><span>修复代码</span></div>
+            <div class="shortcut-item"><kbd>Alt</kbd>+<kbd>M</kbd><span>切换模式</span></div>
           </div>
         </div>
         <div class="welcome-section">
