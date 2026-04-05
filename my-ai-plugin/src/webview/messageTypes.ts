@@ -6,6 +6,11 @@
  *   Extension → Webview ：AI 回复、状态更新等
  */
 
+// ==================== 工作模式 ===================
+
+/** 工作模式类型 */
+export type WorkMode = 'code' | 'ask' | 'plan';
+
 // ==================== Webview → Extension ====================
 
 /** 用户发送聊天消息 */
@@ -31,12 +36,32 @@ export interface ClearChatRequest {
   type: 'clearChat';
 }
 
+/** 用户切换模型 */
+export interface SwitchModelRequest {
+  type: 'switchModel';
+  index: number;
+}
+
+/** 用户请求模型列表（点击下拉框时触发） */
+export interface RequestModelsRequest {
+  type: 'requestModels';
+}
+
+/** 用户切换工作模式 */
+export interface SwitchModeRequest {
+  type: 'switchMode';
+  mode: WorkMode;
+}
+
 /** Webview 发送给 Extension 的所有消息类型 */
 export type WebviewMessage =
   | SendMessageRequest
   | CopyCodeRequest
   | InsertCodeRequest
-  | ClearChatRequest;
+  | ClearChatRequest
+  | SwitchModelRequest
+  | RequestModelsRequest
+  | SwitchModeRequest;
 
 // ==================== Extension → Webview ====================
 
@@ -81,6 +106,21 @@ export interface ClearChatResponse {
   type: 'clearChat';
 }
 
+/** 推送模型列表到 Webview */
+export interface UpdateModelsResponse {
+  type: 'updateModels';
+  /** 模型名称列表 */
+  models: { name: string; index: number }[];
+  /** 当前活跃模型的序号 */
+  activeIndex: number;
+}
+
+/** 推送当前工作模式到 Webview */
+export interface UpdateModeResponse {
+  type: 'updateMode';
+  mode: WorkMode;
+}
+
 /** Extension 发送给 Webview 的所有消息类型 */
 export type ExtensionMessage =
   | AddMessageResponse
@@ -88,4 +128,6 @@ export type ExtensionMessage =
   | StreamDoneResponse
   | ShowErrorResponse
   | SetLoadingResponse
-  | ClearChatResponse;
+  | ClearChatResponse
+  | UpdateModelsResponse
+  | UpdateModeResponse;

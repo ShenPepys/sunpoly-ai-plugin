@@ -22,6 +22,24 @@
   const btnSend = document.getElementById('btn-send');
   const btnClear = document.getElementById('btn-clear');
   const loadingEl = document.getElementById('loading');
+  const modelLabel = document.getElementById('model-label');
+  const modelPanel = document.getElementById('model-panel');
+  const modelPanelList = document.getElementById('model-panel-list');
+  const modelSearch = document.getElementById('model-search');
+  const btnCodeMode = document.getElementById('btn-code-mode');
+  const modePanel = document.getElementById('mode-panel');
+  const btnAddContext = document.getElementById('btn-add-context');
+  const contextPanel = document.getElementById('context-panel');
+
+  /**
+   * 关闭所有弹出面板
+   * 三个面板互斥显示，每次只能打开一个
+   */
+  function closeAllPanels() {
+    modelPanel.classList.add('hidden');
+    modePanel.classList.add('hidden');
+    contextPanel.classList.add('hidden');
+  }
 
   // ==================== 流式消息缓冲 ====================
   /** 存储流式传输中的消息 ID 对应的原始文本，渲染完成后删除 */
@@ -35,6 +53,101 @@
   /** 清空按钮点击 */
   btnClear.addEventListener('click', function () {
     vscode.postMessage({ type: 'clearChat' });
+  });
+
+  /** 模型标签点击：展开/收起模型选择面板（互斥关闭其他面板） */
+  modelLabel.addEventListener('click', function (e) {
+    e.stopPropagation();
+    var isHidden = modelPanel.classList.contains('hidden');
+    closeAllPanels();
+    if (isHidden) {
+      vscode.postMessage({ type: 'requestModels' });
+      modelPanel.classList.remove('hidden');
+      modelSearch.value = '';
+      modelSearch.focus();
+    }
+  });
+
+  /** Code 按钮点击：展开/收起模式面板（互斥关闭其他面板） */
+  btnCodeMode.addEventListener('click', function (e) {
+    e.stopPropagation();
+    var isHidden = modePanel.classList.contains('hidden');
+    closeAllPanels();
+    if (isHidden) {
+      modePanel.classList.remove('hidden');
+    }
+  });
+
+  /** + 按钮点击：展开/收起上下文面板（互斥关闭其他面板） */
+  btnAddContext.addEventListener('click', function (e) {
+    e.stopPropagation();
+    var isHidden = contextPanel.classList.contains('hidden');
+    closeAllPanels();
+    if (isHidden) {
+      contextPanel.classList.remove('hidden');
+    }
+  });
+
+  /** 所有面板内部点击不冒泡（防止关闭） */
+  [modelPanel, modePanel, contextPanel].forEach(function (panel) {
+    panel.addEventListener('click', function (e) {
+      e.stopPropagation();
+    });
+  });
+
+  /** 点击页面其他区域时关闭所有面板 */
+  document.addEventListener('click', function () {
+    closeAllPanels();
+  });
+
+  /** 上下文面板选项点击（功能待实现，先关闭面板） */
+  contextPanel.querySelectorAll('.context-panel-item').forEach(function (item) {
+    item.addEventListener('click', function () {
+      var action = item.getAttribute('data-action');
+      vscode.postMessage({ type: 'contextAction', action: action });
+      closeAllPanels();
+    });
+  });
+
+  /** 模式面板选项点击：切换模式 */
+  modePanel.querySelectorAll('.mode-panel-item').forEach(function (item) {
+    item.addEventListener('click', function () {
+      var mode = item.getAttribute('data-mode');
+      vscode.postMessage({ type: 'switchMode', mode: mode });
+      modePanel.classList.add('hidden');
+    });
+  });
+
+  /** 快捷键 Ctrl+. 切换模式 */
+  document.addEventListener('keydown', function (e) {
+    if (e.ctrlKey && e.key === '.') {
+      e.preventDefault();
+      var modes = ['code', 'ask', 'plan'];
+      var currentBtn = btnCodeMode.getAttribute('data-mode') || 'code';
+      var nextIndex = (modes.indexOf(currentBtn) + 1) % modes.length;
+      vscode.postMessage({ type: 'switchMode', mode: modes[nextIndex] });
+    }
+  });
+
+  /** 搜索框实时过滤模型列表 */
+  modelSearch.addEventListener('input', function () {
+    var keyword = modelSearch.value.toLowerCase();
+    var items = modelPanelList.querySelectorAll('.model-panel-item');
+    var groupTitles = modelPanelList.querySelectorAll('.model-group-title');
+    items.forEach(function (item) {
+      var name = item.getAttribute('data-name') || '';
+      item.style.display = name.toLowerCase().includes(keyword) ? '' : 'none';
+    });
+    // 隐藏没有可见子项的分组标题
+    groupTitles.forEach(function (title) {
+      var next = title.nextElementSibling;
+      var hasVisible = false;
+      while (next && !next.classList.contains('model-group-title')) {
+        if (next.style.display !== 'none') { hasVisible = true; }
+        next = next.nextElementSibling;
+      }
+      title.style.display = hasVisible ? '' : 'none';
+    });
   });
 
   /** 输入框键盘事件：Enter 发送，Shift+Enter 换行 */
@@ -101,6 +214,14 @@
       case 'clearChat':
         clearChat();
         break;
+
+      case 'updateModels':
+        updateModelDropdown(message.models, message.activeIndex);
+        break;
+
+      case 'updateMode':
+        updateModeUI(message.mode);
+        break;
     }
   });
 
@@ -127,11 +248,11 @@
     const roleIcon = role === 'user' ? '👤' : '🤖';
 
     messageEl.innerHTML =
-      '<div class="message-header">' +
-        '<span class="role-icon">' + roleIcon + '</span>' +
-        '<span>' + roleLabel + '</span>' +
-      '</div>' +
-      '<div class="message-body">' + renderMarkdown(content) + '</div>';
+      '<div class="role-icon">' + roleIcon + '</div>' +
+      '<div class="message-content">' +
+        '<div class="message-header">' + roleLabel + '</div>' +
+        '<div class="message-body">' + renderMarkdown(content) + '</div>' +
+      '</div>';
 
     messagesContainer.appendChild(messageEl);
     scrollToBottom();
@@ -457,6 +578,109 @@
    */
   function bindCodeBlockButtons(container) {
     // 事件已通过委托处理，此函数保留用于未来扩展
+  }
+
+  // ==================== 模型切换 ====================
+
+  /**
+   * 更新模型选择面板
+   * @param {{ name: string, index: number }[]} models 模型列表
+   * @param {number} activeIndex 当前活跃模型序号
+   */
+  function updateModelDropdown(models, activeIndex) {
+    // 更新工具栏上的模型名称
+    var activeName = models[activeIndex] ? models[activeIndex].name : 'AI 模型';
+    modelLabel.textContent = activeName;
+
+    // 渲染面板列表
+    modelPanelList.innerHTML = '';
+
+    // 分组标题
+    var title = document.createElement('div');
+    title.className = 'model-group-title';
+    title.textContent = '可用模型';
+    modelPanelList.appendChild(title);
+
+    // 模型项
+    models.forEach(function (model) {
+      var item = document.createElement('div');
+      item.className = 'model-panel-item';
+      item.setAttribute('data-name', model.name);
+      if (model.index === activeIndex) {
+        item.classList.add('active');
+      }
+
+      // 左侧：模型名称
+      var left = document.createElement('div');
+      left.className = 'model-item-left';
+      var nameSpan = document.createElement('span');
+      nameSpan.className = 'model-item-name';
+      nameSpan.textContent = model.name;
+      left.appendChild(nameSpan);
+
+      // 右侧：选中标记
+      var right = document.createElement('div');
+      right.className = 'model-item-right';
+      if (model.index === activeIndex) {
+        var check = document.createElement('span');
+        check.className = 'model-item-check';
+        check.textContent = '✓';
+        right.appendChild(check);
+      }
+
+      item.appendChild(left);
+      item.appendChild(right);
+
+      item.addEventListener('click', function () {
+        vscode.postMessage({ type: 'switchModel', index: model.index });
+        modelPanel.classList.add('hidden');
+      });
+
+      modelPanelList.appendChild(item);
+    });
+
+    // 如果没有模型，显示提示
+    if (models.length === 0) {
+      var empty = document.createElement('div');
+      empty.className = 'model-panel-empty';
+      empty.textContent = '未配置模型，请在设置中添加';
+      modelPanelList.appendChild(empty);
+    }
+  }
+
+  // ==================== 模式切换 UI ====================
+
+  /** 模式显示名称和图标映射 */
+  var modeDisplayMap = {
+    code: { label: '<> Code', icon: '<>' },
+    ask: { label: '? Ask', icon: '?' },
+    plan: { label: '▤ Plan', icon: '▤' },
+  };
+
+  /**
+   * 更新模式相关的 UI
+   * @param {string} mode 当前模式（code/ask/plan）
+   */
+  function updateModeUI(mode) {
+    // 更新工具栏按钮文字
+    var display = modeDisplayMap[mode] || modeDisplayMap.code;
+    btnCodeMode.textContent = display.label;
+    btnCodeMode.setAttribute('data-mode', mode);
+
+    // 更新面板中的选中状态
+    modePanel.querySelectorAll('.mode-panel-item').forEach(function (item) {
+      var itemMode = item.getAttribute('data-mode');
+      if (itemMode === mode) {
+        item.classList.add('active');
+      } else {
+        item.classList.remove('active');
+      }
+      // 显示/隐藏选中标记
+      var check = item.querySelector('.mode-item-check');
+      if (check) {
+        check.style.display = (itemMode === mode) ? 'inline' : 'none';
+      }
+    });
   }
 
 })();

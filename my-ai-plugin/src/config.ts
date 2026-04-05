@@ -17,6 +17,19 @@ const CONFIG_PREFIX = 'myAiPlugin';
 /** .env 文件缓存，避免每次读取都去读文件 */
 let envCache: Record<string, string> | null = null;
 
+/** 插件安装目录（由 extension.ts 在激活时设置） */
+let extensionPath = '';
+
+/**
+ * 设置插件根目录路径
+ * 必须在 extension.ts 的 activate() 中调用，用于查找插件目录下的 .env 文件
+ */
+export function setExtensionPath(extPath: string): void {
+  extensionPath = extPath;
+  // 路径变了，清除缓存强制重新读取
+  envCache = null;
+}
+
 /**
  * 解析 .env 文件，返回键值对
  * 支持格式：KEY=VALUE 和 KEY="VALUE"（忽略空行和 # 注释）
@@ -28,14 +41,20 @@ function loadEnvFile(): Record<string, string> {
 
   envCache = {};
 
-  // 从工作区根目录查找 .env 文件
+  // 按优先级查找 .env 文件：工作区根目录 > 插件安装目录
+  const candidates: string[] = [];
+
   const workspaceFolders = vscode.workspace.workspaceFolders;
-  if (!workspaceFolders || workspaceFolders.length === 0) {
-    return envCache;
+  if (workspaceFolders && workspaceFolders.length > 0) {
+    candidates.push(path.join(workspaceFolders[0].uri.fsPath, '.env'));
+  }
+  if (extensionPath) {
+    candidates.push(path.join(extensionPath, '.env'));
   }
 
-  const envPath = path.join(workspaceFolders[0].uri.fsPath, '.env');
-  if (!fs.existsSync(envPath)) {
+  // 取第一个存在的 .env 文件
+  const envPath = candidates.find(p => fs.existsSync(p));
+  if (!envPath) {
     return envCache;
   }
 
@@ -106,51 +125,127 @@ function toEnvKey(camelKey: string): string {
   return camelKey.replace(/([A-Z])/g, '_$1').toUpperCase();
 }
 
-/** 获取模型配置 */
-export function getModelConfig(): ModelConfig {
-  const modelId = get<string>('modelId', 'deepseek-chat');
+/** 模型配置项（对应 settings 中 models 数组的每一项） */
+interface ModelProfile {
+  name: string;
+  modelId: string;
+  baseUrl: string;
+  apiKey: string;
+}
 
-  // 根据模型 ID 映射知识截止日期
-  const cutoffMap: Record<string, string> = {
-    'deepseek-chat': '2025年3月',
-    'deepseek-coder': '2025年3月',
-    'gpt-4o': '2024年10月',
-    'gpt-4o-mini': '2024年10月',
-    'doubao-pro-32k': '2025年1月',
-    'doubao-lite-32k': '2025年1月',
-  };
+/** 默认模型配置 */
+const DEFAULT_MODEL: ModelProfile = {
+  name: 'DeepSeek Chat',
+  modelId: 'deepseek-chat',
+  baseUrl: 'https://api.deepseek.com',
+  apiKey: '',
+};
+
+/** 知识截止日期映射表 */
+const CUTOFF_MAP: Record<string, string> = {
+  'deepseek-chat': '2025年3月',
+  'deepseek-coder': '2025年3月',
+  'gpt-4o': '2024年10月',
+  'gpt-4o-mini': '2024年10月',
+  'doubao-pro-32k': '2025年1月',
+  'doubao-lite-32k': '2025年1月',
+};
+
+/**
+ * 获取所有模型配置列表
+ * 优先从 .env 读取（开发调试），否则从 VS Code 设置读取
+ */
+export function getAllModels(): ModelProfile[] {
+  // .env 中的配置作为第一个模型（开发调试用）
+  const env = loadEnvFile();
+  if (env.API_KEY) {
+    const envModel: ModelProfile = {
+      name: env.MODEL_NAME ?? 'DeepSeek Chat',
+      modelId: env.MODEL_ID ?? 'deepseek-chat',
+      baseUrl: env.BASE_URL ?? 'https://api.deepseek.com',
+      apiKey: env.API_KEY,
+    };
+    // .env 配置与 VS Code 设置中的合并，.env 排第一
+    const settingsModels = vscode.workspace
+      .getConfiguration(CONFIG_PREFIX)
+      .get<ModelProfile[]>('models', [DEFAULT_MODEL]);
+    return [envModel, ...settingsModels.filter(m => m.apiKey)];
+  }
+
+  // 仅从 VS Code 设置读取
+  const models = vscode.workspace
+    .getConfiguration(CONFIG_PREFIX)
+    .get<ModelProfile[]>('models', [DEFAULT_MODEL]);
+
+  return models.length > 0 ? models : [DEFAULT_MODEL];
+}
+
+/** 获取当前活跃模型的序号 */
+export function getActiveModelIndex(): number {
+  return get<number>('activeModelIndex', 0);
+}
+
+/** 设置当前活跃模型的序号（保存到用户级设置） */
+export async function setActiveModelIndex(index: number): Promise<void> {
+  await vscode.workspace
+    .getConfiguration(CONFIG_PREFIX)
+    .update('activeModelIndex', index, true);
+}
+
+/**
+ * 获取当前活跃模型的配置
+ * 返回 ModelConfig 类型，供 Prompt 构建和 API 调用使用
+ */
+export function getModelConfig(): ModelConfig {
+  const models = getAllModels();
+  const activeIndex = getActiveModelIndex();
+  // 确保 index 不越界
+  const safeIndex = Math.min(activeIndex, models.length - 1);
+  const model = models[safeIndex] ?? DEFAULT_MODEL;
 
   return {
-    modelName: get<string>('modelName', 'DeepSeek Chat'),
-    modelId,
-    baseUrl: get<string>('baseUrl', 'https://api.deepseek.com'),
-    apiKey: get<string>('apiKey', ''),
-    knowledgeCutoff: cutoffMap[modelId] ?? '未知',
+    modelName: model.name,
+    modelId: model.modelId,
+    baseUrl: model.baseUrl,
+    apiKey: model.apiKey,
+    knowledgeCutoff: CUTOFF_MAP[model.modelId] ?? '未知',
   };
 }
 
-/** 获取 API Key，如果未配置则提示用户 */
+/**
+ * 获取当前模型的 API Key
+ * 如果未配置则提示用户去设置中添加模型
+ */
 export async function ensureApiKey(): Promise<string | undefined> {
-  const apiKey = get<string>('apiKey', '');
-  if (apiKey) {
-    return apiKey;
+  const config = getModelConfig();
+  if (config.apiKey) {
+    return config.apiKey;
   }
 
-  // 提示用户输入 API Key
+  // 提示用户输入
   const input = await vscode.window.showInputBox({
-    prompt: '请输入 AI 模型的 API Key',
+    prompt: `请输入 ${config.modelName} 的 API Key`,
     placeHolder: 'sk-...',
     password: true,
     ignoreFocusOut: true,
   });
 
   if (input) {
-    // 保存到用户级别的设置中
-    await vscode.workspace.getConfiguration(CONFIG_PREFIX).update('apiKey', input, true);
+    // 将 key 写入当前活跃模型的配置中
+    const models = getAllModels();
+    const activeIndex = Math.min(getActiveModelIndex(), models.length - 1);
+    if (models[activeIndex]) {
+      models[activeIndex].apiKey = input;
+      await vscode.workspace
+        .getConfiguration(CONFIG_PREFIX)
+        .update('models', models, true);
+    }
     return input;
   }
 
-  vscode.window.showWarningMessage('未配置 API Key，AI 功能无法使用。请在设置中配置 myAiPlugin.apiKey');
+  vscode.window.showWarningMessage(
+    '未配置 API Key，请在设置中配置 myAiPlugin.models 或创建 .env 文件'
+  );
   return undefined;
 }
 

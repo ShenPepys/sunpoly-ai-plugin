@@ -7,14 +7,14 @@
  */
 import * as vscode from 'vscode';
 import { info, error } from '../logger';
-import { getModelConfig, ensureApiKey, getMaxTokens, getTemperature, getLanguage } from '../config';
+import { getModelConfig, ensureApiKey, getMaxTokens, getTemperature, getAllModels, getActiveModelIndex, setActiveModelIndex } from '../config';
 import { sendStreamRequest } from '../api/client';
 import type { ApiClientConfig } from '../api/client';
 import type { ChatMessageParam } from '../api/types';
 import { buildSystemPrompt } from '../prompts/system';
 import { getEditorContext } from '../utils/editor';
 import { getEnvContext } from '../utils/context';
-import type { ExtensionMessage, WebviewMessage } from './messageTypes';
+import type { ExtensionMessage, WebviewMessage, WorkMode } from './messageTypes';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Provider 的注册 ID，必须与 package.json 中 views.id 一致 */
@@ -25,6 +25,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /** 对话历史记录，用于多轮对话上下文 */
   private chatHistory: ChatMessageParam[] = [];
+
+  /** 当前工作模式：code（可修改文件）、ask（只读对话）、plan（先规划后执行） */
+  private currentMode: WorkMode = 'code';
 
   constructor(private readonly extensionUri: vscode.Uri) {}
 
@@ -58,6 +61,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     );
 
     info('聊天面板 Webview 已初始化');
+
+    // 初始化完成后推送模型列表和当前工作模式到前端
+    this.sendModelList();
+    this.postMessage({ type: 'updateMode', mode: this.currentMode });
   }
 
   /**
@@ -108,9 +115,46 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.postMessage({ type: 'clearChat' });
         break;
 
+      case 'requestModels':
+        // Webview 请求模型列表（下拉框展开时触发）
+        this.sendModelList();
+        break;
+
+      case 'switchModel':
+        // 用户切换模型
+        info(`用户切换模型到索引: ${message.index}`);
+        setActiveModelIndex(message.index);
+        this.sendModelList();
+        break;
+
+      case 'switchMode':
+        // 用户切换工作模式
+        info(`用户切换工作模式: ${message.mode}`);
+        this.currentMode = message.mode;
+        this.postMessage({ type: 'updateMode', mode: this.currentMode });
+        break;
+
       default:
         error('未知的 Webview 消息类型:', message);
     }
+  }
+
+  /** 获取当前工作模式（供外部模块使用） */
+  public getMode(): WorkMode {
+    return this.currentMode;
+  }
+
+  /**
+   * 向 Webview 推送当前模型列表和活跃模型
+   */
+  public sendModelList(): void {
+    const models = getAllModels();
+    const activeIndex = getActiveModelIndex();
+    this.postMessage({
+      type: 'updateModels',
+      models: models.map((m, i) => ({ name: m.name, index: i })),
+      activeIndex: Math.min(activeIndex, models.length - 1),
+    });
   }
 
   /**
@@ -290,6 +334,67 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       </div>
     </div>
 
+    <!-- 模型选择面板（点击模型名称弹出） -->
+    <div id="model-panel" class="model-panel hidden">
+      <div class="model-panel-search">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input id="model-search" type="text" placeholder="搜索模型..." />
+      </div>
+      <div id="model-panel-list" class="model-panel-list"></div>
+    </div>
+
+    <!-- 上下文面板（点击 + 按钮弹出） -->
+    <div id="context-panel" class="context-panel hidden">
+      <div class="context-panel-item" data-action="mentions">
+        <div class="context-item-icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/></svg>
+        </div>
+        <span class="context-item-label">Mentions</span>
+      </div>
+      <div class="context-panel-item" data-action="workflow">
+        <div class="context-item-icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 12l2 2 4-4"/></svg>
+        </div>
+        <span class="context-item-label">Trigger Workflow</span>
+      </div>
+      <div class="context-panel-item" data-action="upload">
+        <div class="context-item-icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+        </div>
+        <span class="context-item-label">Upload Image</span>
+      </div>
+    </div>
+
+    <!-- 模式选择面板（点击 Code 按钮弹出） -->
+    <div id="mode-panel" class="mode-panel hidden">
+      <div class="mode-panel-item active" data-mode="code">
+        <div class="mode-item-icon">&lt;&gt;</div>
+        <div class="mode-item-info">
+          <div class="mode-item-name">Code<span class="mode-item-check">✓</span></div>
+          <div class="mode-item-desc">Can write and edit code</div>
+        </div>
+      </div>
+      <div class="mode-panel-item" data-mode="ask">
+        <div class="mode-item-icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        </div>
+        <div class="mode-item-info">
+          <div class="mode-item-name">Ask</div>
+          <div class="mode-item-desc">Reads but won't edit</div>
+        </div>
+      </div>
+      <div class="mode-panel-item" data-mode="plan">
+        <div class="mode-item-icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="16" x2="12" y2="16"/></svg>
+        </div>
+        <div class="mode-item-info">
+          <div class="mode-item-name">Plan</div>
+          <div class="mode-item-desc">Plan changes before implementing</div>
+        </div>
+      </div>
+      <div class="mode-panel-hint">Use <kbd>Ctrl</kbd> <kbd>.</kbd> to switch modes</div>
+    </div>
+
     <!-- 输入区域 -->
     <div id="input-area">
       <textarea
@@ -300,8 +405,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       <div id="input-toolbar">
         <div class="input-toolbar-left">
           <button id="btn-add-context" class="toolbar-icon-btn" title="添加上下文">+</button>
-          <button id="btn-code-mode" class="toolbar-icon-btn" title="代码模式">&lt;&gt; Code</button>
-          <span id="model-label" class="model-label">DeepSeek Chat</span>
+          <button id="btn-code-mode" class="toolbar-icon-btn" title="切换工作模式">&lt;&gt; Code</button>
+          <div id="model-selector" class="model-selector">
+            <span id="model-label" class="model-label">DeepSeek Chat</span>
+          </div>
         </div>
         <div class="input-toolbar-right">
           <button id="btn-clear" class="toolbar-icon-btn" title="清空对话">

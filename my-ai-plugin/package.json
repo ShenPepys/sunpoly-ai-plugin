@@ -98,41 +98,44 @@
     "configuration": {
       "title": "AI 编程助手",
       "properties": {
-        "myAiPlugin.modelName": {
-          "type": "string",
-          "default": "DeepSeek Chat",
-          "description": "AI 模型显示名称"
-        },
-        "myAiPlugin.modelId": {
-          "type": "string",
-          "default": "deepseek-chat",
-          "description": "AI 模型 API 标识（如 deepseek-chat、gpt-4o）",
-          "enum": [
-            "deepseek-chat",
-            "deepseek-coder",
-            "gpt-4o",
-            "gpt-4o-mini",
-            "doubao-pro-32k",
-            "doubao-lite-32k"
+        "myAiPlugin.models": {
+          "type": "array",
+          "description": "AI 模型列表，可配置多个模型并快速切换",
+          "default": [
+            {
+              "name": "DeepSeek Chat",
+              "modelId": "deepseek-chat",
+              "baseUrl": "https://api.deepseek.com",
+              "apiKey": ""
+            }
           ],
-          "enumDescriptions": [
-            "DeepSeek Chat（通用对话）",
-            "DeepSeek Coder（代码专用）",
-            "OpenAI GPT-4o",
-            "OpenAI GPT-4o Mini",
-            "豆包 Pro 32K",
-            "豆包 Lite 32K"
-          ]
+          "items": {
+            "type": "object",
+            "required": ["name", "modelId", "baseUrl", "apiKey"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "模型显示名称（如 DeepSeek Chat、GPT-4o）"
+              },
+              "modelId": {
+                "type": "string",
+                "description": "模型 API 标识（如 deepseek-chat、gpt-4o）"
+              },
+              "baseUrl": {
+                "type": "string",
+                "description": "API 端点地址（如 https://api.deepseek.com）"
+              },
+              "apiKey": {
+                "type": "string",
+                "description": "API 密钥"
+              }
+            }
+          }
         },
-        "myAiPlugin.baseUrl": {
-          "type": "string",
-          "default": "https://api.deepseek.com",
-          "description": "AI 模型 API 端点地址"
-        },
-        "myAiPlugin.apiKey": {
-          "type": "string",
-          "default": "",
-          "description": "AI 模型 API 密钥（请妥善保管，不要泄露）"
+        "myAiPlugin.activeModelIndex": {
+          "type": "number",
+          "default": 0,
+          "description": "当前使用的模型序号（从 0 开始，对应 models 数组的下标）"
         },
         "myAiPlugin.language": {
           "type": "string",

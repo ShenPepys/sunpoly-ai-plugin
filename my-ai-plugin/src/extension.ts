@@ -4,6 +4,7 @@
  */
 import * as vscode from 'vscode';
 import { initLogger, disposeLogger, info } from './logger';
+import { setExtensionPath } from './config';
 import { ChatViewProvider } from './webview/ChatViewProvider';
 import { executeCommand } from './commands/handler';
 import type { CommandType } from './commands/handler';
@@ -16,6 +17,10 @@ export function activate(context: vscode.ExtensionContext): void {
   // 初始化日志
   initLogger();
   info('AI 编程助手插件已激活');
+
+  // 设置插件根目录路径，用于查找 .env 文件
+  setExtensionPath(context.extensionUri.fsPath);
+  info(`插件路径: ${context.extensionUri.fsPath}`);
 
   // 注册 Webview 聊天面板
   const chatProvider = new ChatViewProvider(context.extensionUri);

@@ -82,6 +82,9 @@ body {
 
 /* ==================== 单条消息 ==================== */
 .message {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   margin-bottom: 16px;
   animation: fadeIn 0.2s ease-in;
 }
@@ -91,53 +94,44 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 
-.message-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
-  font-size: 12px;
-  font-weight: 600;
+/* 用户消息：靠右对齐 */
+.message.user {
+  justify-content: flex-end;
 }
 
-.message-header .role-icon {
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 11px;
-  flex-shrink: 0;
+/* 头像和角色名：隐藏（Cascade 风格） */
+.message .role-icon,
+.message .message-header {
+  display: none;
 }
 
-/* 用户消息样式 */
-.message.user .role-icon {
-  background: var(--vscode-textLink-foreground, #3794ff);
-  color: #fff;
+/* 消息内容区 */
+.message-content {
+  max-width: 85%;
+  min-width: 0;
 }
 
-/* AI 消息样式 */
-.message.assistant .role-icon {
-  background: var(--vscode-charts-green, #4ec9b0);
-  color: #fff;
-}
-
+/* 消息气泡 */
 .message-body {
   padding: 10px 14px;
-  border-radius: 8px;
+  border-radius: 12px;
   line-height: 1.6;
   word-wrap: break-word;
   overflow-wrap: break-word;
 }
 
+/* 用户气泡：蓝色系 */
 .message.user .message-body {
-  background: var(--vscode-input-background, #2a2a2a);
-  border: 1px solid var(--vscode-input-border, #444);
+  background: var(--vscode-textLink-foreground, #3794ff);
+  color: #fff;
+  border-radius: 12px 12px 4px 12px;
 }
 
+/* AI 气泡：暗色 */
 .message.assistant .message-body {
-  background: var(--vscode-textBlockQuote-background, rgba(255, 255, 255, 0.03));
+  background: var(--vscode-textBlockQuote-background, rgba(255, 255, 255, 0.05));
+  border: 1px solid var(--vscode-panel-border, #333);
+  border-radius: 12px 12px 12px 4px;
 }
 
 /* ==================== Markdown 渲染样式 ==================== */
@@ -378,13 +372,300 @@ body {
   vertical-align: middle;
 }
 
-/* 模型名称标签 */
+/* 模型选择器容器 */
+.model-selector {
+  position: relative;
+}
+
+/* 模型名称标签（可点击） */
 .model-label {
   font-size: 12px;
   color: var(--vscode-descriptionForeground, #888);
   padding: 3px 6px;
-  cursor: default;
+  cursor: pointer;
   user-select: none;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.model-label:hover {
+  color: var(--vscode-foreground);
+  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1));
+}
+
+/* ==================== 模型选择面板（大面板） ==================== */
+.model-panel {
+  position: fixed;
+  bottom: 80px;
+  left: 10px;
+  right: 10px;
+  max-height: 60vh;
+  background: var(--vscode-dropdown-background, #1e1e1e);
+  border: 1px solid var(--vscode-dropdown-border, #444);
+  border-radius: 8px;
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.4);
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.model-panel.hidden {
+  display: none;
+}
+
+/* 面板搜索栏 */
+.model-panel-search {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--vscode-panel-border, #333);
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.model-panel-search svg {
+  color: var(--vscode-descriptionForeground, #888);
+  flex-shrink: 0;
+}
+
+.model-panel-search input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--vscode-foreground);
+  font-size: 13px;
+  font-family: var(--vscode-font-family);
+}
+
+.model-panel-search input::placeholder {
+  color: var(--vscode-input-placeholderForeground, #666);
+}
+
+/* 面板模型列表（可滚动） */
+.model-panel-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+/* 分组标题 */
+.model-group-title {
+  padding: 8px 14px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--vscode-descriptionForeground, #888);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+/* 模型列表项 */
+.model-panel-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.model-panel-item:hover {
+  background: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.06));
+}
+
+/* 模型名称 + 标签 */
+.model-item-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.model-item-name {
+  font-size: 13px;
+  color: var(--vscode-foreground);
+}
+
+/* 模型右侧：选中标记 */
+.model-item-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground, #888);
+}
+
+.model-item-check {
+  color: var(--vscode-textLink-foreground, #3794ff);
+  font-size: 14px;
+}
+
+/* 当前选中的模型高亮 */
+.model-panel-item.active .model-item-name {
+  color: var(--vscode-textLink-foreground, #3794ff);
+}
+
+/* 无搜索结果 */
+.model-panel-empty {
+  padding: 20px 14px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground, #888);
+}
+
+/* ==================== 模式选择面板 ==================== */
+.mode-panel {
+  position: fixed;
+  bottom: 80px;
+  left: 10px;
+  right: 10px;
+  background: var(--vscode-dropdown-background, #1e1e1e);
+  border: 1px solid var(--vscode-dropdown-border, #444);
+  border-radius: 8px;
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.4);
+  z-index: 200;
+  overflow: hidden;
+  padding: 6px 0;
+}
+
+.mode-panel.hidden {
+  display: none;
+}
+
+/* 模式选项 */
+.mode-panel-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.mode-panel-item:hover {
+  background: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.06));
+}
+
+/* 模式图标 */
+.mode-item-icon {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--vscode-foreground);
+  margin-top: 1px;
+}
+
+.mode-item-icon svg {
+  color: var(--vscode-foreground);
+}
+
+/* 模式信息区 */
+.mode-item-info {
+  flex: 1;
+}
+
+.mode-item-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--vscode-foreground);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mode-item-desc {
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground, #888);
+  margin-top: 2px;
+}
+
+/* 选中标记（默认隐藏） */
+.mode-item-check {
+  display: none;
+  color: var(--vscode-textLink-foreground, #3794ff);
+  font-size: 13px;
+}
+
+/* 选中状态 */
+.mode-panel-item.active .mode-item-check {
+  display: inline;
+}
+
+/* 底部提示 */
+.mode-panel-hint {
+  padding: 8px 14px 4px;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground, #666);
+  border-top: 1px solid var(--vscode-panel-border, #333);
+  margin-top: 4px;
+}
+
+.mode-panel-hint kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  font-size: 10px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  background: var(--vscode-keybindingLabel-background, #333);
+  border: 1px solid var(--vscode-keybindingLabel-border, #555);
+  border-radius: 3px;
+  color: var(--vscode-keybindingLabel-foreground, #ccc);
+}
+
+/* ==================== 上下文面板（+ 按钮） ==================== */
+.context-panel {
+  position: fixed;
+  bottom: 80px;
+  left: 10px;
+  right: 10px;
+  background: var(--vscode-dropdown-background, #1e1e1e);
+  border: 1px solid var(--vscode-dropdown-border, #444);
+  border-radius: 8px;
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.4);
+  z-index: 200;
+  overflow: hidden;
+  padding: 6px 0;
+}
+
+.context-panel.hidden {
+  display: none;
+}
+
+.context-panel-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.context-panel-item:hover {
+  background: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.06));
+}
+
+.context-item-icon {
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--vscode-foreground);
+}
+
+.context-item-icon svg {
+  color: var(--vscode-foreground);
+}
+
+.context-item-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--vscode-foreground);
 }
 
 /* 发送按钮（圆形） */
