@@ -33,7 +33,6 @@
   const contextFilesContainer = document.getElementById('context-files');
   const mentionDropdown = document.getElementById('mention-dropdown');
   const tokenCountEl = document.getElementById('token-count');
-  const charCountEl = document.getElementById('char-count');
   const btnExport = document.getElementById('btn-export');
 
   /**
@@ -51,24 +50,6 @@
   const streamBuffers = {};
 
   // ==================== 事件绑定 ====================
-
-  // ==================== 输入框字符计数 ====================
-  /** 更新输入框字符计数显示，超过 500 字符时变色警告 */
-  function updateCharCount() {
-    var len = userInput.value.length;
-    if (len === 0) {
-      charCountEl.textContent = '';
-      charCountEl.classList.remove('char-warn');
-    } else {
-      charCountEl.textContent = len + ' 字';
-      if (len > 5000) {
-        charCountEl.classList.add('char-warn');
-      } else {
-        charCountEl.classList.remove('char-warn');
-      }
-    }
-  }
-  userInput.addEventListener('input', updateCharCount);
 
   /** 发送按钮点击 */
   btnSend.addEventListener('click', function () {
@@ -411,7 +392,6 @@
     // 清空输入框并重置高度
     userInput.value = '';
     userInput.style.height = 'auto';
-    updateCharCount();
     userInput.focus();
   }
 
@@ -525,7 +505,7 @@
       '<div class="message-content">' +
         '<div class="message-header">' + roleLabel + '</div>' +
         msgActionsHtml +
-        '<div class="message-body">' + window.chatRender.renderMarkdown(content) + '</div>' +
+        '<div class="message-body">' + renderMarkdown(content) + '</div>' +
       '</div>';
 
     messagesContainer.appendChild(messageEl);
@@ -540,7 +520,7 @@
     if (messageEl) {
       const bodyEl = messageEl.querySelector('.message-body');
       if (bodyEl) {
-        bodyEl.innerHTML = window.chatRender.renderMarkdown(content);
+        bodyEl.innerHTML = renderMarkdown(content);
       }
     }
     // 同步更新流缓冲区（防止 streamDone 时回退到旧内容）
@@ -794,7 +774,7 @@
     if (messageEl) {
       var bodyEl = messageEl.querySelector('.message-body');
       if (bodyEl) {
-        bodyEl.innerHTML = window.chatRender.renderMarkdown(renderText);
+        bodyEl.innerHTML = renderMarkdown(renderText);
       }
     }
   }
@@ -815,7 +795,7 @@
       if (messageEl) {
         const bodyEl = messageEl.querySelector('.message-body');
         if (bodyEl) {
-          bodyEl.innerHTML = window.chatRender.renderMarkdown(streamBuffers[messageId]);
+          bodyEl.innerHTML = renderMarkdown(streamBuffers[messageId]);
           // 为代码块绑定按钮事件
           bindCodeBlockButtons(bodyEl);
         }
@@ -937,64 +917,335 @@
     vscode.postMessage({ type: 'exportChat' });
   });
 
-  // ==================== 拖拽文件到聊天 ====================
+  // ==================== Markdown 渲染 ====================
 
-  /** 输入区域拖拽进入时高亮提示 */
-  var inputArea = document.getElementById('input-area');
+  /**
+   * 简易 Markdown → HTML 转换器
+   * 支持：代码块、行内代码、加粗、斜体、标题、列表、引用、分隔线、链接
+   * 注意：这是一个轻量实现，覆盖常见场景。后续可替换为 marked.js
+   */
+  function renderMarkdown(text) {
+    if (!text) {
+      return '';
+    }
 
-  inputArea.addEventListener('dragover', function (e) {
-    e.preventDefault();
-    e.stopPropagation();
-    inputArea.classList.add('drag-over');
-  });
-
-  inputArea.addEventListener('dragleave', function (e) {
-    e.preventDefault();
-    inputArea.classList.remove('drag-over');
-  });
-
-  inputArea.addEventListener('drop', function (e) {
-    e.preventDefault();
-    e.stopPropagation();
-    inputArea.classList.remove('drag-over');
-
-    // VS Code Webview 中拖拽文件提供 text/uri-list 或 text/plain
-    var uriList = e.dataTransfer.getData('text/uri-list');
-    var textData = e.dataTransfer.getData('text/plain');
-    var rawData = uriList || textData || '';
-
-    // 解析 URI 列表（每行一个 file:// URI 或路径）
-    var lines = rawData.split('\n').filter(function (line) {
-      return line.trim() && !line.startsWith('#');
+    // 第一步：提取代码块，用占位符替代（避免块内内容被其他规则误处理）
+    var codeBlocks = [];
+    var processed = text.replace(/```(\w*)\n([\s\S]*?)```/g, function (_, lang, code) {
+      var index = codeBlocks.length;
+      codeBlocks.push({ lang: lang || '', code: code });
+      return '___CODE_BLOCK_' + index + '___';
     });
 
-    lines.forEach(function (line) {
-      var filePath = line.trim();
-      // 将 file:// URI 转为本地路径
-      if (filePath.startsWith('file:///')) {
-        filePath = decodeURIComponent(filePath.replace('file:///', ''));
-        // Windows 路径修正：file:///d:/foo → d:/foo
-        if (/^[a-zA-Z]:/.test(filePath)) {
-          filePath = filePath; // 已经是正确路径
+    // 第二步：提取表格，用占位符替代
+    var tables = [];
+    processed = processed.replace(/((?:\|.+\|[ \t]*\n){2,})/g, function (tableBlock) {
+      var rows = tableBlock.trim().split('\n');
+      // 至少需要 header + separator + 1 data row，且第二行是分隔行
+      if (rows.length < 2 || !/^\|[\s:|-]+\|$/.test(rows[1].trim())) {
+        return tableBlock;
+      }
+      var idx = tables.length;
+      tables.push(rows);
+      return '___TABLE_BLOCK_' + idx + '___';
+    });
+
+    // 第三步：按行处理
+    var lines = processed.split('\n');
+    var html = '';
+    var inList = false;
+    var listType = '';
+
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+
+      // 表格占位符
+      var tableMatch = line.match(/^___TABLE_BLOCK_(\d+)___$/);
+      if (tableMatch) {
+        if (inList) { html += '</' + listType + '>'; inList = false; }
+        html += renderTable(tables[parseInt(tableMatch[1], 10)]);
+        continue;
+      }
+
+      // 标题
+      if (/^### (.+)/.test(line)) {
+        if (inList) { html += '</' + listType + '>'; inList = false; }
+        html += '<h3>' + renderInline(line.slice(4)) + '</h3>';
+        continue;
+      }
+      if (/^## (.+)/.test(line)) {
+        if (inList) { html += '</' + listType + '>'; inList = false; }
+        html += '<h2>' + renderInline(line.slice(3)) + '</h2>';
+        continue;
+      }
+      if (/^# (.+)/.test(line)) {
+        if (inList) { html += '</' + listType + '>'; inList = false; }
+        html += '<h1>' + renderInline(line.slice(2)) + '</h1>';
+        continue;
+      }
+
+      // 分隔线
+      if (/^(-{3,}|_{3,}|\*{3,})$/.test(line.trim())) {
+        if (inList) { html += '</' + listType + '>'; inList = false; }
+        html += '<hr>';
+        continue;
+      }
+
+      // 引用
+      if (/^> (.+)/.test(line)) {
+        if (inList) { html += '</' + listType + '>'; inList = false; }
+        html += '<blockquote>' + renderInline(line.slice(2)) + '</blockquote>';
+        continue;
+      }
+
+      // 无序列表
+      if (/^[-*] (.+)/.test(line)) {
+        if (!inList || listType !== 'ul') {
+          if (inList) { html += '</' + listType + '>'; }
+          html += '<ul>';
+          inList = true;
+          listType = 'ul';
         }
-      } else if (filePath.startsWith('file://')) {
-        filePath = decodeURIComponent(filePath.replace('file://', ''));
+        html += '<li>' + renderInline(line.replace(/^[-*] /, '')) + '</li>';
+        continue;
       }
 
-      if (filePath) {
-        // 通知 Extension 添加上下文文件
-        vscode.postMessage({
-          type: 'addContextFile',
-          filePath: filePath,
-          fileName: filePath.split(/[/\\]/).pop() || filePath,
-        });
+      // 有序列表
+      if (/^\d+\. (.+)/.test(line)) {
+        if (!inList || listType !== 'ol') {
+          if (inList) { html += '</' + listType + '>'; }
+          html += '<ol>';
+          inList = true;
+          listType = 'ol';
+        }
+        html += '<li>' + renderInline(line.replace(/^\d+\. /, '')) + '</li>';
+        continue;
       }
+
+      // 结束列表
+      if (inList && line.trim() === '') {
+        html += '</' + listType + '>';
+        inList = false;
+        continue;
+      }
+
+      // 代码块占位符
+      var blockMatch = line.match(/^___CODE_BLOCK_(\d+)___$/);
+      if (blockMatch) {
+        if (inList) { html += '</' + listType + '>'; inList = false; }
+        var blockIndex = parseInt(blockMatch[1], 10);
+        var block = codeBlocks[blockIndex];
+        html += renderCodeBlock(block.lang, block.code);
+        continue;
+      }
+
+      // 空行
+      if (line.trim() === '') {
+        continue;
+      }
+
+      // 普通段落
+      if (inList) { html += '</' + listType + '>'; inList = false; }
+      html += '<p>' + renderInline(line) + '</p>';
+    }
+
+    // 关闭未闭合的列表
+    if (inList) {
+      html += '</' + listType + '>';
+    }
+
+    return html;
+  }
+
+  /**
+   * 渲染行内 Markdown 元素
+   * 支持：行内代码、加粗、斜体、链接
+   */
+  function renderInline(text) {
+    var result = escapeHtml(text);
+
+    // 行内代码（必须在加粗/斜体之前处理）
+    result = result.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+    // 加粗
+    result = result.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+    // 斜体
+    result = result.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+
+    // 链接
+    result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" title="$1">$1</a>');
+
+    return result;
+  }
+
+  /**
+   * 渲染代码块
+   * 带有语言标签、复制/插入按钮、简易语法高亮、行号（超过 5 行时显示）
+   */
+  function renderCodeBlock(lang, code) {
+    var langLabel = lang || '代码';
+    var trimmedCode = code.replace(/\n$/, '');
+    var highlightedCode = highlightSyntax(lang, trimmedCode);
+    var lines = trimmedCode.split('\n');
+    var showLineNumbers = lines.length > 5;
+
+    var codeContent;
+    if (showLineNumbers) {
+      // 生成行号列
+      var lineNums = '';
+      for (var i = 1; i <= lines.length; i++) {
+        lineNums += i + '\n';
+      }
+      codeContent =
+        '<pre class="code-with-lines">' +
+          '<span class="line-numbers">' + lineNums.trimEnd() + '</span>' +
+          '<code>' + highlightedCode + '</code>' +
+        '</pre>';
+    } else {
+      codeContent = '<pre><code>' + highlightedCode + '</code></pre>';
+    }
+
+    return '<div class="code-block-wrapper">' +
+      '<div class="code-block-header">' +
+        '<span>' + langLabel + '</span>' +
+        '<div class="code-block-actions">' +
+          '<button class="btn-copy-code" title="复制代码">复制</button>' +
+          '<button class="btn-insert-code" title="插入到编辑器">插入</button>' +
+        '</div>' +
+      '</div>' +
+      codeContent +
+    '</div>';
+  }
+
+  /**
+   * 渲染 Markdown 表格
+   * @param {string[]} rows 表格行数组（第 0 行为表头，第 1 行为分隔符，后续为数据行）
+   */
+  function renderTable(rows) {
+    if (rows.length < 2) { return ''; }
+
+    // 解析对齐方式（从分隔行读取 :--- / :---: / ---:）
+    var separators = rows[1].split('|').filter(function (c) { return c.trim(); });
+    var aligns = separators.map(function (sep) {
+      var s = sep.trim();
+      if (s.startsWith(':') && s.endsWith(':')) { return 'center'; }
+      if (s.endsWith(':')) { return 'right'; }
+      return 'left';
     });
-  });
 
-  // ==================== Markdown 渲染（已迁移到 chat_a_render.js） ====================
-  // renderMarkdown / renderInline / renderCodeBlock / renderTable / highlightSyntax / escapeHtml
-  // 通过 window.chatRender.renderMarkdown() 调用
+    // 解析单元格内容
+    function parseCells(row) {
+      return row.split('|').slice(1, -1).map(function (cell) { return cell.trim(); });
+    }
+
+    var headerCells = parseCells(rows[0]);
+    var tableHtml = '<table class="md-table"><thead><tr>';
+    for (var h = 0; h < headerCells.length; h++) {
+      var align = aligns[h] ? ' style="text-align:' + aligns[h] + '"' : '';
+      tableHtml += '<th' + align + '>' + renderInline(headerCells[h]) + '</th>';
+    }
+    tableHtml += '</tr></thead><tbody>';
+
+    // 数据行（跳过第 0 行表头和第 1 行分隔符）
+    for (var r = 2; r < rows.length; r++) {
+      var cells = parseCells(rows[r]);
+      tableHtml += '<tr>';
+      for (var c = 0; c < cells.length; c++) {
+        var align = aligns[c] ? ' style="text-align:' + aligns[c] + '"' : '';
+        tableHtml += '<td' + align + '>' + renderInline(cells[c] || '') + '</td>';
+      }
+      tableHtml += '</tr>';
+    }
+
+    tableHtml += '</tbody></table>';
+    return tableHtml;
+  }
+
+  /**
+   * 简易语法高亮
+   * 用正则将关键词、字符串、注释、数字包裹成 <span class="hl-*"> 标签
+   */
+  function highlightSyntax(lang, code) {
+    var escaped = escapeHtml(code);
+    var normalizedLang = (lang || '').toLowerCase();
+
+    // 不支持的语言直接返回转义文本
+    var supportedLangs = ['js', 'javascript', 'ts', 'typescript', 'python', 'py', 'css', 'html', 'json', 'java', 'c', 'cpp', 'csharp', 'cs', 'go', 'rust', 'bash', 'sh', 'shell', 'sql'];
+    if (supportedLangs.indexOf(normalizedLang) === -1 && normalizedLang !== '') {
+      return escaped;
+    }
+
+    // 用占位符保护已高亮的部分，避免嵌套替换
+    var tokens = [];
+    function pushToken(cls, text) {
+      var idx = tokens.length;
+      tokens.push('<span class="hl-' + cls + '">' + text + '</span>');
+      return '\x00T' + idx + '\x00';
+    }
+
+    // 1. 注释（单行 // 和 # ，多行暂不支持）
+    escaped = escaped.replace(/(\/\/.*?$|#.*?$)/gm, function (m) {
+      return pushToken('comment', m);
+    });
+
+    // 2. 字符串（双引号和单引号，简单匹配）
+    escaped = escaped.replace(/(&quot;(?:[^&]|&(?!quot;))*?&quot;|&#039;(?:[^&]|&(?!#039;))*?&#039;)/g, function (m) {
+      return pushToken('string', m);
+    });
+
+    // 3. 模板字符串标记（反引号）
+    escaped = escaped.replace(/(`[^`]*`)/g, function (m) {
+      return pushToken('string', m);
+    });
+
+    // 4. 数字
+    escaped = escaped.replace(/\b(\d+\.?\d*)\b/g, function (m) {
+      return pushToken('number', m);
+    });
+
+    // 5. 关键词（根据语言选择关键词集）
+    var keywords = [];
+    if (['js', 'javascript', 'ts', 'typescript'].indexOf(normalizedLang) >= 0) {
+      keywords = ['const', 'let', 'var', 'function', 'return', 'if', 'else', 'for', 'while', 'class', 'extends', 'import', 'export', 'from', 'default', 'new', 'this', 'async', 'await', 'try', 'catch', 'throw', 'switch', 'case', 'break', 'continue', 'typeof', 'instanceof', 'void', 'null', 'undefined', 'true', 'false', 'interface', 'type', 'enum', 'implements', 'private', 'public', 'protected', 'readonly', 'static', 'abstract'];
+    } else if (['python', 'py'].indexOf(normalizedLang) >= 0) {
+      keywords = ['def', 'class', 'return', 'if', 'elif', 'else', 'for', 'while', 'import', 'from', 'as', 'try', 'except', 'raise', 'with', 'yield', 'lambda', 'pass', 'break', 'continue', 'and', 'or', 'not', 'in', 'is', 'None', 'True', 'False', 'self', 'async', 'await'];
+    } else if (['java', 'c', 'cpp', 'csharp', 'cs', 'go', 'rust'].indexOf(normalizedLang) >= 0) {
+      keywords = ['int', 'float', 'double', 'char', 'bool', 'void', 'string', 'class', 'struct', 'enum', 'interface', 'public', 'private', 'protected', 'static', 'final', 'const', 'return', 'if', 'else', 'for', 'while', 'switch', 'case', 'break', 'continue', 'new', 'this', 'null', 'true', 'false', 'import', 'package', 'func', 'fn', 'let', 'mut', 'pub', 'use', 'mod'];
+    } else if (['bash', 'sh', 'shell'].indexOf(normalizedLang) >= 0) {
+      keywords = ['if', 'then', 'else', 'elif', 'fi', 'for', 'while', 'do', 'done', 'case', 'esac', 'function', 'return', 'exit', 'echo', 'export', 'source', 'local'];
+    } else if (normalizedLang === 'sql') {
+      keywords = ['SELECT', 'FROM', 'WHERE', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'DROP', 'ALTER', 'TABLE', 'INDEX', 'JOIN', 'LEFT', 'RIGHT', 'INNER', 'OUTER', 'ON', 'AND', 'OR', 'NOT', 'NULL', 'AS', 'ORDER', 'BY', 'GROUP', 'HAVING', 'LIMIT', 'INTO', 'VALUES', 'SET'];
+    }
+
+    if (keywords.length > 0) {
+      var kwPattern = new RegExp('\\b(' + keywords.join('|') + ')\\b', 'g');
+      escaped = escaped.replace(kwPattern, function (m) {
+        return pushToken('keyword', m);
+      });
+    }
+
+    // 还原占位符
+    escaped = escaped.replace(/\x00T(\d+)\x00/g, function (_, idx) {
+      return tokens[parseInt(idx, 10)];
+    });
+
+    return escaped;
+  }
+
+  /**
+   * HTML 转义，防止 XSS
+   */
+  function escapeHtml(text) {
+    var map = {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#039;',
+    };
+    return text.replace(/[&<>"']/g, function (c) { return map[c]; });
+  }
 
   // ==================== 代码块按钮事件 ====================
 
@@ -1209,165 +1460,6 @@
   userInput.addEventListener('input', saveWebviewState);
   // 滚动时保存
   messagesContainer.addEventListener('scroll', saveWebviewState);
-
-  // ==================== 聊天内搜索 ====================
-
-  var searchBar = document.getElementById('search-bar');
-  var searchInput = document.getElementById('search-input');
-  var searchCountEl = document.getElementById('search-count');
-  var searchPrevBtn = document.getElementById('search-prev');
-  var searchNextBtn = document.getElementById('search-next');
-  var searchCloseBtn = document.getElementById('search-close');
-
-  /** 当前搜索匹配的元素列表和索引 */
-  var searchMatches = [];
-  var searchCurrentIndex = -1;
-
-  /** 打开搜索栏 */
-  function openSearchBar() {
-    searchBar.classList.remove('hidden');
-    searchInput.focus();
-    searchInput.select();
-  }
-
-  /** 关闭搜索栏并清除高亮 */
-  function closeSearchBar() {
-    searchBar.classList.add('hidden');
-    searchInput.value = '';
-    clearSearchHighlights();
-    searchCountEl.textContent = '';
-  }
-
-  /** 清除所有搜索高亮 */
-  function clearSearchHighlights() {
-    var highlights = messagesContainer.querySelectorAll('.search-highlight, .search-highlight-current');
-    highlights.forEach(function (el) {
-      var parent = el.parentNode;
-      parent.replaceChild(document.createTextNode(el.textContent), el);
-      parent.normalize();
-    });
-    searchMatches = [];
-    searchCurrentIndex = -1;
-  }
-
-  /** 执行搜索：在消息体中高亮匹配文本 */
-  function performSearch(query) {
-    clearSearchHighlights();
-    if (!query) { searchCountEl.textContent = ''; return; }
-
-    var bodies = messagesContainer.querySelectorAll('.message-body');
-    var lowerQuery = query.toLowerCase();
-
-    bodies.forEach(function (body) {
-      highlightTextInNode(body, lowerQuery, query);
-    });
-
-    searchMatches = Array.from(messagesContainer.querySelectorAll('.search-highlight'));
-    if (searchMatches.length > 0) {
-      searchCurrentIndex = 0;
-      updateSearchNavigation();
-    } else {
-      searchCountEl.textContent = '无匹配';
-    }
-  }
-
-  /**
-   * 递归遍历 DOM 文本节点，将匹配的文本用高亮 span 包裹
-   * 跳过 code 和 pre 元素内的内容，避免破坏代码块
-   */
-  function highlightTextInNode(node, lowerQuery, originalQuery) {
-    if (node.nodeType === 3) {
-      // 文本节点
-      var text = node.textContent;
-      var lowerText = text.toLowerCase();
-      var idx = lowerText.indexOf(lowerQuery);
-      if (idx === -1) { return; }
-
-      var frag = document.createDocumentFragment();
-      var lastIdx = 0;
-      while (idx !== -1) {
-        // 匹配前的文本
-        if (idx > lastIdx) { frag.appendChild(document.createTextNode(text.substring(lastIdx, idx))); }
-        // 高亮 span
-        var span = document.createElement('span');
-        span.className = 'search-highlight';
-        span.textContent = text.substring(idx, idx + originalQuery.length);
-        frag.appendChild(span);
-        lastIdx = idx + originalQuery.length;
-        idx = lowerText.indexOf(lowerQuery, lastIdx);
-      }
-      if (lastIdx < text.length) { frag.appendChild(document.createTextNode(text.substring(lastIdx))); }
-      node.parentNode.replaceChild(frag, node);
-    } else if (node.nodeType === 1 && !/^(script|style|code|pre)$/i.test(node.tagName)) {
-      // 元素节点（跳过 code/pre）
-      var children = Array.from(node.childNodes);
-      children.forEach(function (child) { highlightTextInNode(child, lowerQuery, originalQuery); });
-    }
-  }
-
-  /** 更新搜索导航：高亮当前匹配项并滚动到可见区域 */
-  function updateSearchNavigation() {
-    // 移除前一个的 current 样式
-    searchMatches.forEach(function (el) {
-      el.className = 'search-highlight';
-    });
-    if (searchMatches.length === 0) { return; }
-
-    var current = searchMatches[searchCurrentIndex];
-    current.className = 'search-highlight-current';
-    current.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    searchCountEl.textContent = (searchCurrentIndex + 1) + '/' + searchMatches.length;
-  }
-
-  // 搜索框输入事件（节流 200ms）
-  var searchDebounce = null;
-  searchInput.addEventListener('input', function () {
-    if (searchDebounce) { clearTimeout(searchDebounce); }
-    searchDebounce = setTimeout(function () {
-      performSearch(searchInput.value.trim());
-    }, 200);
-  });
-
-  // Enter 跳转到下一个，Shift+Enter 上一个，Escape 关闭
-  searchInput.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      if (searchMatches.length > 0) {
-        searchCurrentIndex = (searchCurrentIndex + 1) % searchMatches.length;
-        updateSearchNavigation();
-      }
-    } else if (e.key === 'Enter' && e.shiftKey) {
-      e.preventDefault();
-      if (searchMatches.length > 0) {
-        searchCurrentIndex = (searchCurrentIndex - 1 + searchMatches.length) % searchMatches.length;
-        updateSearchNavigation();
-      }
-    } else if (e.key === 'Escape') {
-      closeSearchBar();
-    }
-  });
-
-  searchPrevBtn.addEventListener('click', function () {
-    if (searchMatches.length > 0) {
-      searchCurrentIndex = (searchCurrentIndex - 1 + searchMatches.length) % searchMatches.length;
-      updateSearchNavigation();
-    }
-  });
-  searchNextBtn.addEventListener('click', function () {
-    if (searchMatches.length > 0) {
-      searchCurrentIndex = (searchCurrentIndex + 1) % searchMatches.length;
-      updateSearchNavigation();
-    }
-  });
-  searchCloseBtn.addEventListener('click', closeSearchBar);
-
-  // Ctrl+F 打开搜索栏（拦截 Webview 内的 Ctrl+F）
-  document.addEventListener('keydown', function (e) {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
-      e.preventDefault();
-      openSearchBar();
-    }
-  });
 
   // ==================== 输入框轮换提示 ====================
   var placeholderTexts = [

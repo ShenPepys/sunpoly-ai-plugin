@@ -9,12 +9,14 @@ import * as https from 'https';
 import * as http from 'http';
 import { URL } from 'url';
 import { info, error as logError } from '../logger';
+import { getProxy } from '../config';
 import type {
   ChatMessageParam,
   ChatCompletionRequest,
   ChatCompletionResponse,
   StreamChunk,
 } from './types';
+import type { Socket } from 'net';
 
 /** API 客户端配置 */
 export interface ApiClientConfig {
@@ -68,15 +70,14 @@ export async function sendChatRequest(
   return content;
 }
 
+/** 中断流式请求的函数 */
+export type AbortStreamFn = () => void;
+
 /**
  * 发送流式 Chat Completion 请求
  * AI 回复会逐字/逐片段通过回调函数返回
  * 
- * @param config API 配置
- * @param messages 消息列表
- * @param onChunk 每收到一个片段时的回调
- * @param onDone 全部完成时的回调
- * @param onError 出错时的回调
+ * @returns 中断函数，调用后立即停止接收数据
  */
 export function sendStreamRequest(
   config: ApiClientConfig,
@@ -84,7 +85,7 @@ export function sendStreamRequest(
   onChunk: OnChunkCallback,
   onDone: OnDoneCallback,
   onError: OnErrorCallback,
-): void {
+): AbortStreamFn {
   const requestBody: ChatCompletionRequest = {
     model: config.modelId,
     messages,
@@ -95,6 +96,7 @@ export function sendStreamRequest(
 
   const bodyStr = JSON.stringify(requestBody);
   const url = new URL('/v1/chat/completions', config.baseUrl);
+  const proxyUrl = getProxy();
 
   // 根据协议选择 http 或 https
   const transport = url.protocol === 'https:' ? https : http;
@@ -112,11 +114,22 @@ export function sendStreamRequest(
     },
   };
 
-  info(`发起流式请求: ${config.modelId} → ${url.href}`);
+  const proxyLabel = proxyUrl ? ` (代理: ${proxyUrl})` : '';
+  info(`发起流式请求: ${config.modelId} → ${url.href}${proxyLabel}`);
 
   let fullContent = '';
+  let aborted = false;
 
-  const req = transport.request(options, (res) => {
+  /**
+   * 实际发起请求的函数（支持通过代理隧道的 socket）
+   * @param tunnelSocket 代理隧道 socket（无代理时为 undefined）
+   */
+  function doRequest(tunnelSocket?: Socket): void {
+  const reqOptions = tunnelSocket
+    ? { ...options, socket: tunnelSocket, agent: false as any }
+    : options;
+
+  const req = transport.request(reqOptions, (res) => {
     const statusCode = res.statusCode ?? 0;
 
     // 处理非 200 状态码
@@ -124,7 +137,17 @@ export function sendStreamRequest(
       let errorBody = '';
       res.on('data', (chunk) => { errorBody += chunk.toString(); });
       res.on('end', () => {
-        const errMsg = parseApiError(errorBody, statusCode);
+        let errMsg: string;
+        if (statusCode === 429) {
+          // 限流：提取 Retry-After 头
+          const retryAfter = res.headers['retry-after'];
+          const waitSec = retryAfter ? parseInt(retryAfter, 10) : 30;
+          errMsg = `API 请求频率过高，请 ${waitSec} 秒后重试`;
+        } else if (statusCode === 401 || statusCode === 403) {
+          errMsg = 'API Key 无效或已过期，请在设置中检查 myAiPlugin.models 配置';
+        } else {
+          errMsg = parseApiError(errorBody, statusCode);
+        }
         logError(`API 请求失败 (${statusCode}): ${errMsg}`);
         onError(errMsg);
       });
@@ -134,7 +157,26 @@ export function sendStreamRequest(
     // 处理 SSE 流
     let buffer = '';
 
+    // 流式空闲超时：60 秒内无新数据则判定超时
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    const resetIdleTimer = () => {
+      if (idleTimer) { clearTimeout(idleTimer); }
+      idleTimer = setTimeout(() => {
+        if (!aborted) {
+          logError('流式响应空闲超时（60 秒无数据）');
+          req.destroy();
+          if (fullContent) {
+            onDone(fullContent);
+          } else {
+            onError('AI 响应超时（60 秒无数据），请重试');
+          }
+        }
+      }, 60000);
+    };
+    resetIdleTimer();
+
     res.on('data', (chunk: Buffer) => {
+      resetIdleTimer();
       buffer += chunk.toString();
 
       // SSE 格式：每条消息以 \n\n 分隔
@@ -170,7 +212,7 @@ export function sendStreamRequest(
           const deltaContent = parsed.choices?.[0]?.delta?.content;
           if (deltaContent) {
             fullContent += deltaContent;
-            onChunk(deltaContent);
+            if (!aborted) { onChunk(deltaContent); }
           }
         } catch (e) {
           // 忽略解析失败的行（可能是不完整的 JSON）
@@ -179,6 +221,8 @@ export function sendStreamRequest(
     });
 
     res.on('end', () => {
+      if (idleTimer) { clearTimeout(idleTimer); }
+      if (aborted) { return; }
       // 如果 buffer 中还有未处理的数据，尝试处理
       if (buffer.trim()) {
         const trimmed = buffer.trim();
@@ -221,6 +265,45 @@ export function sendStreamRequest(
 
   req.write(bodyStr);
   req.end();
+
+  // 保存 req 引用到闭包外层，供 abort 使用
+  currentReq = req;
+  } // end doRequest
+
+  let currentReq: http.ClientRequest | null = null;
+
+  // 如果配置了代理且目标是 HTTPS，先建立 CONNECT 隧道
+  if (proxyUrl && url.protocol === 'https:') {
+    connectThroughProxy(proxyUrl, url.hostname, Number(url.port) || 443, (err, socket) => {
+      if (err) {
+        onError(`代理连接失败: ${err.message}`);
+        return;
+      }
+      doRequest(socket!);
+    });
+  } else if (proxyUrl && url.protocol === 'http:') {
+    // HTTP 目标通过 HTTP 代理：直接将代理作为目标主机，请求路径用完整 URL
+    const proxyParsed = new URL(proxyUrl);
+    options.hostname = proxyParsed.hostname;
+    options.port = Number(proxyParsed.port) || 80;
+    options.path = url.href;
+    doRequest();
+  } else {
+    doRequest();
+  }
+
+  // 返回中断函数
+  return () => {
+    if (!aborted) {
+      aborted = true;
+      if (currentReq) { currentReq.destroy(); }
+      info('流式请求已主动中断');
+      // 中断时把已收到的内容作为最终结果
+      if (fullContent) {
+        onDone(fullContent);
+      }
+    }
+  };
 }
 
 /**
@@ -234,6 +317,7 @@ function doHttpRequest(
   return new Promise((resolve, reject) => {
     const bodyStr = JSON.stringify(body);
     const url = new URL('/v1/chat/completions', config.baseUrl);
+    const proxyUrl = getProxy();
     const transport = url.protocol === 'https:' ? https : http;
 
     const options: https.RequestOptions = {
@@ -248,29 +332,89 @@ function doHttpRequest(
       },
     };
 
-    const req = transport.request(options, (res) => {
-      let data = '';
-      res.on('data', (chunk) => { data += chunk.toString(); });
-      res.on('end', () => {
-        const statusCode = res.statusCode ?? 0;
-        if (statusCode !== 200) {
-          const errMsg = parseApiError(data, statusCode);
-          reject(new Error(errMsg));
-        } else {
-          resolve(data);
-        }
+    function makeRequest(tunnelSocket?: Socket): void {
+      const reqOptions = tunnelSocket
+        ? { ...options, socket: tunnelSocket, agent: false as any }
+        : options;
+
+      const req = transport.request(reqOptions, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk.toString(); });
+        res.on('end', () => {
+          const statusCode = res.statusCode ?? 0;
+          if (statusCode !== 200) {
+            const errMsg = parseApiError(data, statusCode);
+            reject(new Error(errMsg));
+          } else {
+            resolve(data);
+          }
+        });
       });
-    });
 
-    req.on('error', (err) => reject(new Error(`连接失败: ${err.message}`)));
-    req.setTimeout(60000, () => {
-      req.destroy();
-      reject(new Error('请求超时（60 秒）'));
-    });
+      req.on('error', (err) => reject(new Error(`连接失败: ${err.message}`)));
+      req.setTimeout(60000, () => {
+        req.destroy();
+        reject(new Error('请求超时（60 秒）'));
+      });
 
-    req.write(bodyStr);
-    req.end();
+      req.write(bodyStr);
+      req.end();
+    }
+
+    // 代理处理逻辑
+    if (proxyUrl && url.protocol === 'https:') {
+      connectThroughProxy(proxyUrl, url.hostname, Number(url.port) || 443, (err, socket) => {
+        if (err) { reject(new Error(`代理连接失败: ${err.message}`)); return; }
+        makeRequest(socket!);
+      });
+    } else if (proxyUrl && url.protocol === 'http:') {
+      const proxyParsed = new URL(proxyUrl);
+      options.hostname = proxyParsed.hostname;
+      options.port = Number(proxyParsed.port) || 80;
+      options.path = url.href;
+      makeRequest();
+    } else {
+      makeRequest();
+    }
   });
+}
+
+/**
+ * 通过 HTTP 代理建立 CONNECT 隧道（用于 HTTPS 请求走代理）
+ * 使用 Node.js 内置模块，无需外部依赖
+ */
+function connectThroughProxy(
+  proxyUrl: string,
+  targetHost: string,
+  targetPort: number,
+  callback: (err: Error | null, socket?: Socket) => void,
+): void {
+  const proxy = new URL(proxyUrl);
+  const proxyPort = Number(proxy.port) || 80;
+
+  const connectReq = http.request({
+    hostname: proxy.hostname,
+    port: proxyPort,
+    method: 'CONNECT',
+    path: `${targetHost}:${targetPort}`,
+  });
+
+  connectReq.on('connect', (_res, socket) => {
+    info(`代理隧道已建立: ${proxy.hostname}:${proxyPort} → ${targetHost}:${targetPort}`);
+    callback(null, socket);
+  });
+
+  connectReq.on('error', (err) => {
+    logError(`代理连接失败: ${err.message}`);
+    callback(err);
+  });
+
+  connectReq.setTimeout(15000, () => {
+    connectReq.destroy();
+    callback(new Error('代理连接超时（15 秒）'));
+  });
+
+  connectReq.end();
 }
 
 /**

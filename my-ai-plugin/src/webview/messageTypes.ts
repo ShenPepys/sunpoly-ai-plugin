@@ -53,6 +53,46 @@ export interface SwitchModeRequest {
   mode: WorkMode;
 }
 
+/** 用户点击上下文面板选项（Mentions / Workflow / Upload） */
+export interface ContextActionRequest {
+  type: 'contextAction';
+  action: 'mentions' | 'workflow' | 'upload';
+}
+
+/** 用户在 Webview 中移除已添加的上下文文件 */
+export interface RemoveContextFileRequest {
+  type: 'removeContextFile';
+  filePath: string;
+}
+
+/** 用户在输入框输入 @ 时请求工作区文件列表 */
+export interface SearchWorkspaceFilesRequest {
+  type: 'searchWorkspaceFiles';
+  keyword: string;
+}
+
+/** 通过 @ mention 选中文件后直接添加到上下文列表 */
+export interface AddContextFileRequest {
+  type: 'addContextFile';
+  filePath: string;
+}
+
+/** 导出对话为 Markdown 文件 */
+export interface ExportChatRequest {
+  type: 'exportChat';
+}
+
+/** 停止当前 AI 生成 */
+export interface StopGenerationRequest {
+  type: 'stopGeneration';
+}
+
+/** 从 Webview 触发 VS Code 命令（slash 命令） */
+export interface ExecuteCommandRequest {
+  type: 'executeCommand';
+  command: string;
+}
+
 /** Webview 发送给 Extension 的所有消息类型 */
 export type WebviewMessage =
   | SendMessageRequest
@@ -61,7 +101,14 @@ export type WebviewMessage =
   | ClearChatRequest
   | SwitchModelRequest
   | RequestModelsRequest
-  | SwitchModeRequest;
+  | SwitchModeRequest
+  | ContextActionRequest
+  | RemoveContextFileRequest
+  | SearchWorkspaceFilesRequest
+  | AddContextFileRequest
+  | ExportChatRequest
+  | StopGenerationRequest
+  | ExecuteCommandRequest;
 
 // ==================== Extension → Webview ====================
 
@@ -128,10 +175,41 @@ export interface ShowThinkingResponse {
   messageId: string;
 }
 
+/** 添加上下文文件到 Webview 输入区显示 */
+export interface AddContextFileResponse {
+  type: 'addContextFile';
+  /** 文件绝对路径 */
+  filePath: string;
+  /** 显示用的短文件名 */
+  fileName: string;
+}
+
+/** 清空 Webview 中的上下文文件标签（发送消息后文件已注入） */
+export interface ClearContextFilesResponse {
+  type: 'clearContextFiles';
+}
+
+/** 返回工作区文件搜索结果 */
+export interface WorkspaceFilesResponse {
+  type: 'workspaceFiles';
+  files: { filePath: string; fileName: string }[];
+}
+
+/** 推送 Token 用量估算到 Webview */
+export interface UpdateTokenCountResponse {
+  type: 'updateTokenCount';
+  tokenCount: number;
+}
+
 /** 推送当前工作模式到 Webview */
 export interface UpdateModeResponse {
   type: 'updateMode';
   mode: WorkMode;
+}
+
+/** 通知 Webview 用户主动停止了生成（保留已接收的部分内容） */
+export interface GenerationStoppedResponse {
+  type: 'generationStopped';
 }
 
 /** Extension 发送给 Webview 的所有消息类型 */
@@ -145,4 +223,9 @@ export type ExtensionMessage =
   | UpdateModelsResponse
   | UpdateMessageResponse
   | ShowThinkingResponse
-  | UpdateModeResponse;
+  | AddContextFileResponse
+  | ClearContextFilesResponse
+  | WorkspaceFilesResponse
+  | UpdateTokenCountResponse
+  | UpdateModeResponse
+  | GenerationStoppedResponse;

@@ -67,6 +67,110 @@ function getKnowledgeCutoff(modelId: string): string {
 }
 
 /**
+ * 检测工作区项目类型和技术栈
+ * 通过扫描常见配置文件来识别，返回技术栈描述字符串
+ */
+export function detectProjectType(): string {
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceFolder) { return ''; }
+
+  const indicators: string[] = [];
+
+  // 定义：文件名 → 技术标签
+  const fileToTech: [string, string][] = [
+    ['package.json', 'Node.js'],
+    ['tsconfig.json', 'TypeScript'],
+    ['pom.xml', 'Java/Maven'],
+    ['build.gradle', 'Java/Gradle'],
+    ['requirements.txt', 'Python'],
+    ['pyproject.toml', 'Python'],
+    ['go.mod', 'Go'],
+    ['Cargo.toml', 'Rust'],
+    ['composer.json', 'PHP'],
+    ['Gemfile', 'Ruby'],
+    ['.csproj', 'C#/.NET'],
+    ['CMakeLists.txt', 'C/C++'],
+    ['Dockerfile', 'Docker'],
+    ['docker-compose.yml', 'Docker Compose'],
+    ['.vue', ''],
+  ];
+
+  for (const [file, tech] of fileToTech) {
+    if (fs.existsSync(path.join(workspaceFolder, file)) && tech) {
+      indicators.push(tech);
+    }
+  }
+
+  // 检测前端框架（从 package.json 读取依赖）
+  const pkgPath = path.join(workspaceFolder, 'package.json');
+  if (fs.existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+      const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+      if (allDeps['react']) { indicators.push('React'); }
+      if (allDeps['vue']) { indicators.push('Vue'); }
+      if (allDeps['@angular/core']) { indicators.push('Angular'); }
+      if (allDeps['next']) { indicators.push('Next.js'); }
+      if (allDeps['express']) { indicators.push('Express'); }
+      if (allDeps['vscode']) { indicators.push('VS Code Extension'); }
+      if (allDeps['@types/vscode']) { indicators.push('VS Code Extension'); }
+    } catch {
+      // 解析失败则跳过
+    }
+  }
+
+  // 去重
+  const unique = [...new Set(indicators)];
+  return unique.length > 0 ? unique.join(', ') : '';
+}
+
+/**
+ * 获取 Git 状态信息：当前分支名 + 未提交的变更文件
+ * 用于注入 system prompt，让 AI 了解用户当前的开发上下文
+ */
+export function getGitStatus(): { branch: string; changedFiles: string[] } {
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceFolder) { return { branch: '', changedFiles: [] }; }
+
+  const gitDir = path.join(workspaceFolder, '.git');
+  if (!fs.existsSync(gitDir)) { return { branch: '', changedFiles: [] }; }
+
+  let branch = '';
+  let changedFiles: string[] = [];
+
+  try {
+    // 读取当前分支（从 .git/HEAD）
+    const headContent = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf-8').trim();
+    if (headContent.startsWith('ref: refs/heads/')) {
+      branch = headContent.replace('ref: refs/heads/', '');
+    } else {
+      branch = headContent.substring(0, 8) + '...'; // detached HEAD
+    }
+  } catch {
+    // 读取失败则跳过
+  }
+
+  try {
+    // 通过 child_process 获取未提交文件（同步执行，限时 3 秒）
+    const { execSync } = require('child_process');
+    const output = execSync('git status --porcelain', {
+      cwd: workspaceFolder,
+      timeout: 3000,
+      encoding: 'utf-8',
+    });
+    changedFiles = output
+      .split('\n')
+      .filter((line: string) => line.trim())
+      .map((line: string) => line.substring(3).trim())
+      .slice(0, 20); // 最多 20 个文件，避免列表过长
+  } catch {
+    // git 命令执行失败则跳过
+  }
+
+  return { branch, changedFiles };
+}
+
+/**
  * 获取用户偏好语言
  * 默认返回中文
  */

@@ -263,3 +263,18 @@ export function getMaxTokens(): number {
 export function getTemperature(): number {
   return get<number>('temperature', 0.3);
 }
+
+/**
+ * 获取代理地址
+ * 优先读取 myAiPlugin.proxy，其次读取 VS Code 内置 http.proxy
+ * @returns 代理地址字符串，空字符串表示不使用代理
+ */
+export function getProxy(): string {
+  // 插件自定义代理配置
+  const pluginProxy = get<string>('proxy', '');
+  if (pluginProxy) { return pluginProxy; }
+
+  // 回退到 VS Code 内置代理设置
+  const vscodeProxy = vscode.workspace.getConfiguration('http').get<string>('proxy', '');
+  return vscodeProxy;
+}

@@ -4,6 +4,11 @@
   "description": "VS Code AI 编程助手插件，支持代码解释、Bug 修复、代码优化、续写和单测生成",
   "version": "0.1.0",
   "publisher": "my-ai-plugin",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -12,6 +17,7 @@
     "Machine Learning",
     "Other"
   ],
+  "icon": "resources/icon.png",
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
@@ -57,6 +63,18 @@
       {
         "command": "my-ai-plugin.clearChat",
         "title": "AI: 清空对话"
+      },
+      {
+        "command": "my-ai-plugin.focusChat",
+        "title": "AI: 聚焦到聊天输入框"
+      },
+      {
+        "command": "my-ai-plugin.switchMode",
+        "title": "AI: 切换工作模式"
+      },
+      {
+        "command": "my-ai-plugin.newChat",
+        "title": "AI: 新建对话"
       }
     ],
     "menus": {
@@ -93,6 +111,18 @@
         "command": "my-ai-plugin.fix",
         "key": "ctrl+shift+f",
         "when": "editorHasSelection"
+      },
+      {
+        "command": "my-ai-plugin.focusChat",
+        "key": "ctrl+l"
+      },
+      {
+        "command": "my-ai-plugin.switchMode",
+        "key": "ctrl+oem_period"
+      },
+      {
+        "command": "my-ai-plugin.newChat",
+        "key": "ctrl+shift+n"
       }
     ],
     "configuration": {
@@ -155,6 +185,11 @@
           "type": "number",
           "default": 0.3,
           "description": "AI 回复的随机性（0~1，越低越确定）"
+        },
+        "myAiPlugin.proxy": {
+          "type": "string",
+          "default": "",
+          "description": "HTTP/HTTPS 代理地址（如 http://127.0.0.1:7890），留空则不使用代理。也会自动读取 VS Code 的 http.proxy 配置。"
         }
       }
     }

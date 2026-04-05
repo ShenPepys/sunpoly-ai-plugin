@@ -112,7 +112,22 @@ const COMMUNICATION_SECTION = `# 沟通风格
  * 构建环境信息段落
  * 告诉 AI 用户的开发环境情况
  */
-function buildEnvSection(env: EnvContext, model: ModelConfig): string {
+function buildEnvSection(
+  env: EnvContext,
+  model: ModelConfig,
+  projectType: string,
+  gitInfo?: { branch: string; changedFiles: string[] },
+): string {
+  const projectLine = projectType ? `\n- 项目技术栈：${projectType}` : '';
+
+  let gitSection = '';
+  if (gitInfo && gitInfo.branch) {
+    gitSection = `\n- Git 分支：${gitInfo.branch}`;
+    if (gitInfo.changedFiles.length > 0) {
+      gitSection += `\n- 未提交变更（${gitInfo.changedFiles.length} 个文件）：${gitInfo.changedFiles.slice(0, 10).join(', ')}`;
+    }
+  }
+
   return `# 环境信息
 
 你在以下环境中被调用：
@@ -122,7 +137,7 @@ function buildEnvSection(env: EnvContext, model: ModelConfig): string {
 - Shell：${env.shell}
 - 系统版本：${env.osVersion}
 - 当前模型：${model.modelName}（ID: ${model.modelId}）
-- 知识截止：${model.knowledgeCutoff}`;
+- 知识截止：${model.knowledgeCutoff}${projectLine}${gitSection}`;
 }
 
 /**
@@ -152,6 +167,8 @@ export function buildSystemPrompt(
   model: ModelConfig,
   mode: WorkMode = 'code',
   language = '中文',
+  projectType = '',
+  gitInfo?: { branch: string; changedFiles: string[] },
 ): string {
   // 按顺序拼接各段落，中间用空行分隔
   const sections = [
@@ -160,7 +177,7 @@ export function buildSystemPrompt(
     TASK_RULES_SECTION,
     CODE_STYLE_SECTION,
     COMMUNICATION_SECTION,
-    buildEnvSection(env, model),
+    buildEnvSection(env, model, projectType, gitInfo),
     buildLanguageSection(language),
   ];
 
