@@ -15,6 +15,7 @@ import { buildSystemPrompt } from '../prompts/system';
 import { getEditorContext } from '../utils/editor';
 import { getEnvContext } from '../utils/context';
 import type { ExtensionMessage, WebviewMessage, WorkMode } from './messageTypes';
+import { parseToolCalls, hasToolCalls, stripToolCalls, executeToolCalls, formatToolResults } from '../tools';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Provider 的注册 ID，必须与 package.json 中 views.id 一致 */
@@ -189,8 +190,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const modelConfig = getModelConfig();
     const envContext = getEnvContext();
 
-    // 构建系统提示词
-    const systemPrompt = buildSystemPrompt(envContext, modelConfig);
+    // 构建系统提示词（根据当前工作模式生成不同的提示词）
+    const systemPrompt = buildSystemPrompt(envContext, modelConfig, this.currentMode);
 
     // 构建消息列表：系统提示词 + 历史对话 + 当前用户消息
     // 如果用户选中了代码，自动附带到消息中
@@ -231,15 +232,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           messageId: assistantMsgId,
         });
       },
-      // onDone：流式传输完成
+      // onDone：流式传输完成，检测并执行工具调用
       (fullContent) => {
-        this.postMessage({
-          type: 'streamDone',
-          messageId: assistantMsgId,
-        });
-        // 将 AI 回复加入对话历史
+        // 将 AI 回复加入对话历史（保留完整内容，含 tool_call 标签）
         this.chatHistory.push({ role: 'assistant', content: fullContent });
         info(`AI 回复完成，长度: ${fullContent.length}`);
+
+        if (hasToolCalls(fullContent)) {
+          // 剥离 tool_call 标签后更新界面显示（用户看不到原始 XML）
+          const cleanContent = stripToolCalls(fullContent);
+          this.postMessage({
+            type: 'updateMessage',
+            messageId: assistantMsgId,
+            content: cleanContent,
+          });
+          this.postMessage({ type: 'streamDone', messageId: assistantMsgId });
+          // 静默执行工具调用，结果传给 AI 续轮（复用同一个气泡 ID）
+          this.handleToolCalls(fullContent, apiConfig, assistantMsgId);
+        } else {
+          this.postMessage({ type: 'streamDone', messageId: assistantMsgId });
+        }
       },
       // onError：出错处理
       (errorMessage) => {
@@ -249,6 +261,80 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           message: errorMessage,
         });
         error('AI API 调用失败:', errorMessage);
+      },
+    );
+  }
+
+  /**
+   * 处理 AI 回复中的工具调用
+   * 
+   * 流程：解析工具调用 → 静默执行 → 结果作为上下文传给 AI → AI 替换原气泡内容
+   * 用户始终只看到一个 AI 气泡，不会出现重复回复
+   * 
+   * @param aiResponse AI 的完整回复文本
+   * @param apiConfig API 配置（用于续轮请求）
+   * @param reuseMsgId 复用的气泡 ID，续轮回复会替换该气泡内容而不是创建新气泡
+   */
+  private async handleToolCalls(aiResponse: string, apiConfig: ApiClientConfig, reuseMsgId: string): Promise<void> {
+    const toolCalls = parseToolCalls(aiResponse);
+    if (toolCalls.length === 0) {
+      return;
+    }
+
+    info(`检测到 ${toolCalls.length} 个工具调用，静默执行...`);
+
+    // 在原气泡中显示 Thinking 动画
+    this.postMessage({ type: 'showThinking', messageId: reuseMsgId });
+
+    // 静默执行工具调用
+    const results = await executeToolCalls(toolCalls, this.currentMode);
+    const resultText = formatToolResults(results);
+
+    // 将工具结果作为系统级上下文追加，告诉 AI 直接基于结果回答
+    const toolFeedback = [
+      '以下是工具执行结果（不要在回复中重复展示这些原始数据，直接基于结果回答用户的问题）：',
+      '',
+      resultText,
+    ].join('\n');
+    this.chatHistory.push({ role: 'user', content: toolFeedback });
+
+    // 构建续轮消息
+    const modelConfig = getModelConfig();
+    const envContext = getEnvContext();
+    const systemPrompt = buildSystemPrompt(envContext, modelConfig, this.currentMode);
+
+    const followUpMessages: ChatMessageParam[] = [
+      { role: 'system', content: systemPrompt },
+      ...this.chatHistory,
+    ];
+
+    sendStreamRequest(
+      apiConfig,
+      followUpMessages,
+      // onChunk：只收集，不更新界面（避免抖动）
+      () => {},
+      // onDone：收集完成后一次性替换气泡内容
+      (fullContent) => {
+        this.chatHistory.push({ role: 'assistant', content: fullContent });
+        info(`续轮回复完成，长度: ${fullContent.length}`);
+
+        if (hasToolCalls(fullContent)) {
+          // 续轮回复还有工具调用：剥离标签显示，再递归
+          const cleanContent = stripToolCalls(fullContent);
+          this.postMessage({ type: 'updateMessage', messageId: reuseMsgId, content: cleanContent });
+          if (this.chatHistory.length < 30) {
+            this.handleToolCalls(fullContent, apiConfig, reuseMsgId);
+          }
+        } else {
+          // 一次性替换为最终内容
+          this.postMessage({ type: 'updateMessage', messageId: reuseMsgId, content: fullContent });
+        }
+      },
+      (errorMessage) => {
+        // 出错时也要替换 Thinking，显示错误信息
+        this.postMessage({ type: 'updateMessage', messageId: reuseMsgId, content: '⚠️ 工具执行出错，请重试。' });
+        this.postMessage({ type: 'showError', message: errorMessage });
+        error('续轮 AI 调用失败:', errorMessage);
       },
     );
   }

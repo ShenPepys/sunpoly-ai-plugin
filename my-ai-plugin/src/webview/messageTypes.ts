@@ -115,6 +115,19 @@ export interface UpdateModelsResponse {
   activeIndex: number;
 }
 
+/** 更新已有消息的内容（用于剥离 tool_call 标签后刷新显示） */
+export interface UpdateMessageResponse {
+  type: 'updateMessage';
+  messageId: string;
+  content: string;
+}
+
+/** 在指定气泡中显示 Thinking 动画 */
+export interface ShowThinkingResponse {
+  type: 'showThinking';
+  messageId: string;
+}
+
 /** 推送当前工作模式到 Webview */
 export interface UpdateModeResponse {
   type: 'updateMode';
@@ -130,4 +143,6 @@ export type ExtensionMessage =
   | SetLoadingResponse
   | ClearChatResponse
   | UpdateModelsResponse
+  | UpdateMessageResponse
+  | ShowThinkingResponse
   | UpdateModeResponse;

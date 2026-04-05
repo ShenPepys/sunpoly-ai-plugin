@@ -219,6 +219,14 @@
         updateModelDropdown(message.models, message.activeIndex);
         break;
 
+      case 'updateMessage':
+        updateMessageContent(message.messageId, message.content);
+        break;
+
+      case 'showThinking':
+        showThinkingInMessage(message.messageId);
+        break;
+
       case 'updateMode':
         updateModeUI(message.mode);
         break;
@@ -255,6 +263,41 @@
       '</div>';
 
     messagesContainer.appendChild(messageEl);
+    scrollToBottom();
+  }
+
+  /**
+   * 更新已有消息的显示内容（用于剥离 tool_call 标签后刷新）
+   */
+  function updateMessageContent(messageId, content) {
+    const messageEl = messagesContainer.querySelector('[data-message-id="' + messageId + '"]');
+    if (messageEl) {
+      const bodyEl = messageEl.querySelector('.message-body');
+      if (bodyEl) {
+        bodyEl.innerHTML = renderMarkdown(content);
+      }
+    }
+    // 同步更新流缓冲区（防止 streamDone 时回退到旧内容）
+    if (streamBuffers[messageId] !== undefined) {
+      streamBuffers[messageId] = content;
+    }
+  }
+
+  /**
+   * 在指定气泡中显示 Thinking 动画
+   */
+  function showThinkingInMessage(messageId) {
+    var messageEl = messagesContainer.querySelector('[data-message-id="' + messageId + '"]');
+    if (messageEl) {
+      var bodyEl = messageEl.querySelector('.message-body');
+      if (bodyEl) {
+        bodyEl.innerHTML =
+          '<div class="thinking-indicator">' +
+            '<span>Thinking</span>' +
+            '<span class="dots"><span></span><span></span><span></span></span>' +
+          '</div>';
+      }
+    }
     scrollToBottom();
   }
 
