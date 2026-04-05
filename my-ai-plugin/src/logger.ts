@@ -1,7 +1,7 @@
 /**
  * 日志管理模块
  * 使用 VS Code OutputChannel 输出日志，方便调试
- * 日志可在 VS Code "输出"面板 → 选择"AI 编程助手"频道查看
+ * 日志可在 VS Code "输出"面板 → 选择"AI 助理"频道查看
  */
 import * as vscode from 'vscode';
 
@@ -17,7 +17,7 @@ let outputChannel: vscode.OutputChannel | null = null;
  */
 export function initLogger(): void {
   if (!outputChannel) {
-    outputChannel = vscode.window.createOutputChannel('AI 编程助手');
+    outputChannel = vscode.window.createOutputChannel('AI 助理');
   }
 }
 

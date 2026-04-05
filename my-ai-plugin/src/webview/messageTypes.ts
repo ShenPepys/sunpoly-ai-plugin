@@ -108,7 +108,9 @@ export type WebviewMessage =
   | AddContextFileRequest
   | ExportChatRequest
   | StopGenerationRequest
-  | ExecuteCommandRequest;
+  | ExecuteCommandRequest
+  | AcceptChangeRequest
+  | RejectChangeRequest;
 
 // ==================== Extension → Webview ====================
 
@@ -212,6 +214,94 @@ export interface GenerationStoppedResponse {
   type: 'generationStopped';
 }
 
+// ==================== Windsurf 风格步骤展示 ====================
+
+/** 工具步骤状态 */
+export type StepStatus = 'running' | 'done' | 'error';
+
+/** 添加一个进度步骤到消息气泡（工具调用开始时发送） */
+export interface AddStepResponse {
+  type: 'addStep';
+  /** 所属 AI 消息 ID */
+  messageId: string;
+  /** 步骤唯一 ID */
+  stepId: string;
+  /** 图标（emoji 或 codicon 名） */
+  icon: string;
+  /** 步骤描述（如 "Reading login.html #L1-50"） */
+  description: string;
+  /** 步骤状态 */
+  status: StepStatus;
+}
+
+/** 更新步骤状态（工具执行完成或出错时发送） */
+export interface UpdateStepResponse {
+  type: 'updateStep';
+  stepId: string;
+  status: StepStatus;
+  /** 可选：更新描述文字 */
+  description?: string;
+  /** 可选：耗时（毫秒） */
+  elapsed?: number;
+}
+
+/** 在步骤中展示代码 diff（文件写入/编辑操作完成后发送） */
+export interface ShowDiffResponse {
+  type: 'showDiff';
+  /** 所属消息 ID */
+  messageId: string;
+  /** 关联的步骤 ID */
+  stepId: string;
+  /** 文件路径 */
+  filePath: string;
+  /** 语言（用于语法高亮） */
+  language: string;
+  /** 新增行数 */
+  additions: number;
+  /** 删除行数 */
+  deletions: number;
+  /** 原始内容（write_file 为空） */
+  oldContent: string;
+  /** 新内容 */
+  newContent: string;
+  /** 是否需要用户确认（Accept/Reject），false 表示已自动执行 */
+  needsConfirm: boolean;
+}
+
+/** 显示文件变更汇总（所有工具执行完成后发送） */
+export interface ShowChangeSummaryResponse {
+  type: 'showChangeSummary';
+  messageId: string;
+  files: Array<{
+    path: string;
+    additions: number;
+    deletions: number;
+    status: 'created' | 'modified' | 'read' | 'listed';
+  }>;
+}
+
+/** 流式阶段完成后显示 Thinking 耗时（替代之前的 Thinking 动画） */
+export interface ThinkingCompleteResponse {
+  type: 'thinkingComplete';
+  messageId: string;
+  /** 思考耗时（毫秒） */
+  elapsed: number;
+}
+
+// ==================== Webview → Extension（Accept/Reject） ====================
+
+/** 用户接受文件变更 */
+export interface AcceptChangeRequest {
+  type: 'acceptChange';
+  stepId: string;
+}
+
+/** 用户拒绝文件变更 */
+export interface RejectChangeRequest {
+  type: 'rejectChange';
+  stepId: string;
+}
+
 /** Extension 发送给 Webview 的所有消息类型 */
 export type ExtensionMessage =
   | AddMessageResponse
@@ -228,4 +318,9 @@ export type ExtensionMessage =
   | WorkspaceFilesResponse
   | UpdateTokenCountResponse
   | UpdateModeResponse
-  | GenerationStoppedResponse;
+  | GenerationStoppedResponse
+  | AddStepResponse
+  | UpdateStepResponse
+  | ShowDiffResponse
+  | ShowChangeSummaryResponse
+  | ThinkingCompleteResponse;

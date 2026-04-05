@@ -63,7 +63,7 @@ const MODE_PLAN_SECTION = `# 工作模式：Plan
 - 列出目录：<tool_call><list_dir path="目录路径" /></tool_call>`;
 
 /** 身份介绍：所有模式共用的基础身份 */
-const IDENTITY_SECTION = `你是一个 AI 编程助手，运行在用户的 VS Code 编辑器中。
+const IDENTITY_SECTION = `你是一个 AI 助理，运行在用户的 VS Code 编辑器中。
 你的职责是帮助用户完成软件工程任务，包括代码解释、Bug 修复、代码优化、代码续写和单元测试生成。
 请根据当前工作模式和上下文来协助用户。`;
 

@@ -1,6 +1,6 @@
-# AI 编程助手 - VS Code 插件
+# AI 助理 - VS Code 插件
 
-基于 OpenAI 兼容 API 的 AI 编程助手，支持 DeepSeek、豆包、GPT 等多模型，提供代码解释、Bug 修复、代码优化、续写和单测生成等功能。
+基于 OpenAI 兼容 API 的 AI 助理，支持 DeepSeek、豆包、GPT 等多模型，提供代码解释、Bug 修复、代码优化、续写和单测生成等功能。
 
 ## 功能一览
 

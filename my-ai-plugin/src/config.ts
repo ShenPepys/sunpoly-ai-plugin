@@ -281,8 +281,8 @@ export function getProxy(): string {
 
 /**
  * 获取面板标题
- * 用户可自定义为企业名称，默认 "AI 编程助手"
+ * 用户可自定义为企业名称，默认 "AI 助理"
  */
 export function getPanelTitle(): string {
-  return get<string>('panelTitle', 'AI 编程助手');
+  return get<string>('panelTitle', 'AI 助理');
 }

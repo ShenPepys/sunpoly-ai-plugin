@@ -4,7 +4,7 @@
  */
 import * as vscode from 'vscode';
 import { initLogger, disposeLogger, info } from './logger';
-import { setExtensionPath, getAllModels, getActiveModelIndex, getPanelTitle } from './config';
+import { setExtensionPath, getAllModels, getActiveModelIndex } from './config';
 import { ChatViewProvider } from './webview/ChatViewProvider';
 import { executeCommand } from './commands/handler';
 import type { CommandType } from './commands/handler';
@@ -16,7 +16,7 @@ import type { CommandType } from './commands/handler';
 export function activate(context: vscode.ExtensionContext): void {
   // 初始化日志
   initLogger();
-  info('AI 编程助手插件已激活');
+  info('AI 助理插件已激活');
 
   // 设置插件根目录路径，用于查找 .env 文件
   setExtensionPath(context.extensionUri.fsPath);
@@ -35,7 +35,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const activeModel = startupModels[startupActiveIdx];
   if (activeModel && !activeModel.apiKey) {
     vscode.window.showWarningMessage(
-      `AI 编程助手：当前模型 "${activeModel.name}" 未配置 API Key，请在设置中配置。`,
+      `AI 助理：当前模型 "${activeModel.name}" 未配置 API Key，请在设置中配置。`,
       '打开设置'
     ).then(choice => {
       if (choice === '打开设置') {
@@ -85,8 +85,6 @@ export function activate(context: vscode.ExtensionContext): void {
         const m = getAllModels();
         const idx = getActiveModelIndex();
         statusBarItem.text = `$(hubot) ${m[idx]?.name || 'AI'}`;
-        // 面板标题跟随配置动态更新
-        chatProvider.updatePanelTitle(getPanelTitle());
       }
     })
   );
@@ -125,6 +123,35 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
+  // 注册命令：Ctrl+Shift+P 搜索 "AI: 打开设置"
+  context.subscriptions.push(
+    vscode.commands.registerCommand('my-ai-plugin.openSettings', () => {
+      vscode.commands.executeCommand('workbench.action.openSettings', 'myAiPlugin');
+      info('用户触发：打开插件设置');
+    })
+  );
+
+  // 注册命令：Ctrl+Shift+P 搜索 "AI: 编辑模型配置 (JSON)"
+  context.subscriptions.push(
+    vscode.commands.registerCommand('my-ai-plugin.editModels', async () => {
+      // 打开用户级 settings.json 并定位到 myAiPlugin.models
+      await vscode.commands.executeCommand('workbench.action.openSettingsJson');
+      // 给用户提示如何添加模型
+      const hasModels = getAllModels().some(m => m.apiKey && m.apiKey !== '');
+      if (!hasModels) {
+        vscode.window.showInformationMessage(
+          '请在 settings.json 中添加 "myAiPlugin.models" 配置，包含 name、modelId、baseUrl、apiKey 四个字段',
+          '查看示例'
+        ).then(choice => {
+          if (choice === '查看示例') {
+            vscode.env.openExternal(vscode.Uri.parse('https://api.deepseek.com'));
+          }
+        });
+      }
+      info('用户触发：编辑模型配置 JSON');
+    })
+  );
+
   info('所有命令注册完成');
 }
 
@@ -133,6 +160,6 @@ export function activate(context: vscode.ExtensionContext): void {
  * 负责清理资源
  */
 export function deactivate(): void {
-  info('AI 编程助手插件已停用');
+  info('AI 助理插件已停用');
   disposeLogger();
 }

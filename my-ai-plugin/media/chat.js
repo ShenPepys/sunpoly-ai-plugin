@@ -15,6 +15,8 @@
   // VS Code Webview API（由 VS Code 注入）
   // @ts-ignore
   const vscode = acquireVsCodeApi();
+  // 暴露到 window，供 chat_b_steps.js 等外部模块惰性读取
+  window.vscodeApi = vscode;
 
   // ==================== DOM 元素引用 ====================
   const messagesContainer = document.getElementById('messages');
@@ -49,6 +51,7 @@
   // ==================== 流式消息缓冲 ====================
   /** 存储流式传输中的消息 ID 对应的原始文本，渲染完成后删除 */
   const streamBuffers = {};
+  var scheduledScrollFrame = 0;
 
   // ==================== 事件绑定 ====================
 
@@ -488,6 +491,27 @@
       case 'updateMode':
         updateModeUI(message.mode);
         break;
+
+      // ---- Windsurf 风格步骤消息 ----
+      case 'addStep':
+        if (window.chatSteps) { window.chatSteps.addStep(message); }
+        break;
+
+      case 'updateStep':
+        if (window.chatSteps) { window.chatSteps.updateStep(message); }
+        break;
+
+      case 'showDiff':
+        if (window.chatSteps) { window.chatSteps.showDiff(message); }
+        break;
+
+      case 'showChangeSummary':
+        if (window.chatSteps) { window.chatSteps.showChangeSummary(message); }
+        break;
+
+      case 'thinkingComplete':
+        if (window.chatSteps) { window.chatSteps.showThinkingComplete(message); }
+        break;
     }
   });
 
@@ -547,6 +571,7 @@
     if (streamBuffers[messageId] !== undefined) {
       streamBuffers[messageId] = content;
     }
+    scrollToBottom();
   }
 
   /**
@@ -737,8 +762,35 @@
             '<span class="dots"><span></span><span></span><span></span></span>' +
           '</div>';
       }
+      // 添加状态指示条（如果还没有的话）
+      showStreamStatus(messageEl, 'AI 正在思考...');
     }
     scrollToBottom();
+  }
+
+  /**
+   * 在消息气泡底部显示状态指示条（spinner + 文字）
+   * 放在 .message-content 内、.message-body 的兄弟节点，不受 Markdown 重渲影响
+   */
+  function showStreamStatus(messageEl, text) {
+    var contentEl = messageEl.querySelector('.message-content');
+    if (!contentEl) { return; }
+    // 避免重复创建：先移除已有的
+    var existing = contentEl.querySelector('.stream-status');
+    if (existing) { existing.remove(); }
+    var statusEl = document.createElement('div');
+    statusEl.className = 'stream-status';
+    statusEl.innerHTML = '<div class="stream-status-spinner"></div><span>' + text + '</span>';
+    contentEl.appendChild(statusEl);
+  }
+
+  /**
+   * 移除消息气泡底部的状态指示条
+   */
+  function removeStreamStatus(messageEl) {
+    if (!messageEl) { return; }
+    var statusEl = messageEl.querySelector('.stream-status');
+    if (statusEl) { statusEl.remove(); }
   }
 
   /** 流式渲染节流定时器 */
@@ -749,14 +801,22 @@
    * 节流渲染：每 50ms 最多渲染一次，减少 DOM 更新频率
    */
   function handleStreamChunk(messageId, chunk) {
-    // 初始化缓冲区
-    if (!streamBuffers[messageId]) {
+    // 用 hasOwnProperty 判断是否已初始化（避免空字符串 falsy 导致重复初始化）
+    if (!streamBuffers.hasOwnProperty(messageId)) {
       streamBuffers[messageId] = '';
 
       // 创建消息容器（如果不存在）
       var messageEl = messagesContainer.querySelector('[data-message-id="' + messageId + '"]');
       if (!messageEl) {
         addMessageToUI('assistant', '', messageId);
+        messageEl = messagesContainer.querySelector('[data-message-id="' + messageId + '"]');
+      }
+      if (messageEl) {
+        // 添加 streaming class，触发 CSS 闪烁光标
+        var bodyEl = messageEl.querySelector('.message-body');
+        if (bodyEl) { bodyEl.classList.add('streaming'); }
+        // 添加状态指示条（spinner + “AI 正在生成...”）
+        showStreamStatus(messageEl, 'AI 正在生成...');
       }
     }
 
@@ -770,8 +830,6 @@
         renderStreamContent(messageId);
       }, 50);
     }
-
-    scrollToBottom();
   }
 
   /**
@@ -797,6 +855,7 @@
         bodyEl.innerHTML = window.chatRender.renderMarkdown(renderText);
       }
     }
+    scrollToBottom();
   }
 
   /**
@@ -810,17 +869,26 @@
     }
 
     // 做一次最终渲染，确保 Markdown 完整
-    if (streamBuffers[messageId]) {
+    var finalContent = streamBuffers[messageId];
+    if (finalContent !== undefined) {
       const messageEl = messagesContainer.querySelector('[data-message-id="' + messageId + '"]');
       if (messageEl) {
         const bodyEl = messageEl.querySelector('.message-body');
         if (bodyEl) {
-          bodyEl.innerHTML = window.chatRender.renderMarkdown(streamBuffers[messageId]);
-          // 为代码块绑定按钮事件
-          bindCodeBlockButtons(bodyEl);
+          // 移除 streaming class，闪烁光标消失
+          bodyEl.classList.remove('streaming');
+          if (finalContent) {
+            bodyEl.innerHTML = window.chatRender.renderMarkdown(finalContent);
+            // 为代码块绑定按钮事件
+            bindCodeBlockButtons(bodyEl);
+          }
         }
+        // 移除状态指示条
+        removeStreamStatus(messageEl);
       }
     }
+
+    scrollToBottom();
 
     // 清除缓冲
     delete streamBuffers[messageId];
@@ -832,6 +900,14 @@
 
   /** 显示错误消息（带重试按钮） */
   function showError(errorMessage) {
+    // 清理所有残留的流式指示器（出错时 streamDone 可能未被调用）
+    messagesContainer.querySelectorAll('.message-body.streaming').forEach(function (el) {
+      el.classList.remove('streaming');
+    });
+    messagesContainer.querySelectorAll('.stream-status').forEach(function (el) {
+      el.remove();
+    });
+
     var errorEl = document.createElement('div');
     errorEl.className = 'message assistant error-message';
     errorEl.innerHTML =
@@ -874,9 +950,21 @@
 
   /** 清空聊天界面，恢复欢迎页 */
   function clearChat() {
+    if (scheduledScrollFrame) {
+      cancelAnimationFrame(scheduledScrollFrame);
+      scheduledScrollFrame = 0;
+    }
+    Object.keys(streamRenderTimers).forEach(function (messageId) {
+      clearTimeout(streamRenderTimers[messageId]);
+      delete streamRenderTimers[messageId];
+    });
+    Object.keys(streamBuffers).forEach(function (messageId) {
+      delete streamBuffers[messageId];
+    });
+    setLoading(false);
     messagesContainer.innerHTML =
       '<div class="welcome-message">' +
-        '<p><strong>👋 你好！我是 AI 编程助手</strong></p>' +
+        '<p><strong>👋 你好！我是 AI 助理</strong></p>' +
         '<div class="welcome-section">' +
           '<p class="welcome-subtitle">快捷键</p>' +
           '<div class="welcome-shortcuts">' +
@@ -908,10 +996,20 @@
   });
 
   /** 滚动到底部（仅在自动滚动启用时执行） */
-  function scrollToBottom() {
-    if (autoScrollEnabled) {
-      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  function scrollToBottom(force) {
+    if (!force && !autoScrollEnabled) {
+      return;
     }
+    if (scheduledScrollFrame) {
+      cancelAnimationFrame(scheduledScrollFrame);
+    }
+    scheduledScrollFrame = requestAnimationFrame(function () {
+      scheduledScrollFrame = 0;
+      if (!force && !autoScrollEnabled) {
+        return;
+      }
+      messagesContainer.scrollTop = Math.max(0, messagesContainer.scrollHeight - messagesContainer.clientHeight);
+    });
   }
 
   // ==================== Token 计数 ====================

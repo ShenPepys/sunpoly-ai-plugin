@@ -15,7 +15,8 @@ import { buildSystemPrompt } from '../prompts/system';
 import { getEditorContext } from '../utils/editor';
 import { getEnvContext, detectProjectType, getGitStatus } from '../utils/context';
 import type { ExtensionMessage, WebviewMessage, WorkMode } from './messageTypes';
-import { parseToolCalls, hasToolCalls, stripToolCalls, executeToolCalls, formatToolResults } from '../tools';
+import { parseToolCalls, hasToolCalls, stripToolCalls, executeToolCalls, formatToolResults, readFile } from '../tools';
+import type { ToolExecutionResult, ParsedToolCall, ToolCallType } from '../tools';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Provider 的注册 ID，必须与 package.json 中 views.id 一致 */
@@ -35,6 +36,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /** 当前流式请求的中断函数（null 表示没有进行中的请求） */
   private abortStream: AbortStreamFn | null = null;
+
+  /** 待用户确认的文件变更（stepId → resolve 函数），Accept/Reject 时触发 */
+  private pendingConfirms: Map<string, (accepted: boolean) => void> = new Map();
+
+  private activeRunId: string | null = null;
+
+  private stepSequence = 0;
 
   /** 模型切换回调，外部设置后在切换模型时触发 */
   public onModelSwitch?: (modelName: string) => void;
@@ -58,15 +66,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * 动态更新面板标题（用户修改 panelTitle 配置时调用）
-   */
-  public updatePanelTitle(title: string): void {
-    if (this.webviewView) {
-      this.webviewView.title = title;
-    }
-  }
-
-  /**
    * VS Code 在侧边栏面板首次可见时调用此方法
    * 负责初始化 Webview 的 HTML 内容和消息监听
    */
@@ -76,9 +75,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     _token: vscode.CancellationToken,
   ): void {
     this.webviewView = webviewView;
-
-    // 设置可配置的面板标题（用户可在设置中自定义为企业名称）
-    webviewView.title = getPanelTitle();
 
     // 配置 Webview 权限
     webviewView.webview.options = {
@@ -160,8 +156,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       case 'clearChat':
         info('用户清空对话');
+        if (this.abortStream) {
+          this.abortStream();
+          this.abortStream = null;
+        }
+        this.activeRunId = null;
+        this.stepSequence = 0;
         this.clearHistory();
         this.contextFiles = [];
+        for (const resolve of this.pendingConfirms.values()) { resolve(false); }
+        this.pendingConfirms.clear();
+        this.postMessage({ type: 'setLoading', loading: false });
         this.postMessage({ type: 'clearChat' });
         this.postMessage({ type: 'clearContextFiles' });
         break;
@@ -219,19 +224,48 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'stopGeneration':
+        this.activeRunId = null;
+        this.stepSequence = 0;
         if (this.abortStream) {
           info('用户主动停止生成');
           this.abortStream();
           this.abortStream = null;
-          // 通知 Webview 完成流式渲染，保留已接收的部分内容
-          this.postMessage({ type: 'generationStopped' });
         }
+        if (this.pendingConfirms.size > 0) {
+          info(`停止生成：清理 ${this.pendingConfirms.size} 个待确认变更`);
+          for (const resolve of this.pendingConfirms.values()) {
+            resolve(false);
+          }
+          this.pendingConfirms.clear();
+        }
+        this.postMessage({ type: 'generationStopped' });
+        this.postMessage({ type: 'setLoading', loading: false });
         break;
 
       case 'executeCommand':
         info(`Slash 命令执行: ${message.command}`);
         vscode.commands.executeCommand(message.command);
         break;
+
+      case 'acceptChange': {
+        const resolve = this.pendingConfirms.get(message.stepId);
+        if (resolve) {
+          info(`用户接受文件变更: ${message.stepId}`);
+          this.pendingConfirms.delete(message.stepId);
+          resolve(true);
+        }
+        break;
+      }
+
+      case 'rejectChange': {
+        const resolve = this.pendingConfirms.get(message.stepId);
+        if (resolve) {
+          info(`用户拒绝文件变更: ${message.stepId}`);
+          this.pendingConfirms.delete(message.stepId);
+          resolve(false);
+        }
+        break;
+      }
 
       default:
         error('未知的 Webview 消息类型:', message);
@@ -341,12 +375,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // 发起流式请求，保存 abort 句柄用于停止生成
     const assistantMsgId = `assistant-${Date.now()}`;
+    const streamStartTime = Date.now();
+    this.activeRunId = assistantMsgId;
+    this.stepSequence = 0;
 
     this.abortStream = sendStreamRequest(
       apiConfig,
       messages,
       // onChunk：逐字推送到 Webview
       (chunk) => {
+        if (this.activeRunId !== assistantMsgId) {
+          return;
+        }
         this.postMessage({
           type: 'streamChunk',
           chunk,
@@ -355,11 +395,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       },
       // onDone：流式传输完成，检测并执行工具调用
       (fullContent) => {
+        if (this.activeRunId !== assistantMsgId) {
+          return;
+        }
         this.abortStream = null;
+        const thinkingElapsed = Date.now() - streamStartTime;
+
         // 将 AI 回复加入对话历史并持久化
         this.chatHistory.push({ role: 'assistant', content: fullContent });
         this.saveChatHistory();
-        info(`AI 回复完成，长度: ${fullContent.length}`);
+        info(`AI 回复完成，长度: ${fullContent.length}，耗时: ${thinkingElapsed}ms`);
 
         if (hasToolCalls(fullContent)) {
           // 剥离 tool_call 标签后更新界面显示（用户看不到原始 XML）
@@ -370,15 +415,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             content: cleanContent,
           });
           this.postMessage({ type: 'streamDone', messageId: assistantMsgId });
-          // 静默执行工具调用，结果传给 AI 续轮（复用同一个气泡 ID）
+          if (thinkingElapsed > 1000) {
+            this.postMessage({ type: 'thinkingComplete', messageId: assistantMsgId, elapsed: thinkingElapsed });
+          }
+          this.postMessage({ type: 'setLoading', loading: true });
           this.handleToolCalls(fullContent, apiConfig, assistantMsgId);
         } else {
           this.postMessage({ type: 'streamDone', messageId: assistantMsgId });
+          if (thinkingElapsed > 1000) {
+            this.postMessage({ type: 'thinkingComplete', messageId: assistantMsgId, elapsed: thinkingElapsed });
+          }
+          this.activeRunId = null;
+          this.stepSequence = 0;
         }
       },
       // onError：出错处理
       (errorMessage) => {
+        if (this.activeRunId !== assistantMsgId) {
+          return;
+        }
         this.abortStream = null;
+        this.activeRunId = null;
+        this.stepSequence = 0;
         this.postMessage({ type: 'setLoading', loading: false });
         this.postMessage({
           type: 'showError',
@@ -405,13 +463,104 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    info(`检测到 ${toolCalls.length} 个工具调用，静默执行...`);
+    if (this.activeRunId !== reuseMsgId) {
+      return;
+    }
 
-    // 在原气泡中显示 Thinking 动画
-    this.postMessage({ type: 'showThinking', messageId: reuseMsgId });
+    info(`检测到 ${toolCalls.length} 个工具调用，逐步执行...`);
 
-    // 静默执行工具调用
-    const results = await executeToolCalls(toolCalls, this.currentMode);
+    // Windsurf 风格：逐步执行每个工具调用，发送结构化步骤消息
+    const results: ToolExecutionResult[] = [];
+    const changeSummaryFiles: Array<{ path: string; additions: number; deletions: number; status: 'created' | 'modified' | 'read' | 'listed' }> = [];
+
+    for (let i = 0; i < toolCalls.length; i++) {
+      if (this.activeRunId !== reuseMsgId) {
+        return;
+      }
+      const tc = toolCalls[i];
+      const stepId = `step-${reuseMsgId}-${this.stepSequence++}`;
+      const stepDesc = this.getToolStepDescription(tc);
+      const stepIcon = this.getToolStepIcon(tc.type);
+
+      // 发送步骤开始（前端显示 spinner）
+      this.postMessage({ type: 'addStep', messageId: reuseMsgId, stepId, icon: stepIcon, description: stepDesc, status: 'running' });
+
+      const startTime = Date.now();
+
+      const isWriteOp = tc.type === 'write_file' || tc.type === 'edit_file';
+
+      // 对于写入/编辑操作：先读取旧内容、展示 diff、等待用户确认
+      if (isWriteOp) {
+        let oldFileContent = '';
+        try {
+          const readResult = await readFile(tc.path);
+          if (readResult.success) { oldFileContent = readResult.content; }
+        } catch { /* 新文件，无旧内容 */ }
+
+        const newContent = tc.type === 'write_file'
+          ? (tc.content || '')
+          : (oldFileContent.replace(tc.oldContent || '', tc.newContent || ''));
+        const { additions, deletions } = this.calculateDiffStats(oldFileContent, newContent);
+        const lang = this.detectLanguage(tc.path);
+
+        // 展示 diff 并等待用户确认
+        this.postMessage({
+          type: 'showDiff', messageId: reuseMsgId, stepId, filePath: tc.path,
+          language: lang, additions, deletions, oldContent: oldFileContent, newContent, needsConfirm: true,
+        });
+
+        // 异步等待用户点击 Accept 或 Reject
+        const accepted = await new Promise<boolean>((resolve) => {
+          this.pendingConfirms.set(stepId, resolve);
+        });
+
+        if (this.activeRunId !== reuseMsgId) {
+          return;
+        }
+
+        const elapsed = Date.now() - startTime;
+
+        if (accepted) {
+          // 用户接受：执行文件操作
+          const result = await executeToolCalls([tc], this.currentMode);
+          const singleResult = result[0];
+          results.push(singleResult);
+          const status = singleResult.result.success ? 'done' : 'error';
+          this.postMessage({ type: 'updateStep', stepId, status, elapsed });
+          changeSummaryFiles.push({
+            path: tc.path, additions, deletions,
+            status: oldFileContent ? 'modified' : 'created',
+          });
+        } else {
+          // 用户拒绝：跳过该操作，记录为失败结果
+          results.push({ toolCall: tc, result: { success: false, content: '用户拒绝了此文件变更' } });
+          this.postMessage({ type: 'updateStep', stepId, status: 'error', elapsed, description: `${stepDesc} (已拒绝)` });
+        }
+      } else {
+        // 读取/列出目录：直接执行，无需确认
+        const result = await executeToolCalls([tc], this.currentMode);
+        const singleResult = result[0];
+        results.push(singleResult);
+        const elapsed = Date.now() - startTime;
+        const status = singleResult.result.success ? 'done' : 'error';
+        this.postMessage({ type: 'updateStep', stepId, status, elapsed });
+
+        if (tc.type === 'read_file' && singleResult.result.success) {
+          changeSummaryFiles.push({ path: tc.path, additions: 0, deletions: 0, status: 'read' });
+        } else if (tc.type === 'list_dir' && singleResult.result.success) {
+          changeSummaryFiles.push({ path: tc.path, additions: 0, deletions: 0, status: 'listed' });
+        }
+      }
+    }
+
+    if (this.activeRunId !== reuseMsgId) {
+      return;
+    }
+
+    if (changeSummaryFiles.length > 0) {
+      this.postMessage({ type: 'showChangeSummary', messageId: reuseMsgId, files: changeSummaryFiles });
+    }
+
     const resultText = formatToolResults(results);
 
     // 将工具结果作为系统级上下文追加，告诉 AI 直接基于结果回答
@@ -433,38 +582,305 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       ...this.trimChatHistory(this.chatHistory),
     ];
 
+    let isFirstChunk = true;
     this.abortStream = sendStreamRequest(
       apiConfig,
       followUpMessages,
-      // onChunk：只收集，不更新界面（避免抖动）
-      () => {},
-      // onDone：收集完成后一次性替换气泡内容
+      (chunk) => {
+        if (this.activeRunId !== reuseMsgId) {
+          return;
+        }
+        if (isFirstChunk) {
+          isFirstChunk = false;
+          this.postMessage({ type: 'streamChunk', chunk: '', messageId: reuseMsgId });
+        }
+        this.postMessage({ type: 'streamChunk', chunk, messageId: reuseMsgId });
+      },
       (fullContent) => {
+        if (this.activeRunId !== reuseMsgId) {
+          return;
+        }
         this.abortStream = null;
         this.chatHistory.push({ role: 'assistant', content: fullContent });
         this.saveChatHistory();
         info(`续轮回复完成，长度: ${fullContent.length}`);
 
         if (hasToolCalls(fullContent)) {
-          // 续轮回复还有工具调用：剥离标签显示，再递归
+          this.postMessage({ type: 'streamDone', messageId: reuseMsgId });
           const cleanContent = stripToolCalls(fullContent);
           this.postMessage({ type: 'updateMessage', messageId: reuseMsgId, content: cleanContent });
+          this.postMessage({ type: 'setLoading', loading: true });
           if (this.chatHistory.length < 30) {
             this.handleToolCalls(fullContent, apiConfig, reuseMsgId);
+          } else {
+            this.activeRunId = null;
+            this.stepSequence = 0;
           }
         } else {
-          // 一次性替换为最终内容
-          this.postMessage({ type: 'updateMessage', messageId: reuseMsgId, content: fullContent });
+          this.postMessage({ type: 'streamDone', messageId: reuseMsgId });
+          this.activeRunId = null;
+          this.stepSequence = 0;
         }
       },
       (errorMessage) => {
+        if (this.activeRunId !== reuseMsgId) {
+          return;
+        }
         this.abortStream = null;
-        // 出错时也要替换 Thinking，显示错误信息
+        this.activeRunId = null;
+        this.stepSequence = 0;
+        this.postMessage({ type: 'streamDone', messageId: reuseMsgId });
         this.postMessage({ type: 'updateMessage', messageId: reuseMsgId, content: '⚠️ 工具执行出错，请重试。' });
         this.postMessage({ type: 'showError', message: errorMessage });
         error('续轮 AI 调用失败:', errorMessage);
       },
     );
+  }
+
+  /**
+   * 生成工具步骤的描述文字（Windsurf 风格，如 "Reading login.html"）
+   */
+  private getToolStepDescription(tc: ParsedToolCall): string {
+    const fileName = tc.path.split(/[/\\]/).pop() || tc.path;
+    switch (tc.type) {
+      case 'read_file': return `Reading ${fileName}`;
+      case 'write_file': return `Creating ${fileName}`;
+      case 'edit_file': return `Editing ${fileName}`;
+      case 'list_dir': return `Listing ${fileName}`;
+      default: return `Processing ${fileName}`;
+    }
+  }
+
+  /**
+   * 工具类型对应的图标 emoji
+   */
+  private getToolStepIcon(type: ToolCallType): string {
+    switch (type) {
+      case 'read_file': return '📖';
+      case 'write_file': return '📝';
+      case 'edit_file': return '✏️';
+      case 'list_dir': return '📁';
+      default: return '📄';
+    }
+  }
+
+  /**
+   * 根据文件扩展名推断语言（用于 diff 语法高亮标签）
+   */
+  private detectLanguage(filePath: string): string {
+    const ext = (filePath.split('.').pop() || '').toLowerCase();
+    const langMap: Record<string, string> = {
+      ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript',
+      py: 'python', java: 'java', cs: 'csharp', go: 'go', rs: 'rust',
+      html: 'html', css: 'css', scss: 'scss', less: 'less',
+      json: 'json', yaml: 'yaml', yml: 'yaml', xml: 'xml',
+      md: 'markdown', sh: 'bash', bat: 'batch', ps1: 'powershell',
+      sql: 'sql', vue: 'vue', svelte: 'svelte', php: 'php', rb: 'ruby',
+    };
+    return langMap[ext] || ext || 'text';
+  }
+
+  private calculateDiffStats(oldContent: string, newContent: string): { additions: number; deletions: number } {
+    const oldLines = this.splitContentToLines(oldContent);
+    const newLines = this.splitContentToLines(newContent);
+    const operations = this.buildDiffOperationTypes(oldLines, newLines);
+
+    let additions = 0;
+    let deletions = 0;
+
+    for (const operation of operations) {
+      if (operation === 'add') {
+        additions += 1;
+      } else if (operation === 'del') {
+        deletions += 1;
+      }
+    }
+
+    return { additions, deletions };
+  }
+
+  private splitContentToLines(content: string): string[] {
+    if (!content) {
+      return [];
+    }
+
+    let normalized = content.replace(/\r\n/g, '\n');
+    if (normalized.endsWith('\n')) {
+      normalized = normalized.slice(0, -1);
+    }
+
+    if (!normalized) {
+      return [];
+    }
+
+    return normalized.split('\n');
+  }
+
+  private buildDiffOperationTypes(oldLines: string[], newLines: string[]): Array<'context' | 'add' | 'del'> {
+    let prefixLength = 0;
+    while (
+      prefixLength < oldLines.length &&
+      prefixLength < newLines.length &&
+      oldLines[prefixLength] === newLines[prefixLength]
+    ) {
+      prefixLength += 1;
+    }
+
+    let oldSuffixIndex = oldLines.length - 1;
+    let newSuffixIndex = newLines.length - 1;
+    while (
+      oldSuffixIndex >= prefixLength &&
+      newSuffixIndex >= prefixLength &&
+      oldLines[oldSuffixIndex] === newLines[newSuffixIndex]
+    ) {
+      oldSuffixIndex -= 1;
+      newSuffixIndex -= 1;
+    }
+
+    const operations: Array<'context' | 'add' | 'del'> = [];
+
+    for (let index = 0; index < prefixLength; index += 1) {
+      operations.push('context');
+    }
+
+    const middleOldLines = oldLines.slice(prefixLength, oldSuffixIndex + 1);
+    const middleNewLines = newLines.slice(prefixLength, newSuffixIndex + 1);
+    operations.push(...this.buildMiddleDiffOperationTypes(middleOldLines, middleNewLines));
+
+    const suffixLength = oldLines.length - (oldSuffixIndex + 1);
+    for (let index = 0; index < suffixLength; index += 1) {
+      operations.push('context');
+    }
+
+    return operations;
+  }
+
+  private buildMiddleDiffOperationTypes(oldLines: string[], newLines: string[]): Array<'context' | 'add' | 'del'> {
+    if (oldLines.length === 0) {
+      return newLines.map(() => 'add');
+    }
+
+    if (newLines.length === 0) {
+      return oldLines.map(() => 'del');
+    }
+
+    if (oldLines.length * newLines.length <= 120000) {
+      return this.buildMiddleDiffOperationTypesByLcs(oldLines, newLines);
+    }
+
+    return this.buildMiddleDiffOperationTypesByLookahead(oldLines, newLines);
+  }
+
+  private buildMiddleDiffOperationTypesByLcs(oldLines: string[], newLines: string[]): Array<'context' | 'add' | 'del'> {
+    const rowCount = oldLines.length;
+    const columnCount = newLines.length;
+    const lcsTable: number[][] = [];
+
+    for (let row = 0; row <= rowCount; row += 1) {
+      lcsTable.push(new Array(columnCount + 1).fill(0));
+    }
+
+    for (let row = rowCount - 1; row >= 0; row -= 1) {
+      for (let column = columnCount - 1; column >= 0; column -= 1) {
+        if (oldLines[row] === newLines[column]) {
+          lcsTable[row][column] = lcsTable[row + 1][column + 1] + 1;
+        } else {
+          lcsTable[row][column] = Math.max(lcsTable[row + 1][column], lcsTable[row][column + 1]);
+        }
+      }
+    }
+
+    const operations: Array<'context' | 'add' | 'del'> = [];
+    let oldIndex = 0;
+    let newIndex = 0;
+
+    while (oldIndex < rowCount && newIndex < columnCount) {
+      if (oldLines[oldIndex] === newLines[newIndex]) {
+        operations.push('context');
+        oldIndex += 1;
+        newIndex += 1;
+      } else if (lcsTable[oldIndex + 1][newIndex] >= lcsTable[oldIndex][newIndex + 1]) {
+        operations.push('del');
+        oldIndex += 1;
+      } else {
+        operations.push('add');
+        newIndex += 1;
+      }
+    }
+
+    while (oldIndex < rowCount) {
+      operations.push('del');
+      oldIndex += 1;
+    }
+
+    while (newIndex < columnCount) {
+      operations.push('add');
+      newIndex += 1;
+    }
+
+    return operations;
+  }
+
+  private buildMiddleDiffOperationTypesByLookahead(oldLines: string[], newLines: string[]): Array<'context' | 'add' | 'del'> {
+    const operations: Array<'context' | 'add' | 'del'> = [];
+    let oldIndex = 0;
+    let newIndex = 0;
+    const lookaheadSize = 20;
+
+    while (oldIndex < oldLines.length && newIndex < newLines.length) {
+      if (oldLines[oldIndex] === newLines[newIndex]) {
+        operations.push('context');
+        oldIndex += 1;
+        newIndex += 1;
+        continue;
+      }
+
+      const nextNewMatch = this.findNextMatchingLine(newLines, newIndex + 1, oldLines[oldIndex], lookaheadSize);
+      const nextOldMatch = this.findNextMatchingLine(oldLines, oldIndex + 1, newLines[newIndex], lookaheadSize);
+
+      if (nextNewMatch !== -1 && (nextOldMatch === -1 || nextNewMatch - newIndex <= nextOldMatch - oldIndex)) {
+        while (newIndex < nextNewMatch) {
+          operations.push('add');
+          newIndex += 1;
+        }
+        continue;
+      }
+
+      if (nextOldMatch !== -1) {
+        while (oldIndex < nextOldMatch) {
+          operations.push('del');
+          oldIndex += 1;
+        }
+        continue;
+      }
+
+      operations.push('del');
+      operations.push('add');
+      oldIndex += 1;
+      newIndex += 1;
+    }
+
+    while (oldIndex < oldLines.length) {
+      operations.push('del');
+      oldIndex += 1;
+    }
+
+    while (newIndex < newLines.length) {
+      operations.push('add');
+      newIndex += 1;
+    }
+
+    return operations;
+  }
+
+  private findNextMatchingLine(lines: string[], startIndex: number, targetLine: string, lookaheadSize: number): number {
+    const maxIndex = Math.min(lines.length, startIndex + lookaheadSize);
+    for (let index = startIndex; index < maxIndex; index += 1) {
+      if (lines[index] === targetLine) {
+        return index;
+      }
+    }
+    return -1;
   }
 
   /**
@@ -810,6 +1226,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const renderJsUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.extensionUri, 'media', 'chat_a_render.js')
     );
+    const stepsJsUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this.extensionUri, 'media', 'chat_b_steps.js')
+    );
     const jsUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.extensionUri, 'media', 'chat.js')
     );
@@ -968,6 +1387,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   </div>
 
   <script nonce="${nonce}" src="${renderJsUri}"></script>
+  <script nonce="${nonce}" src="${stepsJsUri}"></script>
   <script nonce="${nonce}" src="${jsUri}"></script>
 </body>
 </html>`;

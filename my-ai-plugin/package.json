@@ -1,7 +1,7 @@
 {
   "name": "my-ai-plugin",
-  "displayName": "AI 编程助手",
-  "description": "VS Code AI 编程助手插件，支持代码解释、Bug 修复、代码优化、续写和单测生成",
+  "displayName": "AI 助理",
+  "description": "VS Code AI 助理插件，支持代码解释、Bug 修复、代码优化、续写和单测生成",
   "version": "0.1.0",
   "publisher": "my-ai-plugin",
   "license": "MIT",
@@ -25,7 +25,7 @@
       "activitybar": [
         {
           "id": "my-ai-plugin-sidebar",
-          "title": "AI 编程助手",
+          "title": "AI 助理",
           "icon": "resources/icon.svg"
         }
       ]
@@ -35,7 +35,7 @@
         {
           "type": "webview",
           "id": "my-ai-plugin.chatView",
-          "name": "AI 对话"
+          "name": "AI 助理"
         }
       ]
     },
@@ -75,6 +75,14 @@
       {
         "command": "my-ai-plugin.newChat",
         "title": "AI: 新建对话"
+      },
+      {
+        "command": "my-ai-plugin.openSettings",
+        "title": "AI: 打开设置"
+      },
+      {
+        "command": "my-ai-plugin.editModels",
+        "title": "AI: 编辑模型配置 (JSON)"
       }
     ],
     "menus": {
@@ -126,7 +134,7 @@
       }
     ],
     "configuration": {
-      "title": "AI 编程助手",
+      "title": "AI 助理",
       "properties": {
         "myAiPlugin.models": {
           "type": "array",
@@ -193,7 +201,7 @@
         },
         "myAiPlugin.panelTitle": {
           "type": "string",
-          "default": "AI 编程助手",
+          "default": "AI 助理",
           "description": "侧边栏面板标题，可自定义为企业名称（如 SUERY AI、XXX 智能助手）"
         }
       }
