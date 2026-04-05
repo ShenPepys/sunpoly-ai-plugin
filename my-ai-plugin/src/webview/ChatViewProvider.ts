@@ -945,9 +945,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       <div id="input-toolbar">
         <div class="input-toolbar-left">
           <button id="btn-add-context" class="toolbar-icon-btn" title="添加上下文">+</button>
-          <button id="btn-code-mode" class="toolbar-icon-btn" title="切换工作模式">&lt;&gt; Code</button>
+          <button id="btn-code-mode" class="toolbar-icon-btn" title="切换工作模式">&lt;&gt;<span class="toolbar-text"> Code</span></button>
           <div id="model-selector" class="model-selector">
-            <span id="model-label" class="model-label">DeepSeek Chat</span>
+            <span id="model-label" class="model-label"><span class="toolbar-text">DeepSeek Chat</span></span>
           </div>
         </div>
         <div class="input-toolbar-right">

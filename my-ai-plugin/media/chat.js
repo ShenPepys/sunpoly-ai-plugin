@@ -1079,9 +1079,14 @@
    * @param {number} activeIndex 当前活跃模型序号
    */
   function updateModelDropdown(models, activeIndex) {
-    // 更新工具栏上的模型名称
+    // 更新工具栏上的模型名称（保持 toolbar-text span 结构，窄屏时 CSS 可隐藏文字）
     var activeName = models[activeIndex] ? models[activeIndex].name : 'AI 模型';
-    modelLabel.textContent = activeName;
+    var modelTextSpan = modelLabel.querySelector('.toolbar-text');
+    if (modelTextSpan) {
+      modelTextSpan.textContent = activeName;
+    } else {
+      modelLabel.textContent = activeName;
+    }
 
     // 渲染面板列表
     modelPanelList.innerHTML = '';
@@ -1153,9 +1158,15 @@
    * @param {string} mode 当前模式（code/ask/plan）
    */
   function updateModeUI(mode) {
-    // 更新工具栏按钮文字
+    // 更新工具栏按钮（保持 icon + toolbar-text span 结构，窄屏时 CSS 可隐藏文字）
     var display = modeDisplayMap[mode] || modeDisplayMap.code;
-    btnCodeMode.textContent = display.label;
+    var modeTextPart = display.label.replace(display.icon, '');
+    btnCodeMode.innerHTML = '';
+    btnCodeMode.appendChild(document.createTextNode(display.icon));
+    var modeSpan = document.createElement('span');
+    modeSpan.className = 'toolbar-text';
+    modeSpan.textContent = modeTextPart;
+    btnCodeMode.appendChild(modeSpan);
     btnCodeMode.setAttribute('data-mode', mode);
 
     // 更新面板中的选中状态

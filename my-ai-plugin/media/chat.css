@@ -519,18 +519,24 @@ body {
   align-items: center;
   justify-content: space-between;
   padding-top: 4px;
+  container-type: inline-size;
+  container-name: toolbar;
 }
 
 .input-toolbar-left {
   display: flex;
   align-items: center;
   gap: 2px;
+  min-width: 0;
+  flex-shrink: 1;
+  overflow: hidden;
 }
 
 .input-toolbar-right {
   display: flex;
   align-items: center;
   gap: 4px;
+  flex-shrink: 0;
 }
 
 /* 工具栏图标按钮（通用） */
@@ -557,6 +563,18 @@ body {
   vertical-align: middle;
 }
 
+/* 工具栏文字标签：默认显示，窄屏时由容器查询隐藏 */
+.toolbar-text {
+  white-space: nowrap;
+}
+
+/* 窄屏适配：容器宽度不足时隐藏文字，只显示图标 */
+@container toolbar (max-width: 280px) {
+  .toolbar-text {
+    display: none;
+  }
+}
+
 /* 模型选择器容器 */
 .model-selector {
   position: relative;
@@ -571,6 +589,11 @@ body {
   user-select: none;
   border-radius: 4px;
   transition: color 0.15s, background 0.15s;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 150px;
+  display: inline-block;
 }
 
 .model-label:hover {

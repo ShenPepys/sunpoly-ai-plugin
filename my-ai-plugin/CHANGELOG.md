@@ -32,11 +32,11 @@
 - 流式 Markdown 渲染优化（节流 + 未闭合代码块处理）
 
 ### 快捷键
-- `Ctrl+L` 聚焦聊天输入框
-- `Ctrl+.` 切换工作模式
-- `Ctrl+Shift+N` 新建对话
-- `Ctrl+Shift+E` 解释代码
-- `Ctrl+Shift+F` 修复代码
+- `Alt+Q` 聚焦聊天输入框
+- `Alt+M` 切换工作模式
+- `Alt+N` 新建对话
+- `Alt+E` 解释代码
+- `Alt+F` 修复代码
 - `Escape` 停止生成
 
 ### 智能特性
@@ -55,8 +55,3 @@
 - **输入框字符计数**：实时显示输入字符数，超过 5000 字符时变色警告
 - **拖拽文件到聊天**：从资源管理器拖拽文件到输入区域，自动添加为上下文，拖拽时高亮提示
 - **聊天内搜索**：`Ctrl+F` 打开搜索栏，支持实时高亮匹配、上下导航（Enter/Shift+Enter）、Escape 关闭
-- **VSIX 打包准备**：添加 `icon`/`license`/`repository` 字段，完善 `.vscodeignore` 排除规则
-
-### 工程优化
-- **文件拆分**：`chat.js`（1161 行）拆分出 `chat_a_render.js`（282 行）渲染模块，通过 `window.chatRender` 暴露
-- **代理配置**：新增 `myAiPlugin.proxy` 配置项，支持 `.env` 文件中的 `PROXY` 变量
