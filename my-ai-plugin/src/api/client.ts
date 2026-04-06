@@ -119,6 +119,14 @@ export function sendStreamRequest(
 
   let fullContent = '';
   let aborted = false;
+  let done = false;
+
+  /** 确保 onDone 只被调用一次 */
+  function callOnDone(): void {
+    if (done) { return; }
+    done = true;
+    onDone(fullContent);
+  }
 
   /**
    * 实际发起请求的函数（支持通过代理隧道的 socket）
@@ -166,7 +174,7 @@ export function sendStreamRequest(
           logError('流式响应空闲超时（60 秒无数据）');
           req.destroy();
           if (fullContent) {
-            onDone(fullContent);
+            callOnDone();
           } else {
             onError('AI 响应超时（60 秒无数据），请重试');
           }
@@ -201,8 +209,9 @@ export function sendStreamRequest(
 
         // 流结束标志
         if (data === '[DONE]') {
+          if (idleTimer) { clearTimeout(idleTimer); }
           info(`流式响应完成，总内容长度: ${fullContent.length}`);
-          onDone(fullContent);
+          callOnDone();
           return;
         }
 
@@ -242,7 +251,7 @@ export function sendStreamRequest(
 
       // 确保 onDone 被调用（防止 [DONE] 标志丢失的情况）
       if (fullContent) {
-        onDone(fullContent);
+        callOnDone();
       }
     });
 
@@ -300,7 +309,7 @@ export function sendStreamRequest(
       info('流式请求已主动中断');
       // 中断时把已收到的内容作为最终结果
       if (fullContent) {
-        onDone(fullContent);
+        callOnDone();
       }
     }
   };

@@ -35,12 +35,22 @@ function resolveAndValidatePath(targetPath: string): string | undefined {
   }
 
   // 将相对路径转为绝对路径（基于工作区根目录）
-  const absolutePath = path.isAbsolute(targetPath)
-    ? path.normalize(targetPath)
-    : path.normalize(path.join(workspaceRoot, targetPath));
+  const absolutePath = path.resolve(workspaceRoot, targetPath);
+  const normalizedWorkspaceRoot = path.resolve(workspaceRoot);
+  const compareAbsolutePath = process.platform === 'win32'
+    ? absolutePath.toLowerCase()
+    : absolutePath;
+  const compareWorkspaceRoot = process.platform === 'win32'
+    ? normalizedWorkspaceRoot.toLowerCase()
+    : normalizedWorkspaceRoot;
+  const workspacePrefix = compareWorkspaceRoot.endsWith(path.sep)
+    ? compareWorkspaceRoot
+    : compareWorkspaceRoot + path.sep;
 
   // 安全检查：必须在工作区目录内
-  if (!absolutePath.startsWith(workspaceRoot)) {
+  const isSameDirectory = compareAbsolutePath === compareWorkspaceRoot;
+  const isChildDirectory = compareAbsolutePath.startsWith(workspacePrefix);
+  if (!isSameDirectory && !isChildDirectory) {
     error(`文件路径越权: ${absolutePath} 不在工作区 ${workspaceRoot} 内`);
     return undefined;
   }

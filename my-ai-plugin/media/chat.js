@@ -315,10 +315,15 @@
       return;
     }
 
-    // 正常 Enter 发送消息
+    // Enter：生成中时执行停止，否则发送消息
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      sendMessage();
+      if (isGenerating) {
+        vscode.postMessage({ type: 'stopGeneration' });
+        setLoading(false);
+      } else {
+        sendMessage();
+      }
     }
   });
 
@@ -392,6 +397,12 @@
 
   /** 发送用户消息到 Extension */
   function sendMessage() {
+    if (isGenerating) {
+      vscode.postMessage({ type: 'stopGeneration' });
+      setLoading(false);
+      return;
+    }
+
     const text = userInput.value.trim();
     if (!text) {
       return;
@@ -485,6 +496,16 @@
         Object.keys(streamBuffers).forEach(function (msgId) {
           handleStreamDone(msgId);
         });
+        if (window.chatSteps) {
+          // 取消所有待确认的批量变更栏
+          if (window.chatSteps.cancelPendingChangeSummaries) {
+            window.chatSteps.cancelPendingChangeSummaries();
+          }
+          // 兜底：将所有仍在转圈的步骤标记为已取消
+          if (window.chatSteps.cancelAllRunningSteps) {
+            window.chatSteps.cancelAllRunningSteps();
+          }
+        }
         setLoading(false);
         break;
 
@@ -507,6 +528,12 @@
 
       case 'showChangeSummary':
         if (window.chatSteps) { window.chatSteps.showChangeSummary(message); }
+        break;
+
+      case 'updateChangeSummary':
+        if (window.chatSteps && window.chatSteps.updateChangeSummary) {
+          window.chatSteps.updateChangeSummary(message);
+        }
         break;
 
       case 'thinkingComplete':

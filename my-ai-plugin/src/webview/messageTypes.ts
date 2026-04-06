@@ -110,7 +110,9 @@ export type WebviewMessage =
   | StopGenerationRequest
   | ExecuteCommandRequest
   | AcceptChangeRequest
-  | RejectChangeRequest;
+  | RejectChangeRequest
+  | AcceptAllChangesRequest
+  | RejectAllChangesRequest;
 
 // ==================== Extension → Webview ====================
 
@@ -248,36 +250,43 @@ export interface UpdateStepResponse {
 /** 在步骤中展示代码 diff（文件写入/编辑操作完成后发送） */
 export interface ShowDiffResponse {
   type: 'showDiff';
-  /** 所属消息 ID */
   messageId: string;
-  /** 关联的步骤 ID */
   stepId: string;
-  /** 文件路径 */
+  summaryId?: string;
   filePath: string;
-  /** 语言（用于语法高亮） */
   language: string;
-  /** 新增行数 */
   additions: number;
-  /** 删除行数 */
   deletions: number;
-  /** 原始内容（write_file 为空） */
   oldContent: string;
-  /** 新内容 */
   newContent: string;
+  noticeText?: string;
   /** 是否需要用户确认（Accept/Reject），false 表示已自动执行 */
   needsConfirm: boolean;
+  collapsed?: boolean;
 }
 
 /** 显示文件变更汇总（所有工具执行完成后发送） */
 export interface ShowChangeSummaryResponse {
   type: 'showChangeSummary';
   messageId: string;
+  summaryId: string;
+  needsConfirm: boolean;
   files: Array<{
     path: string;
+    displayPath: string;
     additions: number;
     deletions: number;
     status: 'created' | 'modified' | 'read' | 'listed';
+    issueText?: string;
   }>;
+}
+
+/** 更新批量变更汇总的状态 */
+export interface UpdateChangeSummaryResponse {
+  type: 'updateChangeSummary';
+  summaryId: string;
+  status: 'applying' | 'accepted' | 'partial' | 'failed' | 'rejected' | 'cancelled';
+  text: string;
 }
 
 /** 流式阶段完成后显示 Thinking 耗时（替代之前的 Thinking 动画） */
@@ -302,6 +311,16 @@ export interface RejectChangeRequest {
   stepId: string;
 }
 
+export interface AcceptAllChangesRequest {
+  type: 'acceptAllChanges';
+  summaryId: string;
+}
+
+export interface RejectAllChangesRequest {
+  type: 'rejectAllChanges';
+  summaryId: string;
+}
+
 /** Extension 发送给 Webview 的所有消息类型 */
 export type ExtensionMessage =
   | AddMessageResponse
@@ -323,4 +342,5 @@ export type ExtensionMessage =
   | UpdateStepResponse
   | ShowDiffResponse
   | ShowChangeSummaryResponse
+  | UpdateChangeSummaryResponse
   | ThinkingCompleteResponse;

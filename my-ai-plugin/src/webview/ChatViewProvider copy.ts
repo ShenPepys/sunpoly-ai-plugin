@@ -18,33 +18,6 @@ import type { ExtensionMessage, WebviewMessage, WorkMode } from './messageTypes'
 import { parseToolCalls, hasToolCalls, stripToolCalls, executeToolCalls, formatToolResults, readFile } from '../tools';
 import type { ToolExecutionResult, ParsedToolCall, ToolCallType } from '../tools';
 
-type ChangeSummaryFile = {
-  path: string;
-  displayPath: string;
-  additions: number;
-  deletions: number;
-  status: 'created' | 'modified' | 'read' | 'listed';
-  issueText?: string;
-};
-
-type PreviewFileState = {
-  content: string;
-  exists: boolean;
-};
-
-type PreviewBuildResult = {
-  newContent: string;
-  canApply: boolean;
-  issueText?: string;
-};
-
-type DeferredToolStep = {
-  stepId: string;
-  stepDesc: string;
-  toolCall: ParsedToolCall;
-  startedAt: number;
-};
-
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Provider 的注册 ID，必须与 package.json 中 views.id 一致 */
   public static readonly viewType = 'my-ai-plugin.chatView';
@@ -67,12 +40,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** 待用户确认的文件变更（stepId → resolve 函数），Accept/Reject 时触发 */
   private pendingConfirms: Map<string, (accepted: boolean) => void> = new Map();
 
-  private pendingBatchConfirms: Map<string, (accepted: boolean) => void> = new Map();
-
   private activeRunId: string | null = null;
-
-  /** 防止 handleToolCalls 被并发执行 */
-  private toolCallsInProgress = false;
 
   private stepSequence = 0;
 
@@ -194,13 +162,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         this.activeRunId = null;
         this.stepSequence = 0;
-        this.toolCallsInProgress = false;
         this.clearHistory();
         this.contextFiles = [];
         for (const resolve of this.pendingConfirms.values()) { resolve(false); }
         this.pendingConfirms.clear();
-        for (const resolve of this.pendingBatchConfirms.values()) { resolve(false); }
-        this.pendingBatchConfirms.clear();
         this.postMessage({ type: 'setLoading', loading: false });
         this.postMessage({ type: 'clearChat' });
         this.postMessage({ type: 'clearContextFiles' });
@@ -261,7 +226,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'stopGeneration':
         this.activeRunId = null;
         this.stepSequence = 0;
-        this.toolCallsInProgress = false;
         if (this.abortStream) {
           info('用户主动停止生成');
           this.abortStream();
@@ -273,13 +237,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             resolve(false);
           }
           this.pendingConfirms.clear();
-        }
-        if (this.pendingBatchConfirms.size > 0) {
-          info(`停止生成：清理 ${this.pendingBatchConfirms.size} 个待确认批量变更`);
-          for (const resolve of this.pendingBatchConfirms.values()) {
-            resolve(false);
-          }
-          this.pendingBatchConfirms.clear();
         }
         this.postMessage({ type: 'generationStopped' });
         this.postMessage({ type: 'setLoading', loading: false });
@@ -305,26 +262,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (resolve) {
           info(`用户拒绝文件变更: ${message.stepId}`);
           this.pendingConfirms.delete(message.stepId);
-          resolve(false);
-        }
-        break;
-      }
-
-      case 'acceptAllChanges': {
-        const resolve = this.pendingBatchConfirms.get(message.summaryId);
-        if (resolve) {
-          info(`用户接受批量文件变更: ${message.summaryId}`);
-          this.pendingBatchConfirms.delete(message.summaryId);
-          resolve(true);
-        }
-        break;
-      }
-
-      case 'rejectAllChanges': {
-        const resolve = this.pendingBatchConfirms.get(message.summaryId);
-        if (resolve) {
-          info(`用户拒绝批量文件变更: ${message.summaryId}`);
-          this.pendingBatchConfirms.delete(message.summaryId);
           resolve(false);
         }
         break;
@@ -436,17 +373,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       temperature: getTemperature(),
     };
 
-    // 清理上一轮可能残留的状态（用户未点停止直接发新消息时）
-    if (this.abortStream) {
-      this.abortStream();
-      this.abortStream = null;
-    }
-    for (const resolve of this.pendingConfirms.values()) { resolve(false); }
-    this.pendingConfirms.clear();
-    for (const resolve of this.pendingBatchConfirms.values()) { resolve(false); }
-    this.pendingBatchConfirms.clear();
-    this.toolCallsInProgress = false;
-
     // 发起流式请求，保存 abort 句柄用于停止生成
     const assistantMsgId = `assistant-${Date.now()}`;
     const streamStartTime = Date.now();
@@ -541,319 +467,196 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    if (this.toolCallsInProgress) {
-      info('handleToolCalls 已在执行中，跳过重复调用');
-      return;
-    }
-    this.toolCallsInProgress = true;
+    info(`检测到 ${toolCalls.length} 个工具调用，逐步执行...`);
 
-    try {
+    // Windsurf 风格：逐步执行每个工具调用，发送结构化步骤消息
+    const results: ToolExecutionResult[] = [];
+    const changeSummaryFiles: Array<{
+      path: string;
+      displayPath: string;
+      additions: number;
+      deletions: number;
+      status: 'created' | 'modified' | 'read' | 'listed';
+      issueText?: string;
+    }> = [];
 
-      info(`检测到 ${toolCalls.length} 个工具调用，逐步执行...`);
+    for (let i = 0; i < toolCalls.length; i++) {
+      if (this.activeRunId !== reuseMsgId) {
+        return;
+      }
+      const tc = toolCalls[i];
+      const stepId = `step-${reuseMsgId}-${this.stepSequence++}`;
+      const stepDesc = this.getToolStepDescription(tc);
+      const stepIcon = this.getToolStepIcon(tc.type);
 
-      const results: ToolExecutionResult[] = [];
-      const previewBaseStates = new Map<string, PreviewFileState>();
-      const previewCurrentStates = new Map<string, PreviewFileState>();
-      const previewIssues = new Map<string, string>();
-      const deferredSteps: DeferredToolStep[] = [];
-      const writeFilePaths = new Set<string>();
-      const summaryId = `summary-${reuseMsgId}-${Date.now()}-${this.stepSequence}`;
-      let deferRemainingSteps = false;
+      // 发送步骤开始（前端显示 spinner）
+      this.postMessage({ type: 'addStep', messageId: reuseMsgId, stepId, icon: stepIcon, description: stepDesc, status: 'running' });
 
-      for (let i = 0; i < toolCalls.length; i++) {
+      const startTime = Date.now();
+
+      const isWriteOp = tc.type === 'write_file' || tc.type === 'edit_file';
+
+      // 对于写入/编辑操作：先读取旧内容、展示 diff、等待用户确认
+      if (isWriteOp) {
+        let oldFileContent = '';
+        try {
+          const readResult = await readFile(tc.path);
+          if (readResult.success) { oldFileContent = readResult.content; }
+        } catch { /* 新文件，无旧内容 */ }
+
+        const newContent = tc.type === 'write_file'
+          ? (tc.content || '')
+          : (oldFileContent.replace(tc.oldContent || '', tc.newContent || ''));
+        const { additions, deletions } = this.calculateDiffStats(oldFileContent, newContent);
+        const lang = this.detectLanguage(tc.path);
+
+        // 展示 diff 并等待用户确认
+        this.postMessage({
+          type: 'showDiff', messageId: reuseMsgId, stepId, filePath: tc.path,
+          language: lang, additions, deletions, oldContent: oldFileContent, newContent, needsConfirm: true,
+        });
+
+        // 异步等待用户点击 Accept 或 Reject
+        const accepted = await new Promise<boolean>((resolve) => {
+          this.pendingConfirms.set(stepId, resolve);
+        });
+
         if (this.activeRunId !== reuseMsgId) {
           return;
         }
-        const tc = toolCalls[i];
-        const stepId = `step-${reuseMsgId}-${this.stepSequence++}`;
-        const stepDesc = this.getToolStepDescription(tc);
-        const stepIcon = this.getToolStepIcon(tc.type);
 
-        // 发送步骤开始（前端显示 spinner）
-        this.postMessage({ type: 'addStep', messageId: reuseMsgId, stepId, icon: stepIcon, description: stepDesc, status: 'running' });
+        const elapsed = Date.now() - startTime;
 
-        const startTime = Date.now();
-
-        const isWriteOp = tc.type === 'write_file' || tc.type === 'edit_file';
-
-        if (deferRemainingSteps || isWriteOp) {
-          deferRemainingSteps = true;
-          deferredSteps.push({ stepId, stepDesc, toolCall: tc, startedAt: startTime });
-
-          if (isWriteOp) {
-            if (tc.type === 'write_file') { writeFilePaths.add(tc.path); }
-            const initialPreviewState = await this.ensurePreviewFileState(previewBaseStates, tc.path);
-            if (!previewCurrentStates.has(tc.path)) {
-              previewCurrentStates.set(tc.path, {
-                content: initialPreviewState.content,
-                exists: initialPreviewState.exists,
-              });
-            }
-
-            const currentPreviewState = previewCurrentStates.get(tc.path) || initialPreviewState;
-            const previewResult = this.buildPreviewContent(tc, currentPreviewState.content);
-            const nextPreviewState: PreviewFileState = previewResult.canApply || tc.type === 'write_file'
-              ? {
-                content: previewResult.newContent,
-                exists: tc.type === 'write_file' ? true : currentPreviewState.exists,
-              }
-              : {
-                content: currentPreviewState.content,
-                exists: currentPreviewState.exists,
-              };
-
-            previewCurrentStates.set(tc.path, nextPreviewState);
-
-            if (previewResult.issueText) {
-              previewIssues.set(tc.path, previewResult.issueText);
-            } else {
-              previewIssues.delete(tc.path);
-            }
-
-            // write_file 语义是"创建/覆盖"，始终展示完整新内容（以空内容为基准）
-            // edit_file 语义是"局部修改"，展示实际差异
-            const diffOldContent = tc.type === 'write_file' ? '' : currentPreviewState.content;
-            const { additions, deletions } = this.calculateDiffStats(diffOldContent, nextPreviewState.content);
-            const lang = this.detectLanguage(tc.path);
-
-            this.postMessage({
-              type: 'showDiff',
-              messageId: reuseMsgId,
-              stepId,
-              summaryId,
-              filePath: tc.path,
-              language: lang,
-              additions,
-              deletions,
-              oldContent: diffOldContent,
-              newContent: nextPreviewState.content,
-              noticeText: previewResult.issueText,
-              needsConfirm: false,
-              collapsed: true,
-            });
-          }
-
-          continue;
+        if (accepted) {
+          // 用户接受：执行文件操作
+          const result = await executeToolCalls([tc], this.currentMode);
+          const singleResult = result[0];
+          results.push(singleResult);
+          const status = singleResult.result.success ? 'done' : 'error';
+          this.postMessage({ type: 'updateStep', stepId, status, elapsed });
+          changeSummaryFiles.push({
+            path: tc.path,
+            displayPath: vscode.workspace.asRelativePath(tc.path, false) || (tc.path.split(/[\\/]/).pop() || tc.path),
+            additions,
+            deletions,
+            status: oldFileContent ? 'modified' : 'created',
+          });
+        } else {
+          // 用户拒绝：跳过该操作，记录为失败结果
+          results.push({ toolCall: tc, result: { success: false, content: '用户拒绝了此文件变更' } });
+          this.postMessage({ type: 'updateStep', stepId, status: 'error', elapsed, description: `${stepDesc} (已拒绝)` });
         }
-
+      } else {
+        // 读取/列出目录：直接执行，无需确认
         const result = await executeToolCalls([tc], this.currentMode);
         const singleResult = result[0];
         results.push(singleResult);
         const elapsed = Date.now() - startTime;
         const status = singleResult.result.success ? 'done' : 'error';
         this.postMessage({ type: 'updateStep', stepId, status, elapsed });
-      }
 
-      if (this.activeRunId !== reuseMsgId) {
-        return;
-      }
-
-      if (deferredSteps.length > 0) {
-        const summaryFiles = this.buildPreviewSummaryFiles(previewBaseStates, previewCurrentStates, writeFilePaths, previewIssues);
-        this.postMessage({
-          type: 'showChangeSummary',
-          messageId: reuseMsgId,
-          summaryId,
-          needsConfirm: true,
-          files: summaryFiles,
-        });
-
-        const accepted = await new Promise<boolean>((resolve) => {
-          this.pendingBatchConfirms.set(summaryId, resolve);
-        });
-        this.pendingBatchConfirms.delete(summaryId);
-
-        if (!accepted) {
-          const isCancelled = this.activeRunId !== reuseMsgId;
-          this.postMessage({
-            type: 'updateChangeSummary',
-            summaryId,
-            status: isCancelled ? 'cancelled' : 'rejected',
-            text: isCancelled ? '✗ Cancelled' : '✗ Rejected all changes',
+        if (tc.type === 'read_file' && singleResult.result.success) {
+          changeSummaryFiles.push({
+            path: tc.path,
+            displayPath: vscode.workspace.asRelativePath(tc.path, false) || (tc.path.split(/[\\/]/).pop() || tc.path),
+            additions: 0,
+            deletions: 0,
+            status: 'read',
           });
-
-          for (const deferredStep of deferredSteps) {
-            const deferredIsWriteOp = deferredStep.toolCall.type === 'write_file' || deferredStep.toolCall.type === 'edit_file';
-            const suffix = isCancelled ? '(已取消)' : (deferredIsWriteOp ? '(已拒绝)' : '(已跳过)');
-            const message = isCancelled
-              ? '用户取消了生成'
-              : (deferredIsWriteOp ? '用户拒绝了批量文件变更' : '由于用户拒绝了批量文件变更，后续工具调用已跳过');
-
-            results.push({
-              toolCall: deferredStep.toolCall,
-              result: { success: false, content: message },
-            });
-
-            this.postMessage({
-              type: 'updateStep',
-              stepId: deferredStep.stepId,
-              status: 'error',
-              elapsed: Date.now() - deferredStep.startedAt,
-              description: `${deferredStep.stepDesc} ${suffix}`,
-            });
-          }
-
-          if (isCancelled) {
-            return;
-          }
+        } else if (tc.type === 'list_dir' && singleResult.result.success) {
+          changeSummaryFiles.push({
+            path: tc.path,
+            displayPath: vscode.workspace.asRelativePath(tc.path, false) || (tc.path.split(/[\\/]/).pop() || tc.path),
+            additions: 0,
+            deletions: 0,
+            status: 'listed',
+          });
         }
+      }
+    }
 
+    if (this.activeRunId !== reuseMsgId) {
+      return;
+    }
+
+    if (changeSummaryFiles.length > 0) {
+      this.postMessage({ type: 'showChangeSummary', messageId: reuseMsgId, summaryId: `backup-summary-${Date.now()}`, needsConfirm: false, files: changeSummaryFiles });
+    }
+
+    const resultText = formatToolResults(results);
+
+    // 将工具结果作为系统级上下文追加，告诉 AI 直接基于结果回答
+    const toolFeedback = [
+      '以下是工具执行结果（不要在回复中重复展示这些原始数据，直接基于结果回答用户的问题）：',
+      '',
+      resultText,
+    ].join('\n');
+    this.chatHistory.push({ role: 'user', content: toolFeedback });
+    this.saveChatHistory();
+
+    // 构建续轮消息
+    const modelConfig = getModelConfig();
+    const envContext = getEnvContext();
+    const systemPrompt = buildSystemPrompt(envContext, modelConfig, this.currentMode, '中文', detectProjectType(), getGitStatus());
+
+    const followUpMessages: ChatMessageParam[] = [
+      { role: 'system', content: systemPrompt },
+      ...this.trimChatHistory(this.chatHistory),
+    ];
+
+    let isFirstChunk = true;
+    this.abortStream = sendStreamRequest(
+      apiConfig,
+      followUpMessages,
+      (chunk) => {
         if (this.activeRunId !== reuseMsgId) {
-          this.postMessage({
-            type: 'updateChangeSummary',
-            summaryId,
-            status: 'cancelled',
-            text: '✗ Cancelled',
-          });
           return;
         }
-
-        if (accepted) {
-          this.postMessage({
-            type: 'updateChangeSummary',
-            summaryId,
-            status: 'applying',
-            text: 'Applying changes...',
-          });
-
-          let successCount = 0;
-          let failureCount = 0;
-
-          for (const deferredStep of deferredSteps) {
-            if (this.activeRunId !== reuseMsgId) {
-              this.postMessage({
-                type: 'updateChangeSummary',
-                summaryId,
-                status: successCount > 0 || failureCount > 0 ? 'partial' : 'cancelled',
-                text: successCount > 0 || failureCount > 0
-                  ? `⚠ Cancelled after applying ${successCount}/${deferredSteps.length} changes`
-                  : '✗ Cancelled',
-              });
-              return;
-            }
-
-            const result = await executeToolCalls([deferredStep.toolCall], this.currentMode);
-            const singleResult = result[0];
-            results.push(singleResult);
-
-            if (singleResult.result.success) {
-              successCount += 1;
-            } else {
-              failureCount += 1;
-            }
-
-            const status = singleResult.result.success ? 'done' : 'error';
-            this.postMessage({
-              type: 'updateStep',
-              stepId: deferredStep.stepId,
-              status,
-              elapsed: Date.now() - deferredStep.startedAt,
-            });
-          }
-
-          if (failureCount === 0) {
-            this.postMessage({
-              type: 'updateChangeSummary',
-              summaryId,
-              status: 'accepted',
-              text: `✓ Applied all ${successCount} changes`,
-            });
-          } else if (successCount === 0) {
-            this.postMessage({
-              type: 'updateChangeSummary',
-              summaryId,
-              status: 'failed',
-              text: `✗ Failed to apply ${failureCount} changes`,
-            });
-          } else {
-            this.postMessage({
-              type: 'updateChangeSummary',
-              summaryId,
-              status: 'partial',
-              text: `⚠ Applied ${successCount}/${deferredSteps.length} changes, ${failureCount} failed`,
-            });
-          }
+        if (isFirstChunk) {
+          isFirstChunk = false;
+          this.postMessage({ type: 'streamChunk', chunk: '', messageId: reuseMsgId });
         }
-      }
+        this.postMessage({ type: 'streamChunk', chunk, messageId: reuseMsgId });
+      },
+      (fullContent) => {
+        if (this.activeRunId !== reuseMsgId) {
+          return;
+        }
+        this.abortStream = null;
+        this.chatHistory.push({ role: 'assistant', content: fullContent });
+        this.saveChatHistory();
+        info(`续轮回复完成，长度: ${fullContent.length}`);
 
-      const resultText = formatToolResults(results);
-
-      // 将工具结果作为系统级上下文追加，告诉 AI 直接基于结果回答
-      const toolFeedback = [
-        '以下是工具执行结果（不要在回复中重复展示这些原始数据，直接基于结果回答用户的问题）：',
-        '',
-        resultText,
-      ].join('\n');
-      this.chatHistory.push({ role: 'user', content: toolFeedback });
-      this.saveChatHistory();
-
-      // 构建续轮消息
-      const modelConfig = getModelConfig();
-      const envContext = getEnvContext();
-      const systemPrompt = buildSystemPrompt(envContext, modelConfig, this.currentMode, '中文', detectProjectType(), getGitStatus());
-
-      const followUpMessages: ChatMessageParam[] = [
-        { role: 'system', content: systemPrompt },
-        ...this.trimChatHistory(this.chatHistory),
-      ];
-
-      let isFirstChunk = true;
-      this.abortStream = sendStreamRequest(
-        apiConfig,
-        followUpMessages,
-        (chunk) => {
-          if (this.activeRunId !== reuseMsgId) {
-            return;
-          }
-          if (isFirstChunk) {
-            isFirstChunk = false;
-            this.postMessage({ type: 'streamChunk', chunk: '', messageId: reuseMsgId });
-          }
-          this.postMessage({ type: 'streamChunk', chunk, messageId: reuseMsgId });
-        },
-        (fullContent) => {
-          if (this.activeRunId !== reuseMsgId) {
-            return;
-          }
-          this.abortStream = null;
-          this.chatHistory.push({ role: 'assistant', content: fullContent });
-          this.saveChatHistory();
-          info(`续轮回复完成，长度: ${fullContent.length}`);
-
-          if (hasToolCalls(fullContent)) {
-            this.postMessage({ type: 'streamDone', messageId: reuseMsgId });
-            const cleanContent = stripToolCalls(fullContent);
-            this.postMessage({ type: 'updateMessage', messageId: reuseMsgId, content: cleanContent });
-            this.postMessage({ type: 'setLoading', loading: true });
-            if (this.chatHistory.length < 30) {
-              this.handleToolCalls(fullContent, apiConfig, reuseMsgId);
-            } else {
-              this.activeRunId = null;
-              this.stepSequence = 0;
-            }
+        if (hasToolCalls(fullContent)) {
+          this.postMessage({ type: 'streamDone', messageId: reuseMsgId });
+          const cleanContent = stripToolCalls(fullContent);
+          this.postMessage({ type: 'updateMessage', messageId: reuseMsgId, content: cleanContent });
+          this.postMessage({ type: 'setLoading', loading: true });
+          if (this.chatHistory.length < 30) {
+            this.handleToolCalls(fullContent, apiConfig, reuseMsgId);
           } else {
-            this.postMessage({ type: 'streamDone', messageId: reuseMsgId });
             this.activeRunId = null;
             this.stepSequence = 0;
           }
-        },
-        (errorMessage) => {
-          if (this.activeRunId !== reuseMsgId) {
-            return;
-          }
-          this.abortStream = null;
+        } else {
+          this.postMessage({ type: 'streamDone', messageId: reuseMsgId });
           this.activeRunId = null;
           this.stepSequence = 0;
-          this.postMessage({ type: 'streamDone', messageId: reuseMsgId });
-          this.postMessage({ type: 'updateMessage', messageId: reuseMsgId, content: '⚠️ 工具执行出错，请重试。' });
-          this.postMessage({ type: 'showError', message: errorMessage });
-          error('续轮 AI 调用失败:', errorMessage);
-        },
-      );
-
-    } finally {
-      this.toolCallsInProgress = false;
-    }
+        }
+      },
+      (errorMessage) => {
+        if (this.activeRunId !== reuseMsgId) {
+          return;
+        }
+        this.abortStream = null;
+        this.activeRunId = null;
+        this.stepSequence = 0;
+        this.postMessage({ type: 'streamDone', messageId: reuseMsgId });
+        this.postMessage({ type: 'updateMessage', messageId: reuseMsgId, content: '⚠️ 工具执行出错，请重试。' });
+        this.postMessage({ type: 'showError', message: errorMessage });
+        error('续轮 AI 调用失败:', errorMessage);
+      },
+    );
   }
 
   /**
@@ -897,110 +700,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       sql: 'sql', vue: 'vue', svelte: 'svelte', php: 'php', rb: 'ruby',
     };
     return langMap[ext] || ext || 'text';
-  }
-
-  private getDisplayPath(filePath: string): string {
-    const relativePath = vscode.workspace.asRelativePath(filePath, false);
-    return relativePath || (filePath.split(/[\\/]/).pop() || filePath);
-  }
-
-  private async ensurePreviewFileState(previewStates: Map<string, PreviewFileState>, filePath: string): Promise<PreviewFileState> {
-    const cachedState = previewStates.get(filePath);
-    if (cachedState) {
-      return cachedState;
-    }
-
-    let nextState: PreviewFileState = {
-      content: '',
-      exists: false,
-    };
-
-    try {
-      const readResult = await readFile(filePath);
-      if (readResult.success) {
-        nextState = {
-          content: readResult.content,
-          exists: true,
-        };
-      }
-    } catch {
-      nextState = {
-        content: '',
-        exists: false,
-      };
-    }
-
-    previewStates.set(filePath, nextState);
-    return nextState;
-  }
-
-  private buildPreviewContent(toolCall: ParsedToolCall, currentContent: string): PreviewBuildResult {
-    if (toolCall.type === 'write_file') {
-      return {
-        newContent: toolCall.content || '',
-        canApply: true,
-      };
-    }
-
-    if (toolCall.type !== 'edit_file') {
-      return {
-        newContent: currentContent,
-        canApply: false,
-      };
-    }
-
-    const oldSegment = toolCall.oldContent;
-    const newSegment = toolCall.newContent || '';
-    if (oldSegment === undefined || oldSegment === '') {
-      return {
-        newContent: currentContent,
-        canApply: false,
-        issueText: '预览提示：编辑片段缺少 old 内容，实际执行会失败',
-      };
-    }
-
-    if (!currentContent.includes(oldSegment)) {
-      return {
-        newContent: currentContent,
-        canApply: false,
-        issueText: '预览提示：当前文件中未找到要替换的内容，实际执行会失败',
-      };
-    }
-
-    return {
-      newContent: currentContent.replace(oldSegment, newSegment),
-      canApply: true,
-    };
-  }
-
-  private buildPreviewSummaryFiles(
-    previewBaseStates: Map<string, PreviewFileState>,
-    previewCurrentStates: Map<string, PreviewFileState>,
-    writeFilePaths: Set<string> = new Set(),
-    previewIssues: Map<string, string> = new Map(),
-  ): ChangeSummaryFile[] {
-    const summaryFiles: ChangeSummaryFile[] = [];
-
-    for (const [filePath, currentState] of previewCurrentStates.entries()) {
-      const baseState = previewBaseStates.get(filePath);
-      if (!baseState) {
-        continue;
-      }
-
-      // write_file 始终以空内容为基准，与 showDiff 保持一致
-      const baseContent = writeFilePaths.has(filePath) ? '' : baseState.content;
-      const diffStats = this.calculateDiffStats(baseContent, currentState.content);
-      summaryFiles.push({
-        path: filePath,
-        displayPath: this.getDisplayPath(filePath),
-        additions: diffStats.additions,
-        deletions: diffStats.deletions,
-        status: baseState.exists ? 'modified' : 'created',
-        issueText: previewIssues.get(filePath),
-      });
-    }
-
-    return summaryFiles;
   }
 
   private calculateDiffStats(oldContent: string, newContent: string): { additions: number; deletions: number } {

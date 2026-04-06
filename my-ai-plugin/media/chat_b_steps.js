@@ -178,10 +178,16 @@
     var diffEl = document.createElement('div');
     diffEl.className = 'diff-block';
     diffEl.setAttribute('data-step-id', data.stepId);
+    if (data.summaryId) {
+      diffEl.setAttribute('data-summary-id', data.summaryId);
+    }
 
     var fileName = data.filePath.split(/[/\\]/).pop() || data.filePath;
     var statsHtml = buildDiffStatsHtml(diffModel.additions, diffModel.deletions);
     var diffContentHtml = diffModel.html;
+    var noticeHtml = data.noticeText
+      ? '<div class="diff-notice">' + escapeHtml(data.noticeText) + '</div>'
+      : '';
 
     var actionsHtml = '';
     if (data.needsConfirm) {
@@ -190,11 +196,6 @@
           '<span class="diff-summary">1 file ' + statsHtml + '</span>' +
           '<button class="diff-btn diff-btn-reject" data-step-id="' + data.stepId + '">Reject</button>' +
           '<button class="diff-btn diff-btn-accept" data-step-id="' + data.stepId + '">Accept</button>' +
-        '</div>';
-    } else {
-      actionsHtml =
-        '<div class="diff-actions">' +
-          '<span class="diff-summary">1 file ' + statsHtml + '</span>' +
         '</div>';
     }
 
@@ -205,6 +206,7 @@
         statsHtml +
         '<button class="diff-toggle" title="展开/折叠">▼</button>' +
       '</div>' +
+      noticeHtml +
       '<div class="diff-content">' + diffContentHtml + '</div>' +
       actionsHtml;
 
@@ -215,16 +217,16 @@
     var toggleBtn = diffEl.querySelector('.diff-toggle');
     if (toggleBtn) {
       toggleBtn.addEventListener('click', function () {
-        var contentEl = diffEl.querySelector('.diff-content');
-        if (contentEl) {
-          var isCollapsed = contentEl.classList.toggle('collapsed');
-          toggleBtn.textContent = isCollapsed ? '▶' : '▼';
-        }
+        setDiffCollapsed(diffEl, !isDiffCollapsed(diffEl));
+        updateSummaryViewButtons(data.summaryId);
       });
     }
 
+    setDiffCollapsed(diffEl, !!data.collapsed);
+
     // 绑定 Accept/Reject 事件
     bindDiffActions(diffEl, data.stepId);
+    updateSummaryViewButtons(data.summaryId);
 
     scrollToBottom();
   }
@@ -606,8 +608,9 @@
   }
 
   function renderDiffOperationsHtml(operations) {
+    var preparedOperations = buildHighlightedDiffOperations(operations);
     var html = '';
-    operations.forEach(function (operation) {
+    preparedOperations.forEach(function (operation) {
       if (operation.type === 'info') {
         html += '<div class="diff-line diff-line-info">' + escapeHtml(operation.text) + '</div>';
         return;
@@ -629,10 +632,275 @@
         '<span class="diff-line-num">' + formatDiffLineNumber(operation.oldLineNumber) + '</span>' +
         '<span class="diff-line-num">' + formatDiffLineNumber(operation.newLineNumber) + '</span>' +
         '<span class="diff-line-sign">' + sign + '</span>' +
-        '<span class="diff-line-text">' + escapeHtml(operation.text) + '</span>' +
+        '<span class="diff-line-text">' + getDiffOperationTextHtml(operation) + '</span>' +
         '</div>';
     });
     return html;
+  }
+
+  function buildHighlightedDiffOperations(operations) {
+    var preparedOperations = operations.map(function (operation) {
+      return Object.assign({}, operation);
+    });
+
+    var index = 0;
+    while (index < preparedOperations.length) {
+      var operation = preparedOperations[index];
+      if (operation.type !== 'add' && operation.type !== 'del') {
+        index += 1;
+        continue;
+      }
+
+      var blockStart = index;
+      while (
+        index < preparedOperations.length &&
+        (preparedOperations[index].type === 'add' || preparedOperations[index].type === 'del')
+      ) {
+        index += 1;
+      }
+
+      decorateDiffChangeBlock(preparedOperations.slice(blockStart, index));
+    }
+
+    preparedOperations.forEach(function (operation) {
+      if (operation.type !== 'info' && operation.renderedText === undefined) {
+        operation.renderedText = escapeHtml(operation.text || '');
+      }
+    });
+
+    return preparedOperations;
+  }
+
+  function decorateDiffChangeBlock(blockOperations) {
+    var deletedOperations = [];
+    var addedOperations = [];
+
+    blockOperations.forEach(function (operation) {
+      if (operation.type === 'del') {
+        deletedOperations.push(operation);
+      } else if (operation.type === 'add') {
+        addedOperations.push(operation);
+      }
+    });
+
+    deletedOperations.forEach(function (operation) {
+      operation.renderedText = escapeHtml(operation.text || '');
+    });
+    addedOperations.forEach(function (operation) {
+      operation.renderedText = escapeHtml(operation.text || '');
+    });
+
+    var pairCount = Math.min(deletedOperations.length, addedOperations.length);
+    var pairIndex;
+    for (pairIndex = 0; pairIndex < pairCount; pairIndex += 1) {
+      var deletedOperation = deletedOperations[pairIndex];
+      var addedOperation = addedOperations[pairIndex];
+
+      if (!shouldHighlightInlinePair(deletedOperation.text, addedOperation.text)) {
+        continue;
+      }
+
+      var inlinePair = buildInlineHighlightPair(deletedOperation.text, addedOperation.text);
+      deletedOperation.renderedText = inlinePair.deletedHtml;
+      addedOperation.renderedText = inlinePair.addedHtml;
+    }
+  }
+
+  function shouldHighlightInlinePair(oldText, newText) {
+    if (!oldText && !newText) {
+      return false;
+    }
+
+    if (oldText === newText) {
+      return false;
+    }
+
+    return calculateLineSimilarity(oldText, newText) >= 0.18;
+  }
+
+  function calculateLineSimilarity(oldText, newText) {
+    var oldValue = oldText || '';
+    var newValue = newText || '';
+    var maxLength = Math.max(oldValue.length, newValue.length, 1);
+    var prefixLength = getCommonStringPrefixLength(oldValue, newValue);
+    var suffixLength = getCommonStringSuffixLength(oldValue, newValue, prefixLength);
+    return (prefixLength + suffixLength) / maxLength;
+  }
+
+  function buildInlineHighlightPair(oldText, newText) {
+    var oldTokens = tokenizeDiffText(oldText || '');
+    var newTokens = tokenizeDiffText(newText || '');
+
+    if (oldTokens.length > 0 && newTokens.length > 0 && oldTokens.length * newTokens.length <= 4000) {
+      var tokenOperations = buildTokenDiffOperations(oldTokens, newTokens);
+      return {
+        deletedHtml: renderInlineTokens(tokenOperations, 'del'),
+        addedHtml: renderInlineTokens(tokenOperations, 'add')
+      };
+    }
+
+    return buildInlineHighlightPairByPrefixSuffix(oldText || '', newText || '');
+  }
+
+  function tokenizeDiffText(text) {
+    if (!text) {
+      return [];
+    }
+
+    var characters = Array.from(text);
+    var tokens = [];
+    var currentValue = characters[0];
+    var currentType = getDiffTokenType(characters[0]);
+    var index;
+
+    for (index = 1; index < characters.length; index += 1) {
+      var character = characters[index];
+      var tokenType = getDiffTokenType(character);
+      if (tokenType === currentType && tokenType !== 'symbol') {
+        currentValue += character;
+      } else {
+        tokens.push({ type: currentType, value: currentValue });
+        currentType = tokenType;
+        currentValue = character;
+      }
+    }
+
+    tokens.push({ type: currentType, value: currentValue });
+    return tokens;
+  }
+
+  function getDiffTokenType(character) {
+    if (/\s/.test(character)) {
+      return 'space';
+    }
+    if (/[A-Za-z0-9_$]/.test(character)) {
+      return 'word';
+    }
+    return 'symbol';
+  }
+
+  function buildTokenDiffOperations(oldTokens, newTokens) {
+    var rowCount = oldTokens.length;
+    var columnCount = newTokens.length;
+    var lcsTable = new Array(rowCount + 1);
+    var row;
+
+    for (row = 0; row <= rowCount; row += 1) {
+      lcsTable[row] = new Array(columnCount + 1).fill(0);
+    }
+
+    for (row = rowCount - 1; row >= 0; row -= 1) {
+      var column;
+      for (column = columnCount - 1; column >= 0; column -= 1) {
+        if (oldTokens[row].value === newTokens[column].value) {
+          lcsTable[row][column] = lcsTable[row + 1][column + 1] + 1;
+        } else {
+          lcsTable[row][column] = Math.max(lcsTable[row + 1][column], lcsTable[row][column + 1]);
+        }
+      }
+    }
+
+    var operations = [];
+    var oldIndex = 0;
+    var newIndex = 0;
+
+    while (oldIndex < rowCount && newIndex < columnCount) {
+      if (oldTokens[oldIndex].value === newTokens[newIndex].value) {
+        operations.push({ type: 'context', value: oldTokens[oldIndex].value });
+        oldIndex += 1;
+        newIndex += 1;
+      } else if (lcsTable[oldIndex + 1][newIndex] >= lcsTable[oldIndex][newIndex + 1]) {
+        operations.push({ type: 'del', value: oldTokens[oldIndex].value });
+        oldIndex += 1;
+      } else {
+        operations.push({ type: 'add', value: newTokens[newIndex].value });
+        newIndex += 1;
+      }
+    }
+
+    while (oldIndex < rowCount) {
+      operations.push({ type: 'del', value: oldTokens[oldIndex].value });
+      oldIndex += 1;
+    }
+
+    while (newIndex < columnCount) {
+      operations.push({ type: 'add', value: newTokens[newIndex].value });
+      newIndex += 1;
+    }
+
+    return operations;
+  }
+
+  function renderInlineTokens(tokenOperations, targetType) {
+    var html = '';
+    tokenOperations.forEach(function (operation) {
+      if (operation.type === 'context') {
+        html += escapeHtml(operation.value);
+      } else if (operation.type === targetType) {
+        var className = targetType === 'add' ? 'diff-inline-add' : 'diff-inline-del';
+        html += '<span class="' + className + '">' + escapeHtml(operation.value) + '</span>';
+      }
+    });
+    return html;
+  }
+
+  function buildInlineHighlightPairByPrefixSuffix(oldText, newText) {
+    var prefixLength = getCommonStringPrefixLength(oldText, newText);
+    var suffixLength = getCommonStringSuffixLength(oldText, newText, prefixLength);
+
+    var oldEndIndex = oldText.length - suffixLength;
+    var newEndIndex = newText.length - suffixLength;
+
+    var oldPrefix = oldText.slice(0, prefixLength);
+    var newPrefix = newText.slice(0, prefixLength);
+    var oldChanged = oldText.slice(prefixLength, oldEndIndex);
+    var newChanged = newText.slice(prefixLength, newEndIndex);
+    var oldSuffix = oldText.slice(oldEndIndex);
+    var newSuffix = newText.slice(newEndIndex);
+
+    return {
+      deletedHtml: escapeHtml(oldPrefix) + wrapInlineFragment(oldChanged, 'diff-inline-del') + escapeHtml(oldSuffix),
+      addedHtml: escapeHtml(newPrefix) + wrapInlineFragment(newChanged, 'diff-inline-add') + escapeHtml(newSuffix)
+    };
+  }
+
+  function wrapInlineFragment(text, className) {
+    if (!text) {
+      return '';
+    }
+    return '<span class="' + className + '">' + escapeHtml(text) + '</span>';
+  }
+
+  function getCommonStringPrefixLength(leftText, rightText) {
+    var maxLength = Math.min(leftText.length, rightText.length);
+    var index = 0;
+    while (index < maxLength && leftText[index] === rightText[index]) {
+      index += 1;
+    }
+    return index;
+  }
+
+  function getCommonStringSuffixLength(leftText, rightText, prefixLength) {
+    var leftIndex = leftText.length - 1;
+    var rightIndex = rightText.length - 1;
+    var suffixLength = 0;
+    while (
+      leftIndex >= prefixLength &&
+      rightIndex >= prefixLength &&
+      leftText[leftIndex] === rightText[rightIndex]
+    ) {
+      suffixLength += 1;
+      leftIndex -= 1;
+      rightIndex -= 1;
+    }
+    return suffixLength;
+  }
+
+  function getDiffOperationTextHtml(operation) {
+    if (operation.renderedText !== undefined) {
+      return operation.renderedText;
+    }
+    return escapeHtml(operation.text || '');
   }
 
   function formatDiffLineNumber(lineNumber) {
@@ -676,6 +944,169 @@
     }
   }
 
+  function isDiffCollapsed(diffEl) {
+    var contentEl = diffEl.querySelector('.diff-content');
+    return !!(contentEl && contentEl.classList.contains('collapsed'));
+  }
+
+  function setDiffCollapsed(diffEl, collapsed) {
+    var contentEl = diffEl.querySelector('.diff-content');
+    var toggleBtn = diffEl.querySelector('.diff-toggle');
+
+    if (contentEl) {
+      contentEl.classList.toggle('collapsed', collapsed);
+    }
+
+    if (toggleBtn) {
+      toggleBtn.textContent = collapsed ? '▶' : '▼';
+    }
+  }
+
+  function getSummaryDiffBlocks(summaryId) {
+    if (!summaryId) { return []; }
+    return Array.prototype.slice.call(document.querySelectorAll('.diff-block[data-summary-id="' + summaryId + '"]'));
+  }
+
+  function updateSummaryViewButtons(summaryId) {
+    if (!summaryId) { return; }
+
+    var diffBlocks = getSummaryDiffBlocks(summaryId);
+    var summaryEls = document.querySelectorAll('.change-summary[data-summary-id="' + summaryId + '"]');
+    var hasDiffs = diffBlocks.length > 0;
+    var hasCollapsedDiff = false;
+
+    if (hasDiffs) {
+      hasCollapsedDiff = diffBlocks.some(function (diffEl) {
+        return isDiffCollapsed(diffEl);
+      });
+    }
+
+    Array.prototype.forEach.call(summaryEls, function (summaryEl) {
+      var viewBtn = summaryEl.querySelector('.summary-btn-view');
+      if (!viewBtn) { return; }
+
+      viewBtn.textContent = hasCollapsedDiff ? 'View all changes' : 'Hide all changes';
+      viewBtn.disabled = !hasDiffs;
+    });
+  }
+
+  function toggleSummaryDiffs(summaryId) {
+    var diffBlocks = getSummaryDiffBlocks(summaryId);
+    if (diffBlocks.length === 0) { return; }
+
+    var shouldExpandAll = diffBlocks.some(function (diffEl) {
+      return isDiffCollapsed(diffEl);
+    });
+
+    diffBlocks.forEach(function (diffEl) {
+      setDiffCollapsed(diffEl, !shouldExpandAll);
+    });
+  }
+
+  function bindSummaryViewButton(summaryEl, summaryId) {
+    var viewBtn = summaryEl.querySelector('.summary-btn-view');
+    if (!viewBtn) { return; }
+
+    viewBtn.addEventListener('click', function () {
+      toggleSummaryDiffs(summaryId);
+      updateSummaryViewButtons(summaryId);
+      scrollToBottom();
+    });
+  }
+
+  function setSummaryStatusState(summaryEl, summaryId, statusClass, statusText) {
+    var actionsEl = summaryEl.querySelector('.summary-actions');
+    if (!actionsEl) { return; }
+
+    actionsEl.innerHTML =
+      '<button class="summary-btn summary-btn-view">View all changes</button>' +
+      '<span class="' + statusClass + '">' + statusText + '</span>';
+
+    summaryEl.classList.remove('change-summary-pending');
+    bindSummaryViewButton(summaryEl, summaryId);
+    updateSummaryViewButtons(summaryId);
+  }
+
+  function setSummaryDecisionState(summaryEl, summaryId, accepted) {
+    var statusClass = accepted ? 'summary-applying' : 'summary-rejected';
+    var statusText = accepted ? 'Applying changes...' : 'Rejecting changes...';
+    setSummaryStatusState(summaryEl, summaryId, statusClass, statusText);
+  }
+
+  function getSummaryStatusClass(status) {
+    switch (status) {
+      case 'applying': return 'summary-applying';
+      case 'accepted': return 'summary-accepted';
+      case 'partial': return 'summary-partial';
+      case 'failed': return 'summary-failed';
+      case 'rejected': return 'summary-rejected';
+      case 'cancelled': return 'summary-cancelled';
+      default: return 'summary-cancelled';
+    }
+  }
+
+  function updateChangeSummary(data) {
+    var summaryEls = document.querySelectorAll('.change-summary[data-summary-id="' + data.summaryId + '"]');
+    Array.prototype.forEach.call(summaryEls, function (summaryEl) {
+      setSummaryStatusState(summaryEl, data.summaryId, getSummaryStatusClass(data.status), data.text);
+    });
+  }
+
+  function cancelPendingChangeSummaries() {
+    var summaryEls = document.querySelectorAll('.change-summary.change-summary-pending[data-summary-id]');
+    Array.prototype.forEach.call(summaryEls, function (summaryEl) {
+      var summaryId = summaryEl.getAttribute('data-summary-id') || '';
+      setSummaryStatusState(summaryEl, summaryId, 'summary-cancelled', '✗ Cancelled');
+    });
+  }
+
+  /**
+   * 兜底机制：将所有仍在 running 状态的步骤标记为已取消
+   * 在 generationStopped 时调用，防止步骤永远转圈
+   */
+  function cancelAllRunningSteps() {
+    var runningSteps = document.querySelectorAll('.step-item.step-running');
+    Array.prototype.forEach.call(runningSteps, function (stepEl) {
+      stepEl.className = 'step-item step-error';
+      var iconEl = stepEl.querySelector('.step-icon');
+      if (iconEl) {
+        iconEl.innerHTML = '<span class="step-error">✗</span>';
+      }
+      var descEl = stepEl.querySelector('.step-desc');
+      if (descEl) {
+        var currentText = descEl.textContent || '';
+        if (currentText.indexOf('(已取消)') === -1) {
+          descEl.textContent = currentText + ' (已取消)';
+        }
+      }
+    });
+  }
+
+  function bindBatchSummaryActions(summaryEl, data) {
+    bindSummaryViewButton(summaryEl, data.summaryId);
+
+    var acceptBtn = summaryEl.querySelector('.summary-btn-accept');
+    var rejectBtn = summaryEl.querySelector('.summary-btn-reject');
+
+    if (acceptBtn) {
+      acceptBtn.addEventListener('click', function () {
+        if (window.vscodeApi) {
+          window.vscodeApi.postMessage({ type: 'acceptAllChanges', summaryId: data.summaryId });
+        }
+        setSummaryDecisionState(summaryEl, data.summaryId, true);
+      });
+    }
+
+    if (rejectBtn) {
+      rejectBtn.addEventListener('click', function () {
+        if (window.vscodeApi) {
+          window.vscodeApi.postMessage({ type: 'rejectAllChanges', summaryId: data.summaryId });
+        }
+        setSummaryDecisionState(summaryEl, data.summaryId, false);
+      });
+    }
+  }
+
   // ==================== 变更汇总 ====================
 
   /**
@@ -687,27 +1118,40 @@
     var container = getOrCreateStepsContainer(data.messageId);
     if (!container) { return; }
 
+    var existingSummaryEl = document.querySelector('.change-summary[data-summary-id="' + data.summaryId + '"]');
+    if (existingSummaryEl) {
+      existingSummaryEl.remove();
+    }
+
     var summaryEl = document.createElement('div');
-    summaryEl.className = 'change-summary';
+    summaryEl.className = data.needsConfirm ? 'change-summary change-summary-pending' : 'change-summary';
+    summaryEl.setAttribute('data-summary-id', data.summaryId);
 
     var totalAdd = 0;
     var totalDel = 0;
     var fileRows = '';
+    var fileCountLabel = data.files.length + ' file' + (data.files.length > 1 ? 's' : '');
 
     data.files.forEach(function (file) {
       totalAdd += file.additions;
       totalDel += file.deletions;
-      var fileName = file.path.split(/[/\\]/).pop() || file.path;
+      var fileName = file.displayPath || file.path;
       var statusIcon = getFileStatusIcon(file.status);
       var statsHtml = '';
+      var issueHtml = file.issueText
+        ? '<div class="summary-issue">' + escapeHtml(file.issueText) + '</div>'
+        : '';
       if (file.additions > 0) { statsHtml += '<span class="diff-add">+' + file.additions + '</span> '; }
       if (file.deletions > 0) { statsHtml += '<span class="diff-del">-' + file.deletions + '</span>'; }
 
       fileRows +=
         '<div class="summary-file">' +
-          '<span class="summary-icon">' + statusIcon + '</span>' +
-          '<span class="summary-name">' + escapeHtml(fileName) + '</span>' +
-          '<span class="summary-stats">' + statsHtml + '</span>' +
+          '<div class="summary-file-row">' +
+            '<span class="summary-icon">' + statusIcon + '</span>' +
+            '<span class="summary-name" title="' + escapeHtml(fileName) + '">' + escapeHtml(fileName) + '</span>' +
+            '<span class="summary-stats">' + statsHtml + '</span>' +
+          '</div>' +
+          issueHtml +
         '</div>';
     });
 
@@ -715,12 +1159,31 @@
     if (totalAdd > 0) { totalStats += '<span class="diff-add">+' + totalAdd + '</span> '; }
     if (totalDel > 0) { totalStats += '<span class="diff-del">-' + totalDel + '</span>'; }
 
-    summaryEl.innerHTML =
-      '<div class="summary-header">' +
-        '<span>' + data.files.length + ' file' + (data.files.length > 1 ? 's' : '') + '</span> ' +
-        totalStats +
-      '</div>' +
-      '<div class="summary-files">' + fileRows + '</div>';
+    if (data.needsConfirm) {
+      summaryEl.innerHTML =
+        '<div class="summary-bar">' +
+          '<div class="summary-primary">' +
+            '<span class="summary-count">' + fileCountLabel + '</span>' +
+            '<span class="summary-total-stats">' + totalStats + '</span>' +
+          '</div>' +
+          '<div class="summary-actions">' +
+            '<button class="summary-btn summary-btn-view">View all changes</button>' +
+            '<button class="summary-btn summary-btn-reject">Reject all</button>' +
+            '<button class="summary-btn summary-btn-accept">Accept all</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="summary-files">' + fileRows + '</div>';
+
+      bindBatchSummaryActions(summaryEl, data);
+      updateSummaryViewButtons(data.summaryId);
+    } else {
+      summaryEl.innerHTML =
+        '<div class="summary-header">' +
+          '<span>' + fileCountLabel + '</span> ' +
+          totalStats +
+        '</div>' +
+        '<div class="summary-files">' + fileRows + '</div>';
+    }
 
     container.appendChild(summaryEl);
     scrollToBottom();
@@ -769,6 +1232,9 @@
     showThinkingComplete: showThinkingComplete,
     showDiff: showDiff,
     showChangeSummary: showChangeSummary,
+    updateChangeSummary: updateChangeSummary,
+    cancelPendingChangeSummaries: cancelPendingChangeSummaries,
+    cancelAllRunningSteps: cancelAllRunningSteps,
     getOrCreateStepsContainer: getOrCreateStepsContainer,
   };
 

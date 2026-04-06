@@ -1367,6 +1367,13 @@ body {
   color: var(--vscode-foreground);
 }
 
+.diff-notice {
+  padding: 6px 10px;
+  color: var(--vscode-descriptionForeground, #999);
+  background: rgba(255, 193, 7, 0.08);
+  border-bottom: 1px solid var(--vscode-widget-border, rgba(255,255,255,0.08));
+}
+
 /* Diff 内容区 */
 .diff-content {
   max-height: 300px;
@@ -1440,6 +1447,18 @@ body {
   flex: 1;
   min-width: 0;
   padding-left: 8px;
+}
+
+.diff-inline-add {
+  background: rgba(115, 201, 145, 0.28);
+  color: inherit;
+  border-radius: 2px;
+}
+
+.diff-inline-del {
+  background: rgba(244, 68, 68, 0.24);
+  color: inherit;
+  border-radius: 2px;
 }
 
 /* Diff 操作栏（Accept/Reject） */
@@ -1524,10 +1543,17 @@ body {
 
 .summary-file {
   display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 3px 0;
+  color: var(--vscode-descriptionForeground, #999);
+}
+
+.summary-file-row {
+  display: flex;
   align-items: center;
   gap: 6px;
-  padding: 2px 0;
-  color: var(--vscode-descriptionForeground, #999);
+  min-width: 0;
 }
 
 .summary-icon {
@@ -1543,4 +1569,133 @@ body {
 
 .summary-stats {
   flex-shrink: 0;
+}
+
+.summary-issue {
+  padding-left: 18px;
+  color: var(--vscode-descriptionForeground, #999);
+  font-size: 11px;
+}
+
+.change-summary-pending {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--vscode-focusBorder, rgba(0, 120, 212, 0.6));
+  border-radius: 6px;
+  background: var(--vscode-editor-inactiveSelectionBackground, rgba(0, 120, 212, 0.08));
+}
+
+.summary-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.summary-primary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.summary-count {
+  font-weight: 600;
+  color: var(--vscode-foreground);
+  white-space: nowrap;
+}
+
+.summary-total-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.summary-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.summary-btn {
+  padding: 4px 12px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 999px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.summary-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.summary-btn-view {
+  background: transparent;
+  color: var(--vscode-foreground, #ccc);
+  border-color: var(--vscode-widget-border, rgba(255,255,255,0.2));
+}
+
+.summary-btn-view:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.summary-btn-reject {
+  background: transparent;
+  color: var(--vscode-foreground, #ccc);
+  border-color: var(--vscode-widget-border, rgba(255,255,255,0.2));
+}
+
+.summary-btn-reject:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.summary-btn-accept {
+  background: var(--vscode-button-background, #0078d4);
+  color: var(--vscode-button-foreground, #fff);
+}
+
+.summary-btn-accept:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground, #1a8cff);
+}
+
+.summary-accepted {
+  color: var(--vscode-testing-iconPassed, #73c991);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.summary-applying {
+  color: var(--vscode-charts-blue, #4fc1ff);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.summary-partial {
+  color: var(--vscode-testing-iconQueued, #cca700);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.summary-failed {
+  color: var(--vscode-errorForeground, #f44);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.summary-rejected {
+  color: var(--vscode-descriptionForeground, #999);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.summary-cancelled {
+  color: var(--vscode-descriptionForeground, #999);
+  font-size: 12px;
+  white-space: nowrap;
 }
