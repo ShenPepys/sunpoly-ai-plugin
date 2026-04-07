@@ -16,6 +16,13 @@
   // 注意：VS Code API 由 chat.js 初始化后暴露到 window.vscodeApi
   // 本模块在函数调用时惰性读取（加载时 chat.js 尚未执行）
 
+  /**
+   * summaryId → files 数组（含绝对路径）
+   * showChangeSummary 时写入，View all changes 点击时读取，
+   * 用于通知 Extension 在 IDE 中打开对应文件
+   */
+  var summaryFilesStore = {};
+
   // ==================== 步骤容器管理 ====================
 
   /**
@@ -1008,9 +1015,29 @@
     if (!viewBtn) { return; }
 
     viewBtn.addEventListener('click', function () {
-      toggleSummaryDiffs(summaryId);
-      updateSummaryViewButtons(summaryId);
-      scrollToBottom();
+      // 待确认状态：用内联 diff 让用户审阅后再 Accept/Reject
+      // 已应用状态：在 IDE 中直接打开文件，体验更好
+      var isPending = summaryEl.classList.contains('change-summary-pending');
+
+      if (isPending) {
+        toggleSummaryDiffs(summaryId);
+        updateSummaryViewButtons(summaryId);
+        scrollToBottom();
+      } else {
+        var storedFiles = summaryFilesStore[summaryId] || [];
+        // 只打开写入/创建类文件，忽略只读和目录列举操作
+        var writeFiles = storedFiles.filter(function (f) {
+          return f.status === 'created' || f.status === 'modified';
+        });
+        if (writeFiles.length > 0 && window.vscodeApi) {
+          window.vscodeApi.postMessage({
+            type: 'openFilesInIde',
+            files: writeFiles.map(function (f) {
+              return { path: f.path, status: f.status };
+            })
+          });
+        }
+      }
     });
   }
 
@@ -1117,6 +1144,9 @@
   function showChangeSummary(data) {
     var container = getOrCreateStepsContainer(data.messageId);
     if (!container) { return; }
+
+    // 缓存文件数据，供 View all changes 按钮使用（需要绝对路径）
+    summaryFilesStore[data.summaryId] = data.files;
 
     var existingSummaryEl = document.querySelector('.change-summary[data-summary-id="' + data.summaryId + '"]');
     if (existingSummaryEl) {

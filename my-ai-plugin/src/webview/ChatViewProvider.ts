@@ -99,6 +99,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private stepSequence = 0;
 
+  /**
+   * 本轮对话中已应用的文件变更列表，跨多轮工具调用收集
+   * 在 handleUserMessage / regenerateResponse 开始时清空，
+   * 用于 AI 回复结束后展示“本轮全量变更”汇总条
+   */
+  private turnWriteFiles: ChangeSummaryFile[] = [];
+
   /** 模型切换回调，外部设置后在切换模型时触发 */
   public onModelSwitch?: (modelName: string) => void;
 
@@ -302,6 +309,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.handleRegenerate();
         break;
 
+      case 'openFilesInIde':
+        // 在 IDE 中打开文件：新建文件直接打开，编辑文件使用 Diff 编辑器
+        this.openFilesInIde(message.files);
+        break;
+
       case 'stopGeneration':
         this.activeRunId = null;
         this.stepSequence = 0;
@@ -417,6 +429,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     text: string,
     images?: Array<{ id: string; dataUrl: string; fileName: string; mimeType: string; sizeKB: number }>
   ): Promise<void> {
+    // 每轮对话开始时清空跨轮文件记录
+    this.turnWriteFiles = [];
+
     // 先在界面上显示用户消息
     const userMsgId = `user-${Date.now()}`;
     this.postMessage({
@@ -856,6 +871,16 @@ ${projectCtx}` : baseSystemPrompt;
               text: `⚠ Applied ${successCount}/${deferredSteps.length} changes, ${failureCount} failed`,
             });
           }
+
+          // 收集已成功应用的文件到本轮汇总（用于最终全量汇总）
+          if (successCount > 0) {
+            for (const sf of summaryFiles) {
+              const alreadyTracked = this.turnWriteFiles.some(f => f.path === sf.path);
+              if (!alreadyTracked) {
+                this.turnWriteFiles.push(sf);
+              }
+            }
+          }
         }
       }
 
@@ -916,6 +941,8 @@ ${projectCtx}` : baseSystemPrompt;
             }
           } else {
             this.postMessage({ type: 'streamDone', messageId: reuseMsgId });
+            // 所有工具调用轮次结束，若本轮有 2+ 文件变更则发送全量汇总
+            this.maybeSendFinalTurnSummary(reuseMsgId);
             this.activeRunId = null;
             this.stepSequence = 0;
           }
@@ -937,6 +964,28 @@ ${projectCtx}` : baseSystemPrompt;
     } finally {
       this.toolCallsInProgress = false;
     }
+  }
+
+  /**
+   * 若本轮对话中有 2 个以上不同文件被修改/创建，
+   * 在 AI 最后一次回复结束后向前端发送全量变更汇总
+   *
+   * 这样用户可以在步骤区看到所有文件的汇聚视图，
+   * 不必在多个单步 summary 之间自己累加
+   *
+   * @param messageId 最后一条 AI 消息的 ID
+   */
+  private maybeSendFinalTurnSummary(messageId: string): void {
+    if (this.turnWriteFiles.length <= 1) { return; }
+
+    const finalSummaryId = `final-summary-${messageId}`;
+    this.postMessage({
+      type: 'showChangeSummary',
+      messageId,
+      summaryId: finalSummaryId,
+      needsConfirm: false,
+      files: this.turnWriteFiles,
+    });
   }
 
   /**
@@ -1454,6 +1503,8 @@ ${projectCtx}` : baseSystemPrompt;
    * 与 handleUserMessage 区别：跳过添加用户 UI 消息和保存用户历史这两步
    */
   private async regenerateResponse(userText: string): Promise<void> {
+    // 重新生成也是新的一轮，清空跨轮文件记录
+    this.turnWriteFiles = [];
     this.postMessage({ type: 'setLoading', loading: true });
 
     const apiKey = await ensureApiKey();
@@ -1535,6 +1586,59 @@ ${projectCtx}` : baseSystemPrompt;
     const prompt = buildErrorAnalysisPrompt(errorText);
     info('分析终端错误，剪贴板内容长度:', errorText.length);
     await this.handleUserMessage(prompt);
+  }
+
+  /**
+   * 在 IDE 中打开文件变更：
+   * - 新建文件（status === 'created'）→ showTextDocument 直接打开
+   * - 编辑文件（status === 'modified'）→ vscode.diff 对比编辑器（磁盘旧版 vs 当前文件）
+   *
+   * 多文件时逐个打开，只打开写入类操作（忽略 read / listed）
+   */
+  private async openFilesInIde(
+    files: Array<{ path: string; status: 'created' | 'modified' | 'read' | 'listed' }>
+  ): Promise<void> {
+    for (const file of files) {
+      if (file.status !== 'created' && file.status !== 'modified') { continue; }
+
+      const uri = vscode.Uri.file(file.path);
+
+      try {
+        if (file.status === 'created') {
+          // 新建文件：直接在编辑器中打开
+          const doc = await vscode.workspace.openTextDocument(uri);
+          await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false });
+        } else {
+          // 编辑文件：用 git 历史版本（HEAD）与当前磁盘文件做对比
+          // 如果 git 历史不可用则退回到直接打开文件
+          let opened = false;
+          try {
+            const gitExt = vscode.extensions.getExtension('vscode.git');
+            if (gitExt) {
+              const git = gitExt.exports.getAPI(1);
+              const repo = git.repositories[0];
+              if (repo) {
+                // HEAD 版本 URI（git 虚拟文档协议）
+                const headUri = uri.with({ scheme: 'git', query: JSON.stringify({ path: uri.fsPath, ref: 'HEAD' }) });
+                const label = `${path.basename(file.path)} (HEAD ↔ 工作区)`;
+                await vscode.commands.executeCommand('vscode.diff', headUri, uri, label);
+                opened = true;
+              }
+            }
+          } catch {
+            // git diff 失败则退回直接打开
+          }
+
+          if (!opened) {
+            const doc = await vscode.workspace.openTextDocument(uri);
+            await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false });
+          }
+        }
+      } catch (err) {
+        error('openFilesInIde 打开文件失败:', file.path, err);
+        vscode.window.showErrorMessage(`无法打开文件：${file.path}`);
+      }
+    }
   }
 
   /**

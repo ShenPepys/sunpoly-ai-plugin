@@ -119,6 +119,16 @@ export interface RegenerateRequest {
   type: 'regenerate';
 }
 
+/**
+ * 用户点击 "View all changes" 按钮，请求 Extension 在 IDE 中打开对应文件
+ * 新建文件 → showTextDocument，编辑文件 → vscode.diff 对比编辑器
+ */
+export interface OpenFilesInIdeRequest {
+  type: 'openFilesInIde';
+  /** 要打开的文件列表（绝对路径 + 状态） */
+  files: Array<{ path: string; status: 'created' | 'modified' | 'read' | 'listed' }>;
+}
+
 /** 新建会话 */
 export interface CreateSessionRequest {
   type: 'createSession';
@@ -168,7 +178,8 @@ export type WebviewMessage =
   | DeleteSessionRequest
   | RenameSessionRequest
   | AnalyzeTerminalErrorRequest
-  | RegenerateRequest;
+  | RegenerateRequest
+  | OpenFilesInIdeRequest;
 
 // ==================== Extension → Webview ====================
 
