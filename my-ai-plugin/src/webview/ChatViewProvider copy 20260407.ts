@@ -102,8 +102,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** 当次请求内工具调用的轮次计数，每次新发送/重新生成时清零 */
   private toolCallRound = 0;
 
-  private sessionLauncherVisible = false;
-
   /**
    * 本轮对话中已应用的文件变更列表，跨多轮工具调用收集
    * 在 handleUserMessage / regenerateResponse 开始时清空，
@@ -177,12 +175,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.postMessage({ type: 'updateMode', mode: this.currentMode });
     this.sendSessionList();
 
-    if (this.sessionLauncherVisible) {
-      this.postMessage({ type: 'clearChat' });
-      this.postMessage({ type: 'setSessionLauncher', visible: true });
-      return;
-    }
-
     // 恢复当前活跃会话的历史到界面
     this.restoreHistoryToWebview();
   }
@@ -232,7 +224,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       case 'clearChat':
         info('用户清空对话');
-        this.clearCurrentSession();
+        if (this.abortStream) {
+          this.abortStream();
+          this.abortStream = null;
+        }
+        this.activeRunId = null;
+        this.stepSequence = 0;
+        this.toolCallsInProgress = false;
+        this.clearHistory();
+        this.contextFiles = [];
+        for (const resolve of this.pendingConfirms.values()) { resolve(false); }
+        this.pendingConfirms.clear();
+        for (const resolve of this.pendingBatchConfirms.values()) { resolve(false); }
+        this.pendingBatchConfirms.clear();
+        this.postMessage({ type: 'setLoading', loading: false });
+        this.postMessage({ type: 'clearChat' });
+        this.postMessage({ type: 'clearContextFiles' });
         break;
 
       case 'requestModels':
@@ -288,7 +295,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'createSession':
-        this.openSessionLauncher();
+        this.createNewSession();
         break;
 
       case 'switchSession':
@@ -432,13 +439,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     text: string,
     images?: Array<{ id: string; dataUrl: string; fileName: string; mimeType: string; sizeKB: number }>
   ): Promise<void> {
-    if (this.sessionLauncherVisible || !this.getActiveSession()) {
-      this.createNewSession(this.buildSessionTitle(text));
-      this.postMessage({ type: 'clearChat' });
-      this.hideSessionLauncher();
-      this.sendSessionList();
-    }
-
     // 每轮对话开始时清空跨轮文件记录和轮次计数器
     this.turnWriteFiles = [];
     this.turnWriteRounds = 0;
@@ -1961,37 +1961,6 @@ ${projectCtx}` : baseSystemPrompt;
     info('对话历史已清空');
   }
 
-  public clearCurrentSession(): void {
-    if (this.sessionLauncherVisible) {
-      this.postMessage({
-        type: 'showError',
-        message: '当前处于新建对话状态，无需清空对话。',
-      });
-      return;
-    }
-
-    if (this.abortStream) {
-      this.abortStream();
-      this.abortStream = null;
-    }
-
-    this.activeRunId = null;
-    this.stepSequence = 0;
-    this.toolCallRound = 0;
-    this.toolCallsInProgress = false;
-    this.clearHistory();
-    this.contextFiles = [];
-
-    for (const resolve of this.pendingConfirms.values()) { resolve(false); }
-    this.pendingConfirms.clear();
-    for (const resolve of this.pendingBatchConfirms.values()) { resolve(false); }
-    this.pendingBatchConfirms.clear();
-
-    this.postMessage({ type: 'setLoading', loading: false });
-    this.postMessage({ type: 'clearChat' });
-    this.postMessage({ type: 'clearContextFiles' });
-  }
-
   /**
    * 上下文窗口管理：当历史消息估算 token 数超过阈值时，截断旧消息
    * 保留最近的消息，确保不超过模型的上下文窗口限制
@@ -2029,88 +1998,7 @@ ${projectCtx}` : baseSystemPrompt;
    */
   private saveChatHistory(): void {
     // 历史已经包含在当前会话里，直接保存整个会话列表即可
-    this.touchSession();
     this.saveSessions();
-    this.sendSessionList();
-  }
-
-  public openSessionLauncher(): void {
-    if (this.hasRunningTask()) {
-      this.postMessage({
-        type: 'showError',
-        message: '当前会话仍在生成或等待确认，请先停止当前任务后再新建对话。',
-      });
-      return;
-    }
-
-    this.sessionLauncherVisible = true;
-    this.contextFiles = [];
-    this.postMessage({ type: 'clearContextFiles' });
-    this.postMessage({ type: 'clearChat' });
-    this.postMessage({ type: 'setSessionLauncher', visible: true });
-    this.sendSessionList();
-    this.postMessage({ type: 'focusInput' });
-  }
-
-  private hideSessionLauncher(): void {
-    if (!this.sessionLauncherVisible) {
-      return;
-    }
-
-    this.sessionLauncherVisible = false;
-    this.postMessage({ type: 'setSessionLauncher', visible: false });
-  }
-
-  private getActiveSession(): ChatSession | undefined {
-    return this.sessions.find(s => s.id === this.activeSessionId);
-  }
-
-  private touchSession(sessionId: string = this.activeSessionId): void {
-    const session = this.sessions.find(s => s.id === sessionId);
-    if (session) {
-      session.updatedAt = Date.now();
-    }
-  }
-
-  private hasRunningTask(): boolean {
-    return this.activeRunId !== null
-      || this.abortStream !== null
-      || this.toolCallsInProgress
-      || this.pendingConfirms.size > 0
-      || this.pendingBatchConfirms.size > 0;
-  }
-
-  private buildSessionTitle(text: string): string {
-    const normalized = text.replace(/\s+/g, ' ').trim();
-    if (!normalized) {
-      return '新对话';
-    }
-
-    if (normalized.length <= 24) {
-      return normalized;
-    }
-
-    return `${normalized.slice(0, 24)}...`;
-  }
-
-  private extractSessionTitleFromHistory(history: Array<{ role: string; content: unknown }>): string {
-    const firstUserMessage = history.find(msg => msg.role === 'user' && typeof msg.content === 'string');
-    if (!firstUserMessage || typeof firstUserMessage.content !== 'string') {
-      return '历史会话';
-    }
-
-    const displayText = firstUserMessage.content.split('\n\n## ')[0];
-    return this.buildSessionTitle(displayText);
-  }
-
-  private sortSessionsByUpdatedAt(): void {
-    this.sessions.sort((left, right) => {
-      if (right.updatedAt !== left.updatedAt) {
-        return right.updatedAt - left.updatedAt;
-      }
-
-      return right.createdAt - left.createdAt;
-    });
   }
 
   // ==================== 会话管理 ====================
@@ -2121,45 +2009,22 @@ ${projectCtx}` : baseSystemPrompt;
    */
   private loadSessions(): void {
     const savedSessions = this.context.globalState.get<ChatSession[]>('chatSessions');
-    let shouldResave = false;
 
     if (savedSessions && savedSessions.length > 0) {
-      this.sessions = savedSessions.map(session => {
-        const updatedAt = typeof session.updatedAt === 'number'
-          ? session.updatedAt
-          : (typeof session.createdAt === 'number' ? session.createdAt : Date.now());
-
-        if (typeof session.updatedAt !== 'number') {
-          shouldResave = true;
-        }
-
-        return {
-          ...session,
-          updatedAt,
-        };
-      });
-      this.sortSessionsByUpdatedAt();
+      this.sessions = savedSessions;
       const savedActiveId = this.context.globalState.get<string>('activeSessionId');
       // 确保 activeSessionId 对应的会话确实存在
-      const valid = this.sessions.find(s => s.id === savedActiveId);
-      this.activeSessionId = valid ? savedActiveId! : (this.sessions[0]?.id ?? '');
+      const valid = savedSessions.find(s => s.id === savedActiveId);
+      this.activeSessionId = valid ? savedActiveId! : savedSessions[0].id;
     } else {
       // 新安装或迁移旧数据：用旧 chatHistory 创建第一个会话
       const oldHistory = this.context.globalState.get<Array<{ role: string; content: unknown }>>('chatHistory');
+      const first = this.createSessionObject('会话 1');
       if (oldHistory && oldHistory.length > 0) {
-        const first = this.createSessionObject(this.extractSessionTitleFromHistory(oldHistory));
         first.history = oldHistory;
-        first.updatedAt = Date.now();
-        this.sessions = [first];
-        this.activeSessionId = first.id;
-        shouldResave = true;
-      } else {
-        this.sessions = [];
-        this.activeSessionId = '';
       }
-    }
-
-    if (shouldResave) {
+      this.sessions = [first];
+      this.activeSessionId = first.id;
       this.saveSessions();
     }
 
@@ -2171,7 +2036,6 @@ ${projectCtx}` : baseSystemPrompt;
    * 同时更新 token 计数、负责所有会话数据的唯一展适备份
    */
   private saveSessions(): void {
-    this.sortSessionsByUpdatedAt();
     this.context.globalState.update('chatSessions', this.sessions);
     this.context.globalState.update('activeSessionId', this.activeSessionId);
     this.pushTokenCount();
@@ -2182,12 +2046,10 @@ ${projectCtx}` : baseSystemPrompt;
    * @param name 初始名称
    */
   private createSessionObject(name: string): ChatSession {
-    const now = Date.now();
     return {
       id: `session-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       name,
-      createdAt: now,
-      updatedAt: now,
+      createdAt: Date.now(),
       history: [],
     };
   }
@@ -2196,12 +2058,16 @@ ${projectCtx}` : baseSystemPrompt;
    * 新建会话并切换到新会话
    * 名称自动生成为 "会话 N"
    */
-  private createNewSession(name: string): ChatSession {
+  private createNewSession(): void {
+    const name = `会话 ${this.sessions.length + 1}`;
     const newSession = this.createSessionObject(name);
     this.sessions.push(newSession);
     this.activeSessionId = newSession.id;
     this.saveSessions();
-    return newSession;
+    // 清空界面并确保不显示旧内容
+    this.postMessage({ type: 'clearChat' });
+    this.sendSessionList();
+    info(`新建会话: ${name}`);
   }
 
   /**
@@ -2209,24 +2075,13 @@ ${projectCtx}` : baseSystemPrompt;
    * @param sessionId 目标会话 ID
    */
   private switchSession(sessionId: string): void {
-    if (this.hasRunningTask()) {
-      this.postMessage({
-        type: 'showError',
-        message: '当前会话仍在生成或等待确认，请先停止当前任务后再继续其他会话。',
-      });
-      return;
-    }
-
-    if (sessionId === this.activeSessionId && !this.sessionLauncherVisible) { return; }
+    if (sessionId === this.activeSessionId) { return; }
     const session = this.sessions.find(s => s.id === sessionId);
     if (!session) { return; }
     this.activeSessionId = sessionId;
-    session.updatedAt = Date.now();
-    this.sessionLauncherVisible = false;
     this.saveSessions();
     // 先清空界面，再还原新会话历史
     this.postMessage({ type: 'clearChat' });
-    this.postMessage({ type: 'setSessionLauncher', visible: false });
     this.restoreHistoryToWebview();
     this.sendSessionList();
     info(`切换会话到: ${session.name}`);
@@ -2238,26 +2093,19 @@ ${projectCtx}` : baseSystemPrompt;
    * @param sessionId 要删除的会话 ID
    */
   private deleteSession(sessionId: string): void {
-    if (this.hasRunningTask() && this.activeSessionId === sessionId) {
-      this.postMessage({
-        type: 'showError',
-        message: '当前会话仍在生成或等待确认，请先停止当前任务后再删除该会话。',
-      });
+    if (this.sessions.length <= 1) {
+      vscode.window.showWarningMessage('至少保留一个会话');
       return;
     }
-
     const index = this.sessions.findIndex(s => s.id === sessionId);
     if (index === -1) { return; }
     this.sessions.splice(index, 1);
+    // 删除的是当前会话则自动跳到相邻的会话
     if (this.activeSessionId === sessionId) {
-      this.activeSessionId = '';
-      this.sessionLauncherVisible = true;
+      const newIndex = Math.min(index, this.sessions.length - 1);
+      this.activeSessionId = this.sessions[newIndex].id;
       this.postMessage({ type: 'clearChat' });
-      this.postMessage({ type: 'setSessionLauncher', visible: true });
-    } else if (!this.activeSessionId && this.sessions.length > 0) {
-      this.sessionLauncherVisible = true;
-      this.postMessage({ type: 'clearChat' });
-      this.postMessage({ type: 'setSessionLauncher', visible: true });
+      this.restoreHistoryToWebview();
     }
     this.saveSessions();
     this.sendSessionList();
@@ -2290,7 +2138,6 @@ ${projectCtx}` : baseSystemPrompt;
         id: s.id,
         name: s.name,
         createdAt: s.createdAt,
-        updatedAt: s.updatedAt,
         // 历史消息数：过滤工具反馈中间消息，只计用户和 AI 的回合
         messageCount: (s.history as Array<{ role: string }>)
           .filter(m => m.role === 'user' || m.role === 'assistant').length,
@@ -2375,10 +2222,6 @@ ${projectCtx}` : baseSystemPrompt;
    * 只显示用户消息和 AI 最终回复（过滤掉工具调用中间消息）
    */
   private restoreHistoryToWebview(): void {
-    if (this.sessionLauncherVisible) {
-      return;
-    }
-
     if (this.chatHistory.length === 0) {
       return;
     }
@@ -2468,8 +2311,9 @@ ${projectCtx}` : baseSystemPrompt;
       <button id="search-close" class="search-nav-btn" title="关闭搜索">✕</button>
     </div>
     <!-- 会话 Tab 标签条 -->
-    <div id="session-tabs-bar" class="session-tabs-bar hidden">
+    <div id="session-tabs-bar" class="session-tabs-bar">
       <div id="session-tabs" class="session-tabs"></div>
+      <button id="btn-new-session" class="session-new-btn" title="新建会话">+</button>
     </div>
     <!-- 消息列表区域 -->
     <div id="messages">
@@ -2594,7 +2438,6 @@ ${projectCtx}` : baseSystemPrompt;
           <button id="btn-export" class="toolbar-icon-btn" title="导出对话">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           </button>
-          <button id="btn-new-session" class="toolbar-icon-btn session-new-btn" title="新建对话">新建</button>
           <button id="btn-clear" class="toolbar-icon-btn" title="清空对话">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6"/></svg>
           </button>

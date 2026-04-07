@@ -58,8 +58,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('my-ai-plugin.clearChat', () => {
       info('用户触发：清空对话');
-      chatProvider.clearHistory();
-      chatProvider.postMessage({ type: 'clearChat' });
+      chatProvider.clearCurrentSession();
     })
   );
 
@@ -103,10 +102,8 @@ export function activate(context: vscode.ExtensionContext): void {
   // 注册命令：Ctrl+Shift+N 新建对话
   context.subscriptions.push(
     vscode.commands.registerCommand('my-ai-plugin.newChat', async () => {
-      chatProvider.clearHistory();
-      chatProvider.postMessage({ type: 'clearChat' } as any);
       await vscode.commands.executeCommand('my-ai-plugin.chatView.focus');
-      chatProvider.postMessage({ type: 'focusInput' } as any);
+      chatProvider.openSessionLauncher();
       info('用户触发：新建对话');
     })
   );

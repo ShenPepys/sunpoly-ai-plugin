@@ -21,6 +21,7 @@ export interface ChatSession {
   name: string;
   /** 创建时间戳 */
   createdAt: number;
+  updatedAt: number;
   /** 对话历史（OpenAI 消息格式） */
   history: Array<{ role: string; content: unknown }>;
 }
@@ -289,6 +290,15 @@ export interface GenerationStoppedResponse {
   type: 'generationStopped';
 }
 
+export interface FocusInputResponse {
+  type: 'focusInput';
+}
+
+export interface SetSessionLauncherResponse {
+  type: 'setSessionLauncher';
+  visible: boolean;
+}
+
 // ==================== Windsurf 风格步骤展示 ====================
 
 /** 工具步骤状态 */
@@ -406,6 +416,7 @@ export interface UpdateSessionsResponse {
     id: string;
     name: string;
     createdAt: number;
+    updatedAt: number;
     /** 对话轮数（用于在 Tab 上展示徽章） */
     messageCount: number;
   }>;
@@ -455,6 +466,8 @@ export type ExtensionMessage =
   | UpdateTokenCountResponse
   | UpdateModeResponse
   | GenerationStoppedResponse
+  | FocusInputResponse
+  | SetSessionLauncherResponse
   | AddStepResponse
   | UpdateStepResponse
   | ShowDiffResponse

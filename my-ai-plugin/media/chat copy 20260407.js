@@ -38,7 +38,6 @@
   const charCountEl = document.getElementById('char-count');
   const btnExport = document.getElementById('btn-export');
   const imageAttachmentsContainer = document.getElementById('image-attachments');
-  const sessionTabsBar = document.getElementById('session-tabs-bar');
   const sessionTabsEl = document.getElementById('session-tabs');
   const btnNewSession = document.getElementById('btn-new-session');
   const btnTerminalError = document.getElementById('btn-terminal-error');
@@ -251,89 +250,6 @@
   var sessionList = [];
   /** 当前活跃会话的 ID */
   var activeSessionId = '';
-  var sessionLauncherVisible = false;
-  var pendingDeleteSessionId = '';
-
-  function getWelcomeMessageHtml() {
-    return '<div class="welcome-message">' +
-      '<p><strong>👋 你好！我是 AI 助理</strong></p>' +
-      '<div class="welcome-section">' +
-        '<p class="welcome-subtitle">快捷键</p>' +
-        '<div class="welcome-shortcuts">' +
-          '<div class="shortcut-item"><kbd>Ctrl</kbd>+<kbd>L</kbd><span>聚焦聊天</span></div>' +
-          '<div class="shortcut-item"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd><span>解释代码</span></div>' +
-          '<div class="shortcut-item"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd><span>新建对话</span></div>' +
-          '<div class="shortcut-item"><kbd>↑</kbd> / <kbd>↓</kbd><span>浏览历史输入</span></div>' +
-        '</div>' +
-      '</div>' +
-      '<div class="welcome-section">' +
-        '<p class="welcome-subtitle">快速操作</p>' +
-        '<div class="welcome-shortcuts">' +
-          '<div class="shortcut-item"><kbd>@</kbd><span>引用工作区文件</span></div>' +
-          '<div class="shortcut-item"><kbd>/</kbd><span>Slash 快捷命令</span></div>' +
-        '</div>' +
-      '</div>' +
-      '<p class="welcome-hint">选中代码后右键也可使用 AI 功能</p>' +
-    '</div>';
-  }
-
-  function renderMessagesBaseState() {
-    messagesContainer.innerHTML = sessionLauncherVisible ? '' : getWelcomeMessageHtml();
-  }
-
-  function syncSessionToolbarState() {
-    btnExport.style.display = sessionLauncherVisible ? 'none' : '';
-    btnClear.style.display = sessionLauncherVisible ? 'none' : '';
-    btnNewSession.style.display = sessionLauncherVisible ? 'none' : '';
-  }
-
-  function setSessionLauncherVisible(visible) {
-    sessionLauncherVisible = visible;
-    pendingDeleteSessionId = '';
-    sessionTabsBar.classList.toggle('hidden', !visible);
-    syncSessionToolbarState();
-
-    if (visible) {
-      setLoading(false);
-      messagesContainer.innerHTML = '';
-      renderSessionTabs();
-      scrollToBottom(true);
-      return;
-    }
-
-    if (messagesContainer.children.length === 0) {
-      renderMessagesBaseState();
-    }
-  }
-
-  function formatRelativeTime(timestamp) {
-    if (!timestamp) {
-      return '';
-    }
-
-    var diffMs = Date.now() - timestamp;
-    if (diffMs < 60 * 1000) {
-      return 'now';
-    }
-
-    var diffMinutes = Math.floor(diffMs / (60 * 1000));
-    if (diffMinutes < 60) {
-      return diffMinutes + 'm';
-    }
-
-    var diffHours = Math.floor(diffMinutes / 60);
-    if (diffHours < 24) {
-      return diffHours + 'h';
-    }
-
-    var diffDays = Math.floor(diffHours / 24);
-    if (diffDays < 7) {
-      return diffDays + 'd';
-    }
-
-    var date = new Date(timestamp);
-    return String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0');
-  }
 
   /** 隐藏的文件输入框，用于触发图片选择对话框 */
   var imageFileInput = document.createElement('input');
@@ -578,11 +494,6 @@
     // 保存用于重试
     lastUserMessage = text;
 
-    if (sessionLauncherVisible) {
-      setSessionLauncherVisible(false);
-      messagesContainer.innerHTML = '';
-    }
-
     vscode.postMessage({
       type: 'sendMessage',
       text: text,
@@ -640,10 +551,6 @@
         sessionList = message.sessions;
         activeSessionId = message.activeSessionId;
         renderSessionTabs();
-        break;
-
-      case 'setSessionLauncher':
-        setSessionLauncherVisible(message.visible);
         break;
 
       case 'updateMessage':
@@ -749,10 +656,6 @@
    * @param {string} messageId 消息唯一 ID
    */
   function addMessageToUI(role, content, messageId) {
-    if (sessionLauncherVisible) {
-      setSessionLauncherVisible(false);
-    }
-
     // 新消息出现时移除旧的重新生成按钮（保持界面整洁）
     removeAllRegenButtons();
     // 移除欢迎消息（只在第一条消息时）
@@ -950,94 +853,82 @@
   function renderSessionTabs() {
     sessionTabsEl.innerHTML = '';
 
-    if (!sessionLauncherVisible) {
-      return;
-    }
-
-    if (sessionList.length === 0) {
-      var emptyEl = document.createElement('div');
-      emptyEl.className = 'session-launcher-empty';
-      emptyEl.textContent = '暂无历史会话，直接在下方输入开始新对话';
-      sessionTabsEl.appendChild(emptyEl);
-      return;
-    }
-
     sessionList.forEach(function (session) {
       var isActive = session.id === activeSessionId;
-      var isPendingDelete = pendingDeleteSessionId === session.id;
-      var sessionItem = document.createElement('div');
-      sessionItem.className = 'session-launcher-item' + (isActive ? ' active' : '');
-      sessionItem.setAttribute('data-session-id', session.id);
+      var tab = document.createElement('div');
+      tab.className = 'session-tab' + (isActive ? ' active' : '');
+      tab.setAttribute('data-session-id', session.id);
 
-      if (isPendingDelete) {
-        var confirmRow = document.createElement('div');
-        confirmRow.className = 'session-launcher-confirm';
-        confirmRow.innerHTML =
-          '<span class="session-launcher-confirm-text">确认删除这个会话？</span>' +
-          '<div class="session-launcher-confirm-actions">' +
-            '<button class="session-launcher-btn danger">删除</button>' +
-            '<button class="session-launcher-btn ghost">取消</button>' +
-          '</div>';
-
-        confirmRow.querySelector('.session-launcher-btn.danger').addEventListener('click', function (e) {
-          e.stopPropagation();
-          pendingDeleteSessionId = '';
-          vscode.postMessage({ type: 'deleteSession', sessionId: session.id });
-        });
-
-        confirmRow.querySelector('.session-launcher-btn.ghost').addEventListener('click', function (e) {
-          e.stopPropagation();
-          pendingDeleteSessionId = '';
-          renderSessionTabs();
-        });
-
-        sessionItem.appendChild(confirmRow);
-        sessionTabsEl.appendChild(sessionItem);
-        return;
+      var nameEl = document.createElement('span');
+      nameEl.className = 'session-tab-name';
+      nameEl.textContent = session.name;
+      // 有对话记录时显示轮次徽章
+      if (session.messageCount > 0) {
+        nameEl.title = session.name + '（' + Math.floor(session.messageCount / 2) + ' 轮对话）';
       }
 
-      var infoWrap = document.createElement('div');
-      infoWrap.className = 'session-launcher-info';
-      infoWrap.innerHTML =
-        '<div class="session-launcher-title" title="' + escapeAttr(session.name) + '">' + escapeHtml(session.name) + '</div>' +
-        '<div class="session-launcher-meta">' + (session.messageCount > 0 ? (Math.ceil(session.messageCount / 2) + ' 轮对话') : '暂无消息') + '</div>';
+      // 仅在多会话时显示删除按钮，避免误删唯一会话
+      var closeBtn = document.createElement('button');
+      closeBtn.className = 'session-tab-close';
+      closeBtn.textContent = '×';
+      closeBtn.title = '删除此会话';
+      closeBtn.style.display = sessionList.length > 1 ? '' : 'none';
 
-      var rightWrap = document.createElement('div');
-      rightWrap.className = 'session-launcher-right';
-      rightWrap.innerHTML =
-        '<span class="session-launcher-time">' + formatRelativeTime(session.updatedAt) + '</span>' +
-        '<div class="session-launcher-actions">' +
-          '<button class="session-launcher-btn">继续</button>' +
-          '<button class="session-launcher-btn danger">删除</button>' +
-        '</div>';
+      tab.appendChild(nameEl);
+      tab.appendChild(closeBtn);
 
-      var continueBtn = rightWrap.querySelector('.session-launcher-btn');
-      var deleteBtn = rightWrap.querySelector('.session-launcher-btn.danger');
-
-      function continueSession() {
-        pendingDeleteSessionId = '';
-        vscode.postMessage({ type: 'switchSession', sessionId: session.id });
-      }
-
-      sessionItem.addEventListener('click', function () {
-        continueSession();
+      // 单击切换会话
+      tab.addEventListener('click', function (e) {
+        if (e.target === closeBtn) { return; }
+        if (!isActive) {
+          vscode.postMessage({ type: 'switchSession', sessionId: session.id });
+        }
       });
 
-      continueBtn.addEventListener('click', function (e) {
+      // 双击重命名：将名称替换为 input 内联编辑框
+      nameEl.addEventListener('dblclick', function (e) {
         e.stopPropagation();
-        continueSession();
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'session-tab-rename-input';
+        input.value = session.name;
+        tab.replaceChild(input, nameEl);
+        input.select();
+
+        function commitRename() {
+          var newName = input.value.trim();
+          if (newName && newName !== session.name) {
+            vscode.postMessage({ type: 'renameSession', sessionId: session.id, name: newName });
+          } else {
+            // 取消：恢复原名称显示
+            tab.replaceChild(nameEl, input);
+          }
+        }
+
+        input.addEventListener('blur', commitRename);
+        input.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') { input.blur(); }
+          if (e.key === 'Escape') {
+            input.removeEventListener('blur', commitRename);
+            tab.replaceChild(nameEl, input);
+          }
+        });
       });
 
-      deleteBtn.addEventListener('click', function (e) {
+      // 删除按钮
+      closeBtn.addEventListener('click', function (e) {
         e.stopPropagation();
-        pendingDeleteSessionId = session.id;
-        renderSessionTabs();
+        vscode.postMessage({ type: 'deleteSession', sessionId: session.id });
       });
 
-      sessionItem.appendChild(infoWrap);
-      sessionItem.appendChild(rightWrap);
-      sessionTabsEl.appendChild(sessionItem);
+      sessionTabsEl.appendChild(tab);
     });
+
+    // 确保活跃 Tab 滚动到可视区域
+    var activeTab = sessionTabsEl.querySelector('.session-tab.active');
+    if (activeTab) {
+      activeTab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
   }
 
   // ==================== 图片上传处理 ====================
@@ -1460,7 +1351,27 @@
       window.chatSteps.clearStore();
     }
     setLoading(false);
-    renderMessagesBaseState();
+    messagesContainer.innerHTML =
+      '<div class="welcome-message">' +
+        '<p><strong>👋 你好！我是 AI 助理</strong></p>' +
+        '<div class="welcome-section">' +
+          '<p class="welcome-subtitle">快捷键</p>' +
+          '<div class="welcome-shortcuts">' +
+            '<div class="shortcut-item"><kbd>Ctrl</kbd>+<kbd>L</kbd><span>聚焦聊天</span></div>' +
+            '<div class="shortcut-item"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd><span>解释代码</span></div>' +
+            '<div class="shortcut-item"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd><span>新建对话</span></div>' +
+            '<div class="shortcut-item"><kbd>↑</kbd> / <kbd>↓</kbd><span>浏览历史输入</span></div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="welcome-section">' +
+          '<p class="welcome-subtitle">快速操作</p>' +
+          '<div class="welcome-shortcuts">' +
+            '<div class="shortcut-item"><kbd>@</kbd><span>引用工作区文件</span></div>' +
+            '<div class="shortcut-item"><kbd>/</kbd><span>Slash 快捷命令</span></div>' +
+          '</div>' +
+        '</div>' +
+        '<p class="welcome-hint">选中代码后右键也可使用 AI 功能</p>' +
+      '</div>';
   }
 
   /** 是否自动滚动到底部（用户手动上翻时暂停） */
