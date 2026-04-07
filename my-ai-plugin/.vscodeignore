@@ -9,7 +9,8 @@ tsconfig.json
 .gitignore
 .env
 .env.*
-media/chat copy.js
+media/chat copy*.js
+media/*copy*.js
 **/*.md
 !README.md
 !CHANGELOG.md

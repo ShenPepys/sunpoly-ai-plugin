@@ -41,7 +41,9 @@
   const sessionTabsBar = document.getElementById('session-tabs-bar');
   const sessionTabsEl = document.getElementById('session-tabs');
   const btnNewSession = document.getElementById('btn-new-session');
+  const btnSettings = document.getElementById('btn-settings');
   const btnTerminalError = document.getElementById('btn-terminal-error');
+  var sessionLauncherRequestTimer = 0;
 
   /**
    * 关闭所有弹出面板
@@ -278,32 +280,42 @@
   }
 
   function renderMessagesBaseState() {
-    messagesContainer.innerHTML = sessionLauncherVisible ? '' : getWelcomeMessageHtml();
+    messagesContainer.innerHTML = '';
+
+    if (sessionLauncherVisible) {
+      renderSessionTabs();
+      return;
+    }
+
+    messagesContainer.innerHTML = getWelcomeMessageHtml();
   }
 
   function syncSessionToolbarState() {
     btnExport.style.display = sessionLauncherVisible ? 'none' : '';
     btnClear.style.display = sessionLauncherVisible ? 'none' : '';
     btnNewSession.style.display = sessionLauncherVisible ? 'none' : '';
+    // 设置按钮始终可见，不受启动态状态影响
+    if (btnSettings) {
+      btnSettings.style.display = '';
+    }
   }
 
   function setSessionLauncherVisible(visible) {
     sessionLauncherVisible = visible;
     pendingDeleteSessionId = '';
-    sessionTabsBar.classList.toggle('hidden', !visible);
+    sessionTabsBar.classList.add('hidden');
     syncSessionToolbarState();
 
+    setLoading(false);
+    renderMessagesBaseState();
+
     if (visible) {
-      setLoading(false);
-      messagesContainer.innerHTML = '';
-      renderSessionTabs();
-      scrollToBottom(true);
+      autoScrollEnabled = true;
+      messagesContainer.scrollTop = 0;
       return;
     }
 
-    if (messagesContainer.children.length === 0) {
-      renderMessagesBaseState();
-    }
+    scrollToBottom(true);
   }
 
   function formatRelativeTime(timestamp) {
@@ -343,9 +355,39 @@
   imageFileInput.style.display = 'none';
   document.body.appendChild(imageFileInput);
 
-  /** 新建会话按鈕点击 */
-  btnNewSession.addEventListener('click', function () {
+  /** 设置按钮点击 → 打开 VS Code 设置定位到 myAiPlugin */
+  if (btnSettings) {
+    btnSettings.addEventListener('click', function () {
+      vscode.postMessage({ type: 'openSettings' });
+    });
+  }
+
+  function clearSessionLauncherRequestTimer() {
+    if (!sessionLauncherRequestTimer) {
+      return;
+    }
+
+    clearTimeout(sessionLauncherRequestTimer);
+    sessionLauncherRequestTimer = 0;
+  }
+
+  function requestSessionLauncherOpen() {
+    clearSessionLauncherRequestTimer();
+    sessionLauncherRequestTimer = window.setTimeout(function () {
+      sessionLauncherRequestTimer = 0;
+      if (!sessionLauncherVisible) {
+        setSessionLauncherVisible(true);
+      }
+    }, 150);
+
     vscode.postMessage({ type: 'createSession' });
+  }
+
+  /** 新建会话按鈕点击 */
+  btnNewSession.addEventListener('click', function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    requestSessionLauncherOpen();
   });
 
   /**
@@ -619,6 +661,7 @@
         break;
 
       case 'showError':
+        clearSessionLauncherRequestTimer();
         showError(message.message);
         break;
 
@@ -643,6 +686,7 @@
         break;
 
       case 'setSessionLauncher':
+        clearSessionLauncherRequestTimer();
         setSessionLauncherVisible(message.visible);
         break;
 
@@ -954,13 +998,32 @@
       return;
     }
 
+    messagesContainer.innerHTML = '';
+
+    var launcherPanel = document.createElement('div');
+    launcherPanel.className = 'session-launcher-panel';
+
+    var headerEl = document.createElement('div');
+    headerEl.className = 'session-launcher-header';
+    headerEl.innerHTML =
+      '<div class="session-launcher-heading">继续之前的对话</div>' +
+      '<div class="session-launcher-subtitle">选择一个历史会话继续，或直接在下方输入开始新的对话</div>';
+
+    var listEl = document.createElement('div');
+    listEl.className = 'session-launcher-list';
+
     if (sessionList.length === 0) {
       var emptyEl = document.createElement('div');
       emptyEl.className = 'session-launcher-empty';
       emptyEl.textContent = '暂无历史会话，直接在下方输入开始新对话';
-      sessionTabsEl.appendChild(emptyEl);
+      listEl.appendChild(emptyEl);
+      launcherPanel.appendChild(headerEl);
+      launcherPanel.appendChild(listEl);
+      messagesContainer.appendChild(launcherPanel);
       return;
     }
+
+    launcherPanel.appendChild(headerEl);
 
     sessionList.forEach(function (session) {
       var isActive = session.id === activeSessionId;
@@ -992,7 +1055,7 @@
         });
 
         sessionItem.appendChild(confirmRow);
-        sessionTabsEl.appendChild(sessionItem);
+        listEl.appendChild(sessionItem);
         return;
       }
 
@@ -1036,8 +1099,11 @@
 
       sessionItem.appendChild(infoWrap);
       sessionItem.appendChild(rightWrap);
-      sessionTabsEl.appendChild(sessionItem);
+      listEl.appendChild(sessionItem);
     });
+
+    launcherPanel.appendChild(listEl);
+    messagesContainer.appendChild(launcherPanel);
   }
 
   // ==================== 图片上传处理 ====================

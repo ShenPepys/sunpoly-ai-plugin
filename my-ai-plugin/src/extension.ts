@@ -131,20 +131,34 @@ export function activate(context: vscode.ExtensionContext): void {
   // 注册命令：Ctrl+Shift+P 搜索 "AI: 编辑模型配置 (JSON)"
   context.subscriptions.push(
     vscode.commands.registerCommand('my-ai-plugin.editModels', async () => {
-      // 打开用户级 settings.json 并定位到 myAiPlugin.models
-      await vscode.commands.executeCommand('workbench.action.openSettingsJson');
-      // 给用户提示如何添加模型
-      const hasModels = getAllModels().some(m => m.apiKey && m.apiKey !== '');
-      if (!hasModels) {
-        vscode.window.showInformationMessage(
-          '请在 settings.json 中添加 "myAiPlugin.models" 配置，包含 name、modelId、baseUrl、apiKey 四个字段',
-          '查看示例'
-        ).then(choice => {
-          if (choice === '查看示例') {
-            vscode.env.openExternal(vscode.Uri.parse('https://api.deepseek.com'));
-          }
-        });
+      const config = vscode.workspace.getConfiguration('myAiPlugin');
+      const currentModels = config.get<Array<{ name: string; modelId: string; baseUrl: string; apiKey: string }>>('models', []);
+      const hasValidKey = currentModels.some(m => m.apiKey && m.apiKey !== '' && !m.apiKey.startsWith('填写'));
+
+      // 如果没有有效的模型配置，自动写入模板方便用户填写
+      if (!hasValidKey) {
+        const templateModels = [
+          {
+            name: '填写模型显示名称，如 DeepSeek Chat、GPT-4o、豆包',
+            modelId: '填写模型 ID，如 deepseek-chat、gpt-4o、doubao-pro-32k',
+            baseUrl: '填写 API 地址，如 https://api.deepseek.com',
+            apiKey: '填写你的 API Key',
+          },
+        ];
+        await config.update('models', templateModels, vscode.ConfigurationTarget.Global);
+        info('已写入模型配置模板到 settings.json');
       }
+
+      // 打开用户级 settings.json
+      await vscode.commands.executeCommand('workbench.action.openSettingsJson');
+
+      // 提示用户找到并修改 apiKey
+      if (!hasValidKey) {
+        vscode.window.showInformationMessage(
+          '已在 settings.json 中插入模型配置模板，请搜索 "myAiPlugin.models"，将 name、modelId、baseUrl、apiKey 四项全部替换为你的真实配置。'
+        );
+      }
+
       info('用户触发：编辑模型配置 JSON');
     })
   );

@@ -154,6 +154,11 @@ export interface RenameSessionRequest {
   name: string;
 }
 
+/** 打开插件设置页（VS Code settings 定位到 myAiPlugin） */
+export interface OpenSettingsRequest {
+  type: 'openSettings';
+}
+
 /** Webview 发送给 Extension 的所有消息类型 */
 export type WebviewMessage =
   | SendMessageRequest
@@ -180,7 +185,8 @@ export type WebviewMessage =
   | RenameSessionRequest
   | AnalyzeTerminalErrorRequest
   | RegenerateRequest
-  | OpenFilesInIdeRequest;
+  | OpenFilesInIdeRequest
+  | OpenSettingsRequest;
 
 // ==================== Extension → Webview ====================
 
