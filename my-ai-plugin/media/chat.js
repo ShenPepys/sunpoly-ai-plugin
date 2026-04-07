@@ -557,6 +557,10 @@
         updateMessageContent(message.messageId, message.content);
         break;
 
+      case 'removeLastAssistantMessage':
+        removeLastAssistantMessage();
+        break;
+
       case 'showThinking':
         showThinkingInMessage(message.messageId);
         break;
@@ -702,6 +706,18 @@
       streamBuffers[messageId] = content;
     }
     scrollToBottom();
+  }
+
+  function removeLastAssistantMessage() {
+    var assistantMessages = messagesContainer.querySelectorAll('.message.assistant');
+    if (assistantMessages.length === 0) {
+      return;
+    }
+
+    var lastAssistantMessage = assistantMessages[assistantMessages.length - 1];
+    if (lastAssistantMessage) {
+      lastAssistantMessage.remove();
+    }
   }
 
   /**
@@ -1233,18 +1249,22 @@
   }
 
   /**
-   * 在指定 AI 消息气泡底部添加「↺ 重新生成」按钮
+   * 将重新生成按钮插入到 .msg-actions 区域（复制按钮后面）
+   * 样式复用 btn-copy-msg，在 hover 时与复制按钮一起展示
    * @param {Element} messageEl 消息气泡 DOM 元素
    */
   function addRegenButton(messageEl) {
+    var actionsEl = messageEl.querySelector('.msg-actions');
+    if (!actionsEl) { return; }
+
     var btn = document.createElement('button');
-    btn.className = 'btn-regen';
+    btn.className = 'btn-regen btn-copy-msg';
     btn.title = '重新生成此回复';
-    btn.textContent = '↺ 重新生成';
+    btn.textContent = '↺';
     btn.addEventListener('click', function () {
       vscode.postMessage({ type: 'regenerate' });
     });
-    messageEl.appendChild(btn);
+    actionsEl.appendChild(btn);
   }
 
   /**
@@ -1326,6 +1346,10 @@
     // 清除图片附件
     pendingImages = [];
     renderImageAttachments();
+    // 清理 summary 文件数据缓存，防止内存泄漏
+    if (window.chatSteps && window.chatSteps.clearStore) {
+      window.chatSteps.clearStore();
+    }
     setLoading(false);
     messagesContainer.innerHTML =
       '<div class="welcome-message">' +

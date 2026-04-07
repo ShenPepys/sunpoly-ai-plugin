@@ -99,12 +99,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private stepSequence = 0;
 
+  /** 当次请求内工具调用的轮次计数，每次新发送/重新生成时清零 */
+  private toolCallRound = 0;
+
   /**
    * 本轮对话中已应用的文件变更列表，跨多轮工具调用收集
    * 在 handleUserMessage / regenerateResponse 开始时清空，
    * 用于 AI 回复结束后展示“本轮全量变更”汇总条
    */
   private turnWriteFiles: ChangeSummaryFile[] = [];
+
+  /**
+   * 本轮对话中完成写入操作的工具调用轮次数
+   * 只有多轮（>= 2）才需要全量汇总，单轮多文件已有批次 summary
+   */
+  private turnWriteRounds: number = 0;
 
   /** 模型切换回调，外部设置后在切换模型时触发 */
   public onModelSwitch?: (modelName: string) => void;
@@ -317,6 +326,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'stopGeneration':
         this.activeRunId = null;
         this.stepSequence = 0;
+        this.toolCallRound = 0;
         this.toolCallsInProgress = false;
         if (this.abortStream) {
           info('用户主动停止生成');
@@ -429,8 +439,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     text: string,
     images?: Array<{ id: string; dataUrl: string; fileName: string; mimeType: string; sizeKB: number }>
   ): Promise<void> {
-    // 每轮对话开始时清空跨轮文件记录
+    // 每轮对话开始时清空跨轮文件记录和轮次计数器
     this.turnWriteFiles = [];
+    this.turnWriteRounds = 0;
 
     // 先在界面上显示用户消息
     const userMsgId = `user-${Date.now()}`;
@@ -550,6 +561,7 @@ ${projectCtx}` : baseSystemPrompt;
     const streamStartTime = Date.now();
     this.activeRunId = assistantMsgId;
     this.stepSequence = 0;
+    this.toolCallRound = 0;
 
     this.abortStream = sendStreamRequest(
       apiConfig,
@@ -578,7 +590,9 @@ ${projectCtx}` : baseSystemPrompt;
         this.saveChatHistory();
         info(`AI 回复完成，长度: ${fullContent.length}，耗时: ${thinkingElapsed}ms`);
 
-        if (hasToolCalls(fullContent)) {
+        const parsedToolCalls = parseToolCalls(fullContent);
+
+        if (parsedToolCalls.length > 0) {
           // 剥离 tool_call 标签后更新界面显示（用户看不到原始 XML）
           const cleanContent = stripToolCalls(fullContent);
           this.postMessage({
@@ -591,8 +605,22 @@ ${projectCtx}` : baseSystemPrompt;
             this.postMessage({ type: 'thinkingComplete', messageId: assistantMsgId, elapsed: thinkingElapsed });
           }
           this.postMessage({ type: 'setLoading', loading: true });
-          this.handleToolCalls(fullContent, apiConfig, assistantMsgId);
+          this.handleToolCalls(fullContent, apiConfig, assistantMsgId, parsedToolCalls);
         } else {
+          // 回复中包含 tool_call 标签但未能解析成有效工具调用时，
+          // 不能进入工具执行流程，否则前端会残留 loading 状态。
+          if (hasToolCalls(fullContent)) {
+            const fallbackContent = stripToolCalls(fullContent).trim() || '⚠️ 检测到无效工具调用，未执行任何工具。';
+            this.postMessage({
+              type: 'updateMessage',
+              messageId: assistantMsgId,
+              content: fallbackContent,
+            });
+            this.postMessage({
+              type: 'showError',
+              message: '检测到无效的工具调用格式，已忽略本次工具执行',
+            });
+          }
           this.postMessage({ type: 'streamDone', messageId: assistantMsgId });
           if (thinkingElapsed > 1000) {
             this.postMessage({ type: 'thinkingComplete', messageId: assistantMsgId, elapsed: thinkingElapsed });
@@ -629,9 +657,19 @@ ${projectCtx}` : baseSystemPrompt;
    * @param apiConfig API 配置（用于续轮请求）
    * @param reuseMsgId 复用的气泡 ID，续轮回复会替换该气泡内容而不是创建新气泡
    */
-  private async handleToolCalls(aiResponse: string, apiConfig: ApiClientConfig, reuseMsgId: string): Promise<void> {
-    const toolCalls = parseToolCalls(aiResponse);
+  private async handleToolCalls(
+    aiResponse: string,
+    apiConfig: ApiClientConfig,
+    reuseMsgId: string,
+    parsedToolCalls?: ParsedToolCall[],
+  ): Promise<void> {
+    const toolCalls = parsedToolCalls ?? parseToolCalls(aiResponse);
     if (toolCalls.length === 0) {
+      if (this.activeRunId === reuseMsgId) {
+        this.postMessage({ type: 'setLoading', loading: false });
+        this.activeRunId = null;
+        this.stepSequence = 0;
+      }
       return;
     }
 
@@ -644,10 +682,11 @@ ${projectCtx}` : baseSystemPrompt;
       return;
     }
     this.toolCallsInProgress = true;
+    this.toolCallRound++;
 
     try {
 
-      info(`检测到 ${toolCalls.length} 个工具调用，逐步执行...`);
+      info(`检测到 ${toolCalls.length} 个工具调用，逐步执行，当前轮次: ${this.toolCallRound}`);  
 
       const results: ToolExecutionResult[] = [];
       const previewBaseStates = new Map<string, PreviewFileState>();
@@ -874,6 +913,7 @@ ${projectCtx}` : baseSystemPrompt;
 
           // 收集已成功应用的文件到本轮汇总（用于最终全量汇总）
           if (successCount > 0) {
+            this.turnWriteRounds += 1;
             for (const sf of summaryFiles) {
               const alreadyTracked = this.turnWriteFiles.some(f => f.path === sf.path);
               if (!alreadyTracked) {
@@ -928,18 +968,33 @@ ${projectCtx}` : baseSystemPrompt;
           this.saveChatHistory();
           info(`续轮回复完成，长度: ${fullContent.length}`);
 
-          if (hasToolCalls(fullContent)) {
+          const parsedToolCalls = parseToolCalls(fullContent);
+
+          if (parsedToolCalls.length > 0) {
             this.postMessage({ type: 'streamDone', messageId: reuseMsgId });
             const cleanContent = stripToolCalls(fullContent);
             this.postMessage({ type: 'updateMessage', messageId: reuseMsgId, content: cleanContent });
             this.postMessage({ type: 'setLoading', loading: true });
-            if (this.chatHistory.length < 30) {
-              this.handleToolCalls(fullContent, apiConfig, reuseMsgId);
+            if (this.toolCallRound < 10) {
+              this.handleToolCalls(fullContent, apiConfig, reuseMsgId, parsedToolCalls);
             } else {
+              this.postMessage({
+                type: 'showError',
+                message: '工具调用轮次过多（已达 10 轮），已停止继续执行。请缩小任务范围后重试。',
+              });
+              this.postMessage({ type: 'setLoading', loading: false });
               this.activeRunId = null;
               this.stepSequence = 0;
             }
           } else {
+            if (hasToolCalls(fullContent)) {
+              const fallbackContent = stripToolCalls(fullContent).trim() || '⚠️ 检测到无效工具调用，未执行任何工具。';
+              this.postMessage({ type: 'updateMessage', messageId: reuseMsgId, content: fallbackContent });
+              this.postMessage({
+                type: 'showError',
+                message: '检测到无效的工具调用格式，已忽略本次工具执行',
+              });
+            }
             this.postMessage({ type: 'streamDone', messageId: reuseMsgId });
             // 所有工具调用轮次结束，若本轮有 2+ 文件变更则发送全量汇总
             this.maybeSendFinalTurnSummary(reuseMsgId);
@@ -976,7 +1031,9 @@ ${projectCtx}` : baseSystemPrompt;
    * @param messageId 最后一条 AI 消息的 ID
    */
   private maybeSendFinalTurnSummary(messageId: string): void {
-    if (this.turnWriteFiles.length <= 1) { return; }
+    // 单轮内已有批次 summary，无需重复展示
+    // 只有跨多轮（>= 2 次独立工具调用回合）才需要全量汇总
+    if (this.turnWriteRounds < 2) { return; }
 
     const finalSummaryId = `final-summary-${messageId}`;
     this.postMessage({
@@ -1492,6 +1549,7 @@ ${projectCtx}` : baseSystemPrompt;
     // 剔除最后一条 assistant 消息（最后一轮从用户消息开始重做）
     this.chatHistory = history.slice(0, lastAssistantIdx);
     this.saveChatHistory();
+    this.postMessage({ type: 'removeLastAssistantMessage' });
 
     info('重新生成回复，参考用户消息长度:', userText.length);
     // 直接调用内部发送方法，不再显示用户消息气泡（已有）
@@ -1503,8 +1561,9 @@ ${projectCtx}` : baseSystemPrompt;
    * 与 handleUserMessage 区别：跳过添加用户 UI 消息和保存用户历史这两步
    */
   private async regenerateResponse(userText: string): Promise<void> {
-    // 重新生成也是新的一轮，清空跨轮文件记录
+    // 重新生成也是新的一轮，清空跨轮文件记录和轮次计数器
     this.turnWriteFiles = [];
+    this.turnWriteRounds = 0;
     this.postMessage({ type: 'setLoading', loading: true });
 
     const apiKey = await ensureApiKey();
@@ -1541,30 +1600,81 @@ ${projectCtx}` : baseSystemPrompt;
       temperature: getTemperature(),
     };
 
+    if (this.abortStream) {
+      this.abortStream();
+      this.abortStream = null;
+    }
+    for (const resolve of this.pendingConfirms.values()) { resolve(false); }
+    this.pendingConfirms.clear();
+    for (const resolve of this.pendingBatchConfirms.values()) { resolve(false); }
+    this.pendingBatchConfirms.clear();
+    this.toolCallsInProgress = false;
+
     const regenMsgId = `ai-regen-${Date.now()}`;
+    const streamStartTime = Date.now();
+    this.activeRunId = regenMsgId;
+    this.stepSequence = 0;
+    this.toolCallRound = 0;
     this.postMessage({ type: 'addMessage', role: 'assistant', content: '', messageId: regenMsgId });
 
     let fullContent = '';
-    this.abortStream = await sendStreamRequest(
+    this.abortStream = sendStreamRequest(
       apiConfig,
       messages,
       (chunk: string) => {
+        if (this.activeRunId !== regenMsgId) {
+          return;
+        }
         fullContent += chunk;
         this.postMessage({ type: 'streamChunk', messageId: regenMsgId, chunk });
       },
       async () => {
-        this.abortStream = null;
-        const cleanContent = hasToolCalls(fullContent) ? stripToolCalls(fullContent) : fullContent;
-        if (cleanContent !== fullContent) {
-          this.postMessage({ type: 'updateMessage', messageId: regenMsgId, content: cleanContent });
+        if (this.activeRunId !== regenMsgId) {
+          return;
         }
-        this.postMessage({ type: 'streamDone', messageId: regenMsgId });
+        this.abortStream = null;
+        const thinkingElapsed = Date.now() - streamStartTime;
         this.chatHistory.push({ role: 'assistant', content: fullContent });
         this.saveChatHistory();
         info('重新生成完成，长度:', fullContent.length);
+
+        const parsedToolCalls = parseToolCalls(fullContent);
+
+        if (parsedToolCalls.length > 0) {
+          const cleanContent = stripToolCalls(fullContent);
+          this.postMessage({ type: 'updateMessage', messageId: regenMsgId, content: cleanContent });
+          this.postMessage({ type: 'streamDone', messageId: regenMsgId });
+          if (thinkingElapsed > 1000) {
+            this.postMessage({ type: 'thinkingComplete', messageId: regenMsgId, elapsed: thinkingElapsed });
+          }
+          this.postMessage({ type: 'setLoading', loading: true });
+          this.handleToolCalls(fullContent, apiConfig, regenMsgId, parsedToolCalls);
+          return;
+        }
+
+        if (hasToolCalls(fullContent)) {
+          const fallbackContent = stripToolCalls(fullContent).trim() || '⚠️ 检测到无效工具调用，未执行任何工具。';
+          this.postMessage({ type: 'updateMessage', messageId: regenMsgId, content: fallbackContent });
+          this.postMessage({
+            type: 'showError',
+            message: '检测到无效的工具调用格式，已忽略本次工具执行',
+          });
+        }
+
+        this.postMessage({ type: 'streamDone', messageId: regenMsgId });
+        if (thinkingElapsed > 1000) {
+          this.postMessage({ type: 'thinkingComplete', messageId: regenMsgId, elapsed: thinkingElapsed });
+        }
+        this.activeRunId = null;
+        this.stepSequence = 0;
       },
       (err: unknown) => {
+        if (this.activeRunId !== regenMsgId) {
+          return;
+        }
         this.abortStream = null;
+        this.activeRunId = null;
+        this.stepSequence = 0;
         this.postMessage({ type: 'setLoading', loading: false });
         this.postMessage({ type: 'showError', message: String(err) });
       }
@@ -1598,45 +1708,24 @@ ${projectCtx}` : baseSystemPrompt;
   private async openFilesInIde(
     files: Array<{ path: string; status: 'created' | 'modified' | 'read' | 'listed' }>
   ): Promise<void> {
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+
     for (const file of files) {
       if (file.status !== 'created' && file.status !== 'modified') { continue; }
 
-      const uri = vscode.Uri.file(file.path);
+      // AI 工具调用的 path 有时是相对路径，需要拼接工作区根目录
+      const absolutePath = path.isAbsolute(file.path)
+        ? file.path
+        : path.join(workspaceRoot, file.path);
+
+      const uri = vscode.Uri.file(absolutePath);
 
       try {
-        if (file.status === 'created') {
-          // 新建文件：直接在编辑器中打开
-          const doc = await vscode.workspace.openTextDocument(uri);
-          await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false });
-        } else {
-          // 编辑文件：用 git 历史版本（HEAD）与当前磁盘文件做对比
-          // 如果 git 历史不可用则退回到直接打开文件
-          let opened = false;
-          try {
-            const gitExt = vscode.extensions.getExtension('vscode.git');
-            if (gitExt) {
-              const git = gitExt.exports.getAPI(1);
-              const repo = git.repositories[0];
-              if (repo) {
-                // HEAD 版本 URI（git 虚拟文档协议）
-                const headUri = uri.with({ scheme: 'git', query: JSON.stringify({ path: uri.fsPath, ref: 'HEAD' }) });
-                const label = `${path.basename(file.path)} (HEAD ↔ 工作区)`;
-                await vscode.commands.executeCommand('vscode.diff', headUri, uri, label);
-                opened = true;
-              }
-            }
-          } catch {
-            // git diff 失败则退回直接打开
-          }
-
-          if (!opened) {
-            const doc = await vscode.workspace.openTextDocument(uri);
-            await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false });
-          }
-        }
+        const doc = await vscode.workspace.openTextDocument(uri);
+        await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false });
       } catch (err) {
-        error('openFilesInIde 打开文件失败:', file.path, err);
-        vscode.window.showErrorMessage(`无法打开文件：${file.path}`);
+        error('openFilesInIde 打开文件失败:', absolutePath, err);
+        vscode.window.showErrorMessage(`无法打开文件：${absolutePath}`);
       }
     }
   }
@@ -1750,6 +1839,55 @@ ${projectCtx}` : baseSystemPrompt;
     });
   }
 
+  private readContextFilePreview(filePath: string): { content: string; noticeText?: string; skipCodeBlock?: boolean } {
+    const maxBytes = 64 * 1024;
+    const maxChars = 12000;
+    const stat = fs.statSync(filePath);
+
+    if (stat.size === 0) {
+      return { content: '' };
+    }
+
+    const bytesToRead = Math.min(stat.size, maxBytes);
+    const buffer = Buffer.alloc(bytesToRead);
+    const fileDescriptor = fs.openSync(filePath, 'r');
+
+    try {
+      fs.readSync(fileDescriptor, buffer, 0, bytesToRead, 0);
+    } finally {
+      fs.closeSync(fileDescriptor);
+    }
+
+    if (buffer.includes(0)) {
+      return {
+        content: '',
+        noticeText: '⚠️ 文件疑似为二进制内容，未注入上下文',
+        skipCodeBlock: true,
+      };
+    }
+
+    let content = buffer.toString('utf-8');
+    const notices: string[] = [];
+
+    if (stat.size > maxBytes) {
+      notices.push(`⚠️ 文件过大，仅注入前 ${(maxBytes / 1024).toFixed(0)}KB`);
+    }
+
+    if (content.length > maxChars) {
+      content = content.slice(0, maxChars);
+      notices.push(`⚠️ 内容过长，仅注入前 ${maxChars} 个字符`);
+    }
+
+    if (notices.length > 0) {
+      content += '\n...(已截断)';
+    }
+
+    return {
+      content,
+      noticeText: notices.length > 0 ? notices.join('；') : undefined,
+    };
+  }
+
   /**
    * 读取上下文文件内容，构建注入 Prompt 的文本
    * 读取后清空文件列表（每次发送消息只注入一次）
@@ -1764,15 +1902,25 @@ ${projectCtx}` : baseSystemPrompt;
 
     for (const filePath of this.contextFiles) {
       try {
-        const fileUri = vscode.Uri.file(filePath);
-        const fileBytes = await vscode.workspace.fs.readFile(fileUri);
-        const content = Buffer.from(fileBytes).toString('utf-8');
         const fileName = filePath.split(/[\\/]/).pop() || filePath;
+        const preview = this.readContextFilePreview(filePath);
+        const sectionLines: string[] = [`### ${fileName}`];
 
-        sections.push(`### ${fileName}\n\`\`\`\n${content}\n\`\`\`\n`);
+        if (preview.noticeText) {
+          sectionLines.push(`> ${preview.noticeText}`);
+        }
+
+        if (!preview.skipCodeBlock) {
+          sectionLines.push('```');
+          sectionLines.push(preview.content);
+          sectionLines.push('```');
+        }
+
+        sections.push(sectionLines.join('\n'));
       } catch (err) {
         const fileName = filePath.split(/[\\/]/).pop() || filePath;
-        sections.push(`### ${fileName}\n> ⚠️ 无法读取文件: ${err}\n`);
+        const errMsg = err instanceof Error ? err.message : String(err);
+        sections.push(`### ${fileName}\n> ⚠️ 无法读取文件: ${errMsg}\n`);
       }
     }
 

@@ -97,10 +97,25 @@ export function formatToolResults(results: ToolExecutionResult[]): string {
   const lines = results.map(({ toolCall, result }) => {
     const status = result.success ? '✅ 成功' : '❌ 失败';
     const typeLabel = getToolTypeLabel(toolCall.type);
-    return `### ${typeLabel} ${toolCall.path}\n**${status}**\n\`\`\`\n${result.content}\n\`\`\``;
+    const safeContent = formatToolResultContent(toolCall, result.content);
+    return `### ${typeLabel} ${toolCall.path}\n**${status}**\n\`\`\`\n${safeContent}\n\`\`\``;
   });
 
   return lines.join('\n\n');
+}
+
+function formatToolResultContent(toolCall: ParsedToolCall, content: string): string {
+  const maxChars = toolCall.type === 'read_file'
+    ? 6000
+    : toolCall.type === 'list_dir'
+      ? 4000
+      : 2000;
+
+  if (content.length <= maxChars) {
+    return content;
+  }
+
+  return `${content.slice(0, maxChars)}\n...(工具结果已截断，原始长度 ${content.length} 字符)`;
 }
 
 /** 工具类型的中文标签 */

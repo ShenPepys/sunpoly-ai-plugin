@@ -242,6 +242,10 @@ export interface UpdateMessageResponse {
   content: string;
 }
 
+export interface RemoveLastAssistantMessageResponse {
+  type: 'removeLastAssistantMessage';
+}
+
 /** 在指定气泡中显示 Thinking 动画 */
 export interface ShowThinkingResponse {
   type: 'showThinking';
@@ -443,6 +447,7 @@ export type ExtensionMessage =
   | ClearChatResponse
   | UpdateModelsResponse
   | UpdateMessageResponse
+  | RemoveLastAssistantMessageResponse
   | ShowThinkingResponse
   | AddContextFileResponse
   | ClearContextFilesResponse

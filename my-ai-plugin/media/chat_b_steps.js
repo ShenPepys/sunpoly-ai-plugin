@@ -1256,6 +1256,14 @@
 
   // ==================== 暴露给 chat.js 的接口 ====================
 
+  /**
+   * 清空 summaryFilesStore
+   * 应在清空对话或切换 session 时调用，防止内存泄漏
+   */
+  function clearStore() {
+    summaryFilesStore = {};
+  }
+
   window.chatSteps = {
     addStep: addStep,
     updateStep: updateStep,
@@ -1266,6 +1274,7 @@
     cancelPendingChangeSummaries: cancelPendingChangeSummaries,
     cancelAllRunningSteps: cancelAllRunningSteps,
     getOrCreateStepsContainer: getOrCreateStepsContainer,
+    clearStore: clearStore,
   };
 
 })();
