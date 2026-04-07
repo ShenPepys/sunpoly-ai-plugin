@@ -28,6 +28,127 @@ body {
 }
 
 
+/* ==================== 会话 Tab 标签条 ==================== */
+
+.session-tabs-bar {
+  display: flex;
+  align-items: center;
+  background: var(--vscode-editorGroupHeader-tabsBackground, #2d2d2d);
+  border-bottom: 1px solid var(--vscode-widget-border, #454545);
+  min-height: 32px;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.session-tabs {
+  display: flex;
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.session-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.session-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px;
+  height: 32px;
+  min-width: 60px;
+  max-width: 140px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--vscode-tab-inactiveForeground, #969696);
+  border-right: 1px solid var(--vscode-widget-border, #454545);
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 0.1s;
+}
+
+.session-tab:hover {
+  background: var(--vscode-tab-hoverBackground, rgba(255,255,255,0.06));
+  color: var(--vscode-tab-activeForeground, #fff);
+}
+
+.session-tab.active {
+  background: var(--vscode-tab-activeBackground, #1e1e1e);
+  color: var(--vscode-tab-activeForeground, #fff);
+  border-bottom: 2px solid var(--vscode-tab-activeBorderTop, #007acc);
+}
+
+.session-tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+  user-select: none;
+}
+
+/* 删除按钮（小 × ） */
+.session-tab-close {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+  border: none;
+  background: transparent;
+  color: var(--vscode-tab-inactiveForeground, #969696);
+  font-size: 14px;
+  line-height: 14px;
+  text-align: center;
+  padding: 0;
+  cursor: pointer;
+  opacity: 0.5;
+}
+
+.session-tab:hover .session-tab-close,
+.session-tab.active .session-tab-close {
+  opacity: 0.8;
+}
+
+.session-tab-close:hover {
+  opacity: 1 !important;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* 双击重命名时的内联 input */
+.session-tab-rename-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--vscode-input-background, #3c3c3c);
+  color: var(--vscode-input-foreground, #ccc);
+  border: 1px solid var(--vscode-focusBorder, #007acc);
+  border-radius: 2px;
+  font-size: 12px;
+  padding: 1px 4px;
+  outline: none;
+}
+
+/* 新建会话按钮 + */
+.session-new-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  color: var(--vscode-tab-inactiveForeground, #969696);
+  font-size: 18px;
+  line-height: 32px;
+  text-align: center;
+  cursor: pointer;
+  padding: 0;
+  border-left: 1px solid var(--vscode-widget-border, #454545);
+}
+
+.session-new-btn:hover {
+  background: var(--vscode-tab-hoverBackground, rgba(255,255,255,0.06));
+  color: var(--vscode-tab-activeForeground, #fff);
+}
+
 /* ==================== 消息列表区域 ==================== */
 #messages {
   flex: 1 1 auto;
@@ -933,6 +1054,24 @@ body {
   color: var(--vscode-foreground);
 }
 
+/* 分组标题：悬浮在选项上方的小标签，用于区分"添加上下文"和"执行动作" */
+.context-panel-group-label {
+  padding: 4px 12px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--vscode-descriptionForeground, #999);
+  pointer-events: none;
+}
+
+/* 分组分隔线 */
+.context-panel-separator {
+  height: 1px;
+  background: var(--vscode-widget-border, rgba(255,255,255,0.08));
+  margin: 4px 0;
+}
+
 /* 重试按钮 */
 .btn-retry {
   display: inline-block;
@@ -1127,6 +1266,87 @@ body {
 .context-file-tag .remove-btn:hover {
   opacity: 1;
   background: rgba(255, 255, 255, 0.15);
+}
+
+/* ==================== 图片附件缩略图 ==================== */
+
+.image-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.image-attachments:not(:empty) {
+  padding: 8px 12px 4px;
+}
+
+.image-attachment-tag {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  background: var(--vscode-badge-background, rgba(255,255,255,0.08));
+  border: 1px solid var(--vscode-widget-border, rgba(255,255,255,0.12));
+  border-radius: 6px;
+  max-width: 180px;
+  animation: fadeIn 0.2s ease-in;
+}
+
+.image-attachment-tag .img-thumb {
+  width: 36px;
+  height: 36px;
+  object-fit: cover;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.image-attachment-tag .img-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.image-attachment-tag .img-name {
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--vscode-foreground, #ccc);
+}
+
+.image-attachment-tag .img-size {
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground, #999);
+}
+
+.image-attachment-tag .img-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--vscode-button-background, #0e639c);
+  color: var(--vscode-button-foreground, #fff);
+  border: none;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+  padding: 0;
+  opacity: 0.85;
+}
+
+.image-attachment-tag .img-remove:hover {
+  opacity: 1;
+}
+
+/* 输入框拖拽图片时高亮边框 */
+#user-input.drag-over {
+  border-color: var(--vscode-focusBorder, #007fd4);
+  box-shadow: 0 0 0 1px var(--vscode-focusBorder, #007fd4);
 }
 
 /* ==================== @ 文件搜索下拉菜单 ==================== */

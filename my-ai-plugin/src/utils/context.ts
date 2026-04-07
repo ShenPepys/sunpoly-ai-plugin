@@ -178,3 +178,69 @@ export function getLanguagePreference(): string {
   const config = vscode.workspace.getConfiguration('myAiPlugin');
   return config.get<string>('language', '中文');
 }
+
+/**
+ * 读取工作区根目录的 README.md 和 package.json，提炼项目背景信息
+ *
+ * 用于注入系统提示词，让 AI 了解当前项目的用途和依赖，
+ * 减少用户需要手动说明"这是什么项目"的重复劳动。
+ *
+ * @returns 格式化好的项目背景字符串，若工作区为空或文件不存在则返回空字符串
+ */
+export function getProjectContext(): string {
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceFolder) { return ''; }
+
+  const sections: string[] = [];
+
+  // ── README.md ────────────────────────────────────────────
+  const readmePath = path.join(workspaceFolder, 'README.md');
+  if (fs.existsSync(readmePath)) {
+    try {
+      const raw = fs.readFileSync(readmePath, 'utf-8');
+      // 只取前 2000 字，避免巨型 README 撑爆 token
+      const snippet = raw.length > 2000 ? raw.slice(0, 2000) + '\n...(已截断)' : raw;
+      sections.push(`### 项目 README\n${snippet}`);
+    } catch {
+      // 读取失败则跳过
+    }
+  }
+
+  // ── package.json ─────────────────────────────────────────
+  const pkgPath = path.join(workspaceFolder, 'package.json');
+  if (fs.existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+      const lines: string[] = [];
+
+      if (pkg.name)        { lines.push(`- 名称：${pkg.name}`); }
+      if (pkg.description) { lines.push(`- 描述：${pkg.description}`); }
+      if (pkg.version)     { lines.push(`- 版本：${pkg.version}`); }
+
+      // scripts：只列出前 6 个，避免冗余
+      const scripts = Object.keys(pkg.scripts ?? {}).slice(0, 6);
+      if (scripts.length > 0) {
+        lines.push(`- 脚本：${scripts.join(', ')}`);
+      }
+
+      // 依赖：合并 dependencies + devDependencies，只列包名，最多 15 个
+      const allDeps = Object.keys({
+        ...pkg.dependencies,
+        ...pkg.devDependencies,
+      }).slice(0, 15);
+      if (allDeps.length > 0) {
+        lines.push(`- 主要依赖：${allDeps.join(', ')}`);
+      }
+
+      if (lines.length > 0) {
+        sections.push(`### package.json 摘要\n${lines.join('\n')}`);
+      }
+    } catch {
+      // JSON 解析失败则跳过
+    }
+  }
+
+  if (sections.length === 0) { return ''; }
+
+  return `## 当前项目背景（自动读取）\n\n${sections.join('\n\n')}`;
+}

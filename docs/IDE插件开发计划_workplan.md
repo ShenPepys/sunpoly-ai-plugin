@@ -168,7 +168,7 @@ my-ai-plugin/
 | P2 | **项目上下文感知** | 自动读取项目 README、package.json 等作为上下文 |
 | P2 | **自定义 Prompt** | 用户可在设置中自定义系统提示词 |
 | P2 | **多文件分析** | 支持分析多个相关文件的逻辑关系 |
-| P3 | **内联补全** | 类似 Copilot 的行内灰色提示补全 |
+| P3 | ~~**内联补全**~~ | ~~类似 Copilot 的行内灰色提示补全~~ **（不开发，与 Copilot 功能重叠，ROI 低）** |
 | P3 | **终端错误分析** | 自动捕获终端错误信息并分析 |
 
 ---
@@ -364,3 +364,178 @@ pre {
 
 > **下一步**：确认此开发计划后，我将立即开始阶段 1 的开发工作。
 > 如有需要调整的内容（如插件名称、优先功能、技术选择等），请告知。
+
+---
+
+## 八、原始阶段完成情况
+
+以下各阶段已全部交付完成，统一打勾归档：
+
+- [x] 阶段 1：项目初始化与基础框架
+- [x] 阶段 2：聊天界面开发（流式输出、Markdown 渲染、主题适配）
+- [x] 阶段 3：AI API 对接层（OpenAI 兼容协议、SSE 流式解析、多模型）
+- [x] 阶段 4：Prompt 工程与核心命令（系统 Prompt、slash 命令、编辑器交互）
+- [x] 阶段 5：打磨与测试（UI 完善、打包为 `my-ai-plugin-0.1.0.vsix`）
+
+### 统一变更栏二次修复（阶段 5 后追加）
+
+- [x] 修复：生成中按 `Enter` 不应绕过停止语义
+- [x] 修复：`edit_file` 预览与真实执行一致（`oldContent` 为空 / 匹配失败时给出明确提示）
+- [x] 补充：summary 增加 applying / accepted / partial / failed / rejected / cancelled 状态
+- [x] 补充：summary 显示相对路径，避免同名文件混淆
+- [x] 验证：`tsc --noEmit` 与关键前端脚本语法检查通过
+- [x] 重新构建打包：已生成最新 `my-ai-plugin-0.1.0.vsix`
+
+---
+
+## 九、第二轮迭代：输入区三大能力扩展
+
+### 9.1 背景与目标
+
+围绕输入区左下角 `+` 菜单，对三个已有骨架但尚未实现的能力进行完整落地：
+
+| 入口 | 当前状态 | 目标 |
+|---|---|---|
+| `Mentions` | 已有 `showOpenDialog` 实现，但与 `@` 逻辑独立 | 统一两个入口，支持下拉搜索 |
+| `Trigger Workflow` | stub（只弹提示"开发中"） | 发现并触发 workflow，含确认机制 |
+| `Upload Image` | stub（只弹提示"开发中"） | 完整图片上传、预览、发送链路 |
+
+### 9.2 现状盘点（Stage A 调查结果）
+
+#### `+` 菜单现状
+
+- HTML 已有三个 `context-panel-item`，`data-action` 分别为 `mentions` / `workflow` / `upload`
+- 前端点击后统一通过 `vscode.postMessage({ type: 'contextAction', action })` 发消息
+- 后端 `handleContextAction` 已处理 `mentions`（`showOpenDialog` 多选文件），`workflow` 和 `upload` 是 stub
+
+#### `@` mention 现状
+
+- 前端有完整状态机：`mentionActive` / `mentionStartPos` / `mentionActiveIndex`
+- `input` 事件检测光标前 `@` 符号，防抖 200ms 后发 `searchWorkspaceFiles` 请求
+- 键盘导航完整（↑↓ Enter Escape）
+- **关键差距**：`+` 的 Mentions 走系统文件对话框，`@` 走下拉搜索，两条路径独立
+
+#### 发送链路现状
+
+- `sendMessage` 只发 `{ type: 'sendMessage', text }`，**没有 images 字段**
+- `buildContextContent` 读取 `contextFiles` 拼入文本 Prompt，读后清空
+- 图片暂无任何注入路径
+
+#### 模型配置现状
+
+- `ModelConfig`（`src/prompts/types.ts`）当前字段：`modelName` / `modelId` / `baseUrl` / `apiKey` / `knowledgeCutoff`
+- **无视觉能力标识字段**，需要扩展 `supportsVision?: boolean`
+
+### 9.3 三个能力的分析与建议
+
+#### Mentions
+
+**定位**：给当前对话补充上下文，是三个入口里最核心、最高频的能力。
+
+**设计建议**：
+- `+` 菜单中的 Mentions 与输入框 `@` 必须复用同一套下拉搜索逻辑
+- 选择结果绑定真实路径（URI），不依赖文件名
+- 展示为可删除标签，方便用户确认当前上下文
+- 存在同名文件时必须展示相对路径
+
+**风险点**：
+- 两个入口逻辑不一致导致状态不同步
+- 文件移动或重命名后旧引用无法恢复
+
+#### Trigger Workflow
+
+**定位**：触发一套预定义动作（非"补充上下文"），属于"执行动作"语义层。
+
+**设计建议**：
+- 与"添加上下文"入口在菜单中做分组区分
+- 点击后先展示工作流名称、说明、是否修改文件/执行命令，再二次确认
+- 当前无可用 workflow 时置灰或隐藏，不留空入口
+
+**风险点**：
+- 点击后直接执行，用户缺少控制感
+- 工作流来源不清晰时用户不知道触发了什么
+
+#### Upload Image
+
+**定位**：把截图、设计稿、错误界面等非文本内容作为上下文传给模型。
+
+**设计建议**：
+- 支持点击选择、拖拽上传、`Ctrl+V` 粘贴三种入口
+- 上传后展示缩略图 + 删除按钮 + 大小提示
+- 发送前校验：当前模型是否支持视觉输入、图片大小/数量是否超限
+- 明确提示图片会发送给模型提供方
+
+**风险点**：
+- 当前模型不支持视觉却允许上传导致用户误解
+- 图片过大/过多导致上下文开销陡增
+
+### 9.4 推荐的菜单信息架构
+
+```
++ 菜单
+├── [添加上下文]
+│   ├── @ 引用文件     ← Mentions
+│   └── 上传图片       ← Upload Image
+└── [执行动作]
+    └── 运行工作流     ← Trigger Workflow
+```
+
+**推荐实现顺序**：Mentions → Upload Image → Trigger Workflow
+
+### 9.5 影响范围
+
+| 模块 | 影响 |
+|---|---|
+| `media/chat.js` | `+` 菜单 Mentions 复用 `@` 下拉逻辑；sendMessage 扩展 images 字段 |
+| `media/chat.css` | 图片附件缩略图样式；菜单分组样式 |
+| `src/webview/ChatViewProvider.ts` | `handleContextAction` 补完 workflow 和 upload；`buildContextContent` 支持图片 |
+| `src/webview/messageTypes.ts` | 新增图片相关消息类型 |
+| `src/prompts/types.ts` | `ModelConfig` 扩展 `supportsVision` 字段 |
+| `src/utils/context.ts` | `getModelConfig` 补充视觉能力识别逻辑 |
+
+### 9.6 执行计划
+
+#### 阶段 A：梳理现状与约束 ✅
+
+- [x] 盘点当前 `+` 菜单、`@` 触发、发送链路现状
+- [x] 明确三个入口各自的前后端边界与复用点
+- [x] 确认当前模型配置中是否具备视觉能力标识的扩展空间
+
+#### 阶段 B：Mentions 统一落地 ✅
+
+- [x] 把 `+` 菜单 Mentions 改为触发与 `@` 相同的下拉搜索（复用前端 mention 状态机）
+- [x] 统一 Mentions 标签状态：添加、删除、恢复行为一致
+- [x] 处理同名文件展示，默认使用相对路径
+- [x] 确认 Mentions 选中内容如何拼接到发送上下文
+
+#### 阶段 C：Upload Image 设计与落地 ✅
+
+- [x] 扩展 `ModelConfig` 添加 `supportsVision?: boolean` 字段
+- [x] 在 `getModelConfig` 中根据 `modelId` 识别视觉支持（GPT-4o、doubao-vision-* 等）
+- [x] 设计图片附件的数据结构与前后端消息格式
+- [x] 前端支持点击选择、拖拽上传、粘贴截图三种入口
+- [x] 增加缩略图展示、删除按钮、大小/数量校验
+- [x] 增加模型视觉能力检测与用户提示
+- [x] 扩展 `sendMessage` 消息支持传递 images 数组
+- [x] `handleUserMessage` 根据视觉能力组装多模态 ContentPart 消息
+
+#### 阶段 D：Trigger Workflow 设计与落地 ✅
+
+- [x] 盘点 `.windsurf/workflows/` 发现机制，实现 `discoverWorkflows` 后端方法
+- [x] 使用 VS Code QuickPick 展示可用工作流（空态显示提示信息）
+- [x] 增加执行前确认弹窗，展示名称、说明、副作用标注（可能修改文件/执行命令）
+- [x] workflow 执行后通过 `handleUserMessage` 进入正常 AI 发送链路
+
+#### 阶段 E：统一体验收尾 ✅
+
+- [x] 重新整理 `+` 菜单结构与分组顺序（添加上下文 / 执行动作），中文化标签
+- [x] 补充异常提示：视觉不支持警告、图片大小/数量超限、工作流空态提示
+- [x] 构建通过，输入区交互逻辑无回归
+- [ ] 同步 README / CHANGELOG（待用户确认后执行）
+
+### 9.7 执行原则
+
+- 先高频基础能力（Mentions），再做图片，最后做 Workflow
+- 所有会改文件、执行命令的流程必须有明确确认链路
+- 尽量复用现有输入区逻辑，避免新增平行状态
+- 每完成一个阶段，做局部验证再推进下一阶段

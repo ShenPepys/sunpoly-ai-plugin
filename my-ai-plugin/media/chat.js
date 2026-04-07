@@ -37,6 +37,10 @@
   const tokenCountEl = document.getElementById('token-count');
   const charCountEl = document.getElementById('char-count');
   const btnExport = document.getElementById('btn-export');
+  const imageAttachmentsContainer = document.getElementById('image-attachments');
+  const sessionTabsEl = document.getElementById('session-tabs');
+  const btnNewSession = document.getElementById('btn-new-session');
+  const btnTerminalError = document.getElementById('btn-terminal-error');
 
   /**
    * 关闭所有弹出面板
@@ -133,12 +137,36 @@
     closeAllPanels();
   });
 
-  /** 上下文面板选项点击（功能待实现，先关闭面板） */
+  /**
+   * 上下文面板选项点击
+   * mentions 在本地处理（插入 @ 复用 mention 状态机），workflow/upload 发给后端
+   * 这样两个入口（+ 菜单和直接输入 @）走完全相同的选择逻辑，状态不会出现分叉
+   */
   contextPanel.querySelectorAll('.context-panel-item').forEach(function (item) {
     item.addEventListener('click', function () {
       var action = item.getAttribute('data-action');
-      vscode.postMessage({ type: 'contextAction', action: action });
       closeAllPanels();
+
+      if (action === 'mentions') {
+        // 聚焦输入框，在末尾插入 @ 并触发 input 事件，让 @ 检测逻辑自动启动
+        userInput.focus();
+        var text = userInput.value;
+        // @ 前面补一个空格，避免与前面的文字粘连
+        var needSpace = text.length > 0 && text[text.length - 1] !== ' ' && text[text.length - 1] !== '\n';
+        userInput.value = text + (needSpace ? ' ' : '') + '@';
+        userInput.selectionStart = userInput.value.length;
+        userInput.selectionEnd = userInput.value.length;
+        userInput.dispatchEvent(new Event('input'));
+        return;
+      }
+
+      if (action === 'upload') {
+        // 图片上传全部在前端处理，不需要发送到后端
+        imageFileInput.click();
+        return;
+      }
+
+      vscode.postMessage({ type: 'contextAction', action: action });
     });
   });
 
@@ -203,6 +231,55 @@
   ];
   /** 当前是否正在 slash 命令模式 */
   var slashActive = false;
+
+  // ==================== 图片附件状态 ====================
+
+  /** 当前待发送的图片附件列表 */
+  var pendingImages = [];
+  /** 图片 ID 计数器 */
+  var imageIdCounter = 0;
+  /** 单张图片最大允许大小（MB） */
+  var MAX_IMAGE_SIZE_MB = 5;
+  /** 每条消息最多可附加图片数量 */
+  var MAX_IMAGE_COUNT = 3;
+  /** 当前活跃模型是否支持图片输入，首次从 updateModels 消息中读取 */
+  var currentModelSupportsVision = false;
+
+  // ==================== 会话状态 ====================
+  /** 当前所有会话的摘要列表（由后端推送 updateSessions 进行更新） */
+  var sessionList = [];
+  /** 当前活跃会话的 ID */
+  var activeSessionId = '';
+
+  /** 隐藏的文件输入框，用于触发图片选择对话框 */
+  var imageFileInput = document.createElement('input');
+  imageFileInput.type = 'file';
+  imageFileInput.accept = 'image/*';
+  imageFileInput.multiple = true;
+  imageFileInput.style.display = 'none';
+  document.body.appendChild(imageFileInput);
+
+  /** 新建会话按鈕点击 */
+  btnNewSession.addEventListener('click', function () {
+    vscode.postMessage({ type: 'createSession' });
+  });
+
+  /**
+   * 分析终端错误按鈕点击
+   * 后端会从剪贴板读取错误内容并直接发送给 AI
+   * 前提：用户已在终端中选中并复制了错误文本
+   */
+  btnTerminalError.addEventListener('click', function () {
+    vscode.postMessage({ type: 'analyzeTerminalError' });
+  });
+
+  /** 用户选择文件后处理 */
+  imageFileInput.addEventListener('change', function () {
+    Array.prototype.forEach.call(imageFileInput.files, function (file) {
+      processImageFile(file);
+    });
+    imageFileInput.value = '';
+  });
 
   // ==================== @ Mention 搜索状态 ====================
   /** 当前是否正在 @ mention 搜索模式 */
@@ -420,7 +497,12 @@
     vscode.postMessage({
       type: 'sendMessage',
       text: text,
+      // 同时把图片附件一并发送，后端会根据模型视觉能力决定是否注入
+      images: pendingImages.length > 0 ? pendingImages.slice() : undefined,
     });
+    // 前端先清空附件渲染（后端会再发 clearImageAttachments 确认一次）
+    pendingImages = [];
+    renderImageAttachments();
 
     // 清空输入框并重置高度
     userInput.value = '';
@@ -461,6 +543,14 @@
 
       case 'updateModels':
         updateModelDropdown(message.models, message.activeIndex);
+        // 缓存当前模型的视觉能力标识，用于上传图片时的提示
+        currentModelSupportsVision = message.supportsVision || false;
+        break;
+
+      case 'updateSessions':
+        sessionList = message.sessions;
+        activeSessionId = message.activeSessionId;
+        renderSessionTabs();
         break;
 
       case 'updateMessage':
@@ -481,6 +571,17 @@
 
       case 'workspaceFiles':
         renderMentionDropdown(message.files);
+        break;
+
+      case 'clearImageAttachments':
+        // 后端确认图片已处理，再次确保清空（正常情况前端已自行清空）
+        pendingImages = [];
+        renderImageAttachments();
+        break;
+
+      case 'visionNotSupported':
+        // 模型不支持图片：展示提示弹窗
+        showError('当前模型「' + message.modelName + '」不支持图片输入，图片将被忽略发送文本。如需视觉能力请切换至 GPT-4o、Claude 3 等模型');
         break;
 
       case 'updateTokenCount':
@@ -551,6 +652,8 @@
    * @param {string} messageId 消息唯一 ID
    */
   function addMessageToUI(role, content, messageId) {
+    // 新消息出现时移除旧的重新生成按钮（保持界面整洁）
+    removeAllRegenButtons();
     // 移除欢迎消息（只在第一条消息时）
     const welcome = messagesContainer.querySelector('.welcome-message');
     if (welcome) {
@@ -722,6 +825,206 @@
     }
 
     userInput.focus();
+  }
+
+  // ==================== 会话 Tab 渲染 ====================
+
+  /**
+   * 重新渲染会话 Tab 标签条
+   * 每个 Tab 显示：会话名称 + 对话轮数徽章 + × 删除按钮（仅在多会话时显示）
+   * 支持单击切换、双击重命名（内联 input）
+   */
+  function renderSessionTabs() {
+    sessionTabsEl.innerHTML = '';
+
+    sessionList.forEach(function (session) {
+      var isActive = session.id === activeSessionId;
+      var tab = document.createElement('div');
+      tab.className = 'session-tab' + (isActive ? ' active' : '');
+      tab.setAttribute('data-session-id', session.id);
+
+      var nameEl = document.createElement('span');
+      nameEl.className = 'session-tab-name';
+      nameEl.textContent = session.name;
+      // 有对话记录时显示轮次徽章
+      if (session.messageCount > 0) {
+        nameEl.title = session.name + '（' + Math.floor(session.messageCount / 2) + ' 轮对话）';
+      }
+
+      // 仅在多会话时显示删除按钮，避免误删唯一会话
+      var closeBtn = document.createElement('button');
+      closeBtn.className = 'session-tab-close';
+      closeBtn.textContent = '×';
+      closeBtn.title = '删除此会话';
+      closeBtn.style.display = sessionList.length > 1 ? '' : 'none';
+
+      tab.appendChild(nameEl);
+      tab.appendChild(closeBtn);
+
+      // 单击切换会话
+      tab.addEventListener('click', function (e) {
+        if (e.target === closeBtn) { return; }
+        if (!isActive) {
+          vscode.postMessage({ type: 'switchSession', sessionId: session.id });
+        }
+      });
+
+      // 双击重命名：将名称替换为 input 内联编辑框
+      nameEl.addEventListener('dblclick', function (e) {
+        e.stopPropagation();
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'session-tab-rename-input';
+        input.value = session.name;
+        tab.replaceChild(input, nameEl);
+        input.select();
+
+        function commitRename() {
+          var newName = input.value.trim();
+          if (newName && newName !== session.name) {
+            vscode.postMessage({ type: 'renameSession', sessionId: session.id, name: newName });
+          } else {
+            // 取消：恢复原名称显示
+            tab.replaceChild(nameEl, input);
+          }
+        }
+
+        input.addEventListener('blur', commitRename);
+        input.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') { input.blur(); }
+          if (e.key === 'Escape') {
+            input.removeEventListener('blur', commitRename);
+            tab.replaceChild(nameEl, input);
+          }
+        });
+      });
+
+      // 删除按钮
+      closeBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        vscode.postMessage({ type: 'deleteSession', sessionId: session.id });
+      });
+
+      sessionTabsEl.appendChild(tab);
+    });
+
+    // 确保活跃 Tab 滚动到可视区域
+    var activeTab = sessionTabsEl.querySelector('.session-tab.active');
+    if (activeTab) {
+      activeTab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+  }
+
+  // ==================== 图片上传处理 ====================
+
+  /**
+   * 输入区图片拖拽进入：改用 input-area 级别的 dragover/drop 拦截图片文件
+   * 注意：input-area 本身已有文件拖拽逻辑，此处在其前面优先处理图片
+   */
+  userInput.addEventListener('dragover', function (e) {
+    if (e.dataTransfer && Array.prototype.some.call(e.dataTransfer.types, function (t) { return t === 'Files'; })) {
+      e.preventDefault();
+      userInput.classList.add('drag-over');
+    }
+  });
+  userInput.addEventListener('dragleave', function () {
+    userInput.classList.remove('drag-over');
+  });
+  userInput.addEventListener('drop', function (e) {
+    userInput.classList.remove('drag-over');
+    if (!e.dataTransfer || !e.dataTransfer.files) { return; }
+    var hasImage = false;
+    Array.prototype.forEach.call(e.dataTransfer.files, function (file) {
+      if (file.type.startsWith('image/')) {
+        hasImage = true;
+        processImageFile(file);
+      }
+    });
+    // 只有拖入的是图片时才阻止默认行为
+    if (hasImage) { e.preventDefault(); }
+  });
+
+  /** 粘贴：从剪贴板捕获图片 */
+  document.addEventListener('paste', function (e) {
+    if (!e.clipboardData || !e.clipboardData.items) { return; }
+    Array.prototype.forEach.call(e.clipboardData.items, function (item) {
+      if (item.type.startsWith('image/')) {
+        var file = item.getAsFile();
+        if (file) { processImageFile(file); }
+      }
+    });
+  });
+
+  /**
+   * 处理单个图片文件：校验大小和数量，读取为 base64 DataURL
+   * @param {File} file 图片文件对象
+   */
+  function processImageFile(file) {
+    if (pendingImages.length >= MAX_IMAGE_COUNT) {
+      showError('最多只能附加 ' + MAX_IMAGE_COUNT + ' 张图片');
+      return;
+    }
+    if (file.size > MAX_IMAGE_SIZE_MB * 1024 * 1024) {
+      showError('图片超过 ' + MAX_IMAGE_SIZE_MB + 'MB 限制，请压缩后重试');
+      return;
+    }
+    var reader = new FileReader();
+    reader.onload = function (e) {
+      var dataUrl = e.target.result;
+      var id = 'img-' + (++imageIdCounter);
+      pendingImages.push({
+        id: id,
+        dataUrl: dataUrl,
+        fileName: file.name || 'image.png',
+        mimeType: file.type || 'image/png',
+        sizeKB: Math.round(file.size / 1024),
+      });
+      renderImageAttachments();
+    };
+    reader.readAsDataURL(file);
+  }
+
+  /**
+   * 重新渲染图片附件缩略图区域
+   * 每个图片显示缩略图 + 文件名 + 大小 + 删除按钮
+   */
+  function renderImageAttachments() {
+    imageAttachmentsContainer.innerHTML = '';
+    pendingImages.forEach(function (img) {
+      var tag = document.createElement('div');
+      tag.className = 'image-attachment-tag';
+      tag.setAttribute('data-img-id', img.id);
+      tag.innerHTML =
+        '<img class="img-thumb" src="' + img.dataUrl + '" alt="' + escapeAttr(img.fileName) + '" />' +
+        '<div class="img-info">' +
+          '<span class="img-name">' + escapeHtml(img.fileName) + '</span>' +
+          '<span class="img-size">' + img.sizeKB + 'KB</span>' +
+        '</div>' +
+        '<button class="img-remove" title="移除图片">\u00d7</button>';
+      tag.querySelector('.img-remove').addEventListener('click', function () {
+        pendingImages = pendingImages.filter(function (i) { return i.id !== img.id; });
+        renderImageAttachments();
+      });
+      imageAttachmentsContainer.appendChild(tag);
+    });
+  }
+
+  /**
+   * HTML 文本节点转义（防止 XSS），适合插入元素文本内容
+   * @param {string} str 原始字符串
+   */
+  function escapeHtml(str) {
+    var div = document.createElement('div');
+    div.appendChild(document.createTextNode(str || ''));
+    return div.innerHTML;
+  }
+
+  /**
+   * HTML 属性值转义（防止 XSS），适合插入 src/alt/title 等属性
+   * @param {string} str 原始字符串
+   */
+  function escapeAttr(str) {
+    return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
   /**
@@ -920,6 +1223,38 @@
     // 清除缓冲
     delete streamBuffers[messageId];
     setLoading(false);
+
+    // 流式完成后：移除旧的重新生成按钮，在本条 AI 消息底部加新的
+    removeAllRegenButtons();
+    var doneEl = messagesContainer.querySelector('[data-message-id="' + messageId + '"]');
+    if (doneEl && doneEl.classList.contains('assistant')) {
+      addRegenButton(doneEl);
+    }
+  }
+
+  /**
+   * 在指定 AI 消息气泡底部添加「↺ 重新生成」按钮
+   * @param {Element} messageEl 消息气泡 DOM 元素
+   */
+  function addRegenButton(messageEl) {
+    var btn = document.createElement('button');
+    btn.className = 'btn-regen';
+    btn.title = '重新生成此回复';
+    btn.textContent = '↺ 重新生成';
+    btn.addEventListener('click', function () {
+      vscode.postMessage({ type: 'regenerate' });
+    });
+    messageEl.appendChild(btn);
+  }
+
+  /**
+   * 移除所有消息上的重新生成按钮
+   * 在发送新消息或清空对话时调用
+   */
+  function removeAllRegenButtons() {
+    messagesContainer.querySelectorAll('.btn-regen').forEach(function (btn) {
+      btn.remove();
+    });
   }
 
   /** 最近一次发送的用户消息文本（用于重试） */
@@ -988,6 +1323,9 @@
     Object.keys(streamBuffers).forEach(function (messageId) {
       delete streamBuffers[messageId];
     });
+    // 清除图片附件
+    pendingImages = [];
+    renderImageAttachments();
     setLoading(false);
     messagesContainer.innerHTML =
       '<div class="welcome-message">' +

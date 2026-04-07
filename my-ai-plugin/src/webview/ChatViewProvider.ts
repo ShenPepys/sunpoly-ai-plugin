@@ -6,16 +6,19 @@
  * 处理 Webview 的生命周期和消息通信。
  */
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
 import { info, error } from '../logger';
-import { getModelConfig, ensureApiKey, getMaxTokens, getTemperature, getAllModels, getActiveModelIndex, setActiveModelIndex, getPanelTitle } from '../config';
+import { getModelConfig, ensureApiKey, getMaxTokens, getTemperature, getAllModels, getActiveModelIndex, setActiveModelIndex, getPanelTitle, getCustomSystemPrompt } from '../config';
 import { sendStreamRequest } from '../api/client';
 import type { ApiClientConfig, AbortStreamFn } from '../api/client';
 import type { ChatMessageParam } from '../api/types';
 import { buildSystemPrompt } from '../prompts/system';
 import { getEditorContext } from '../utils/editor';
-import { getEnvContext, detectProjectType, getGitStatus } from '../utils/context';
-import type { ExtensionMessage, WebviewMessage, WorkMode } from './messageTypes';
+import { getEnvContext, detectProjectType, getGitStatus, getProjectContext } from '../utils/context';
+import type { ExtensionMessage, WebviewMessage, WorkMode, ChatSession } from './messageTypes';
 import { parseToolCalls, hasToolCalls, stripToolCalls, executeToolCalls, formatToolResults, readFile } from '../tools';
+import { readErrorFromClipboard, buildErrorAnalysisPrompt } from '../terminal/terminalCapture';
 import type { ToolExecutionResult, ParsedToolCall, ToolCallType } from '../tools';
 
 type ChangeSummaryFile = {
@@ -52,8 +55,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** 当前活跃的 Webview 实例引用，用于从外部向 Webview 发送消息 */
   private webviewView?: vscode.WebviewView;
 
-  /** 对话历史记录，用于多轮对话上下文 */
-  private chatHistory: ChatMessageParam[] = [];
+  /** 所有会话列表，持久化到 globalState */
+  private sessions: ChatSession[] = [];
+
+  /** 当前活跃会话的 ID */
+  private activeSessionId: string = '';
+
+  /**
+   * 当前活跃会话的对话历史（getter 返回对活跃会话历史数组的引用）
+   * push / slice 等操作会直接修改会话内的数组内容
+   */
+  private get chatHistory(): ChatMessageParam[] {
+    const session = this.sessions.find(s => s.id === this.activeSessionId);
+    return session ? (session.history as ChatMessageParam[]) : [];
+  }
+
+  /** chatHistory setter：用于整体替换（如 clearHistory） */
+  private set chatHistory(value: ChatMessageParam[]) {
+    const session = this.sessions.find(s => s.id === this.activeSessionId);
+    if (session) {
+      session.history = value;
+    }
+  }
 
   /** 当前工作模式：code（可修改文件）、ask（只读对话）、plan（先规划后执行） */
   private currentMode: WorkMode = 'code';
@@ -88,13 +111,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   constructor(context: vscode.ExtensionContext) {
     this.context = context;
     this.extensionUri = context.extensionUri;
-
-    // 从 globalState 恢复对话历史
-    const saved = context.globalState.get<ChatMessageParam[]>('chatHistory');
-    if (saved && saved.length > 0) {
-      this.chatHistory = saved;
-      info(`从持久化存储恢复 ${saved.length} 条对话记录`);
-    }
+    // 从 globalState 加载会话数据（与旧单会话数据兼容）
+    this.loadSessions();
   }
 
   /**
@@ -136,11 +154,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     info('聊天面板 Webview 已初始化');
 
-    // 初始化完成后推送模型列表和当前工作模式到前端
+    // 初始化完成后推送模型列表、工作模式和会话列表到前端
     this.sendModelList();
     this.postMessage({ type: 'updateMode', mode: this.currentMode });
+    this.sendSessionList();
 
-    // 恢复持久化的对话历史到界面
+    // 恢复当前活跃会话的历史到界面
     this.restoreHistoryToWebview();
   }
 
@@ -172,7 +191,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     switch (message.type) {
       case 'sendMessage':
         info('收到用户消息:', message.text);
-        this.handleUserMessage(message.text);
+        // 同时传递图片附件（如果有），由 handleUserMessage 检测视觉能力后决定是否注入
+        this.handleUserMessage(message.text, message.images);
         break;
 
       case 'copyCode':
@@ -256,6 +276,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
       case 'exportChat':
         this.exportChatToMarkdown();
+        break;
+
+      case 'createSession':
+        this.createNewSession();
+        break;
+
+      case 'switchSession':
+        this.switchSession(message.sessionId);
+        break;
+
+      case 'deleteSession':
+        this.deleteSession(message.sessionId);
+        break;
+
+      case 'renameSession':
+        this.renameSession(message.sessionId, message.name);
+        break;
+
+      case 'analyzeTerminalError':
+        this.handleAnalyzeTerminalError();
+        break;
+
+      case 'regenerate':
+        this.handleRegenerate();
         break;
 
       case 'stopGeneration':
@@ -352,18 +396,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   public sendModelList(): void {
     const models = getAllModels();
     const activeIndex = getActiveModelIndex();
+    const safeIndex = Math.min(activeIndex, models.length - 1);
+    const modelConfig = getModelConfig();
     this.postMessage({
       type: 'updateModels',
       models: models.map((m, i) => ({ name: m.name, index: i })),
-      activeIndex: Math.min(activeIndex, models.length - 1),
+      activeIndex: safeIndex,
+      // 把当前模型的视觉能力标识推送给前端，用于控制上传图片入口的可用状态
+      supportsVision: modelConfig.supportsVision ?? false,
     });
   }
 
   /**
    * 处理用户发送的聊天消息
    * 构建 Prompt → 调用 AI API（流式）→ 逐字推送到 Webview
+   * @param text 用户输入的文字
+   * @param images 可选的图片附件列表（base64 格式），由前端在发送时一并传来
    */
-  private async handleUserMessage(text: string): Promise<void> {
+  private async handleUserMessage(
+    text: string,
+    images?: Array<{ id: string; dataUrl: string; fileName: string; mimeType: string; sizeKB: number }>
+  ): Promise<void> {
     // 先在界面上显示用户消息
     const userMsgId = `user-${Date.now()}`;
     this.postMessage({
@@ -393,8 +446,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const projectType = detectProjectType();
     const gitInfo = getGitStatus();
 
-    // 构建系统提示词（根据当前工作模式生成不同的提示词）
-    const systemPrompt = buildSystemPrompt(envContext, modelConfig, this.currentMode, '中文', projectType, gitInfo);
+    // 构建系统提示词：用户已配置自定义提示词时直接使用，否则使用内置默认
+    const customPrompt = getCustomSystemPrompt();
+    const baseSystemPrompt = customPrompt
+      ? customPrompt
+      : buildSystemPrompt(envContext, modelConfig, this.currentMode, '中文', projectType, gitInfo);
+    // 自动读取项目背景（README.md + package.json）并追加到系统提示词末尾
+    const projectCtx = getProjectContext();
+    const systemPrompt = projectCtx ? `${baseSystemPrompt}
+
+${projectCtx}` : baseSystemPrompt;
 
     // 构建消息列表：系统提示词 + 历史对话 + 当前用户消息
     // 附带上下文：选中代码 + @ Mentions 引用的文件
@@ -415,16 +476,38 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // 通知 Webview 清空文件标签（文件已注入到本次消息）
     this.postMessage({ type: 'clearContextFiles' });
 
-    // 添加到对话历史并持久化
+    // 添加到对话历史并持久化（历史只存文本部分，图片不持久化以节省空间）
     this.chatHistory.push({ role: 'user', content: userContent });
     this.saveChatHistory();
 
     // 上下文窗口管理：估算 token 数，超过阈值时截断旧消息
     const contextMessages = this.trimChatHistory(this.chatHistory);
 
+    // 构建最终发送给 API 的用户消息内容
+    // 有图片且模型支持视觉时，组装为多模态 ContentPart 数组
+    const hasImages = images && images.length > 0;
+    let finalUserContent: ChatMessageParam['content'];
+    if (hasImages && modelConfig.supportsVision) {
+      // OpenAI Vision API 格式：先文本，再图片内容块
+      finalUserContent = [
+        { type: 'text', text: userContent },
+        ...images.map(img => ({ type: 'image_url' as const, image_url: { url: img.dataUrl } })),
+      ];
+    } else {
+      if (hasImages && !modelConfig.supportsVision) {
+        // 模型不支持视觉，告知前端并仅发送文本
+        this.postMessage({ type: 'visionNotSupported', modelName: modelConfig.modelName });
+      }
+      finalUserContent = userContent;
+    }
+
+    // 通知 Webview 清空图片缩略图（图片已处理）
+    this.postMessage({ type: 'clearImageAttachments' });
+
     const messages: ChatMessageParam[] = [
       { role: 'system', content: systemPrompt },
-      ...contextMessages,
+      ...contextMessages.slice(0, -1), // 历史消息（不含最后一条，最后一条用 finalUserContent 替换）
+      { role: 'user', content: finalUserContent },
     ];
 
     // 构建 API 配置
@@ -1224,12 +1307,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const tabInput = tab.input as { uri?: vscode.Uri } | undefined;
           if (tabInput?.uri) {
             const filePath = tabInput.uri.fsPath;
-            const fileName = filePath.split(/[\\/]/).pop() || filePath;
-            // 关键词过滤
-            if (!keyword || fileName.toLowerCase().includes(lowerKeyword)) {
+            const workspaceFolder = vscode.workspace.getWorkspaceFolder(tabInput.uri);
+            // 优先取相对路径，避免同名文件无法区分
+            const displayName = workspaceFolder
+              ? filePath.replace(workspaceFolder.uri.fsPath, '').replace(/^[\\/]/, '')
+              : filePath.split(/[\\/]/).pop() || filePath;
+            // 关键词过滤：对文件名和路径都做匹配
+            if (!keyword || displayName.toLowerCase().includes(lowerKeyword)) {
               if (!openPaths.has(filePath)) {
                 openPaths.add(filePath);
-                openFiles.push({ filePath, fileName: `📌 ${fileName}` });
+                openFiles.push({ filePath, fileName: `📌 ${displayName}` });
               }
             }
           }
@@ -1305,13 +1392,258 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
 
       case 'workflow':
-        vscode.window.showInformationMessage('工作流功能开发中...');
+        await this.handleTriggerWorkflow();
         break;
 
       case 'upload':
-        vscode.window.showInformationMessage('图片上传功能开发中...');
+        // 图片上传全部在前端处理，后端收到此消息时什么都不做
         break;
     }
+  }
+
+  /**
+   * 处理「重新生成」请求
+   * 将历史中最后一条 assistant 消息删除，然后重新发送前一条 user 消息
+   */
+  private async handleRegenerate(): Promise<void> {
+    const history = this.chatHistory;
+
+    // 找到最后一条 assistant 消息的位置
+    let lastAssistantIdx = -1;
+    for (let i = history.length - 1; i >= 0; i--) {
+      if (history[i].role === 'assistant') {
+        lastAssistantIdx = i;
+        break;
+      }
+    }
+
+    if (lastAssistantIdx === -1) {
+      vscode.window.showInformationMessage('没有可以重新生成的回复');
+      return;
+    }
+
+    // 找到该 assistant 消息前面的最后一条 user 消息
+    let lastUserIdx = -1;
+    for (let i = lastAssistantIdx - 1; i >= 0; i--) {
+      if (history[i].role === 'user') {
+        lastUserIdx = i;
+        break;
+      }
+    }
+
+    if (lastUserIdx === -1) {
+      vscode.window.showInformationMessage('找不到对应的用户消息');
+      return;
+    }
+
+    // 取出用户消息内容（剩下文字部分）
+    const userContent = history[lastUserIdx].content;
+    const userText = typeof userContent === 'string' ? userContent : '';
+
+    // 剔除最后一条 assistant 消息（最后一轮从用户消息开始重做）
+    this.chatHistory = history.slice(0, lastAssistantIdx);
+    this.saveChatHistory();
+
+    info('重新生成回复，参考用户消息长度:', userText.length);
+    // 直接调用内部发送方法，不再显示用户消息气泡（已有）
+    await this.regenerateResponse(userText);
+  }
+
+  /**
+   * 重新发起 AI 请求，不向界面添加用户消息气泡
+   * 与 handleUserMessage 区别：跳过添加用户 UI 消息和保存用户历史这两步
+   */
+  private async regenerateResponse(userText: string): Promise<void> {
+    this.postMessage({ type: 'setLoading', loading: true });
+
+    const apiKey = await ensureApiKey();
+    if (!apiKey) {
+      this.postMessage({ type: 'setLoading', loading: false });
+      this.postMessage({ type: 'showError', message: '未配置 API Key，请在设置中配置 myAiPlugin.apiKey' });
+      return;
+    }
+
+    const modelConfig = getModelConfig();
+    const envContext = getEnvContext();
+    const projectType = detectProjectType();
+    const gitInfo = getGitStatus();
+    const customPrompt = getCustomSystemPrompt();
+    const baseSystemPromptRegen = customPrompt
+      ? customPrompt
+      : buildSystemPrompt(envContext, modelConfig, this.currentMode, '中文', projectType, gitInfo);
+    const projectCtxRegen = getProjectContext();
+    const systemPrompt = projectCtxRegen
+      ? `${baseSystemPromptRegen}\n\n${projectCtxRegen}`
+      : baseSystemPromptRegen;
+
+    const contextMessages = this.trimChatHistory(this.chatHistory);
+    const messages: ChatMessageParam[] = [
+      { role: 'system', content: systemPrompt },
+      ...contextMessages,
+    ];
+
+    const apiConfig: ApiClientConfig = {
+      baseUrl: modelConfig.baseUrl,
+      apiKey,
+      modelId: modelConfig.modelId,
+      maxTokens: getMaxTokens(),
+      temperature: getTemperature(),
+    };
+
+    const regenMsgId = `ai-regen-${Date.now()}`;
+    this.postMessage({ type: 'addMessage', role: 'assistant', content: '', messageId: regenMsgId });
+
+    let fullContent = '';
+    this.abortStream = await sendStreamRequest(
+      apiConfig,
+      messages,
+      (chunk: string) => {
+        fullContent += chunk;
+        this.postMessage({ type: 'streamChunk', messageId: regenMsgId, chunk });
+      },
+      async () => {
+        this.abortStream = null;
+        const cleanContent = hasToolCalls(fullContent) ? stripToolCalls(fullContent) : fullContent;
+        if (cleanContent !== fullContent) {
+          this.postMessage({ type: 'updateMessage', messageId: regenMsgId, content: cleanContent });
+        }
+        this.postMessage({ type: 'streamDone', messageId: regenMsgId });
+        this.chatHistory.push({ role: 'assistant', content: fullContent });
+        this.saveChatHistory();
+        info('重新生成完成，长度:', fullContent.length);
+      },
+      (err: unknown) => {
+        this.abortStream = null;
+        this.postMessage({ type: 'setLoading', loading: false });
+        this.postMessage({ type: 'showError', message: String(err) });
+      }
+    );
+  }
+
+  /**
+   * 处理「分析终端错误」请求
+   * 从剪贴板读取错误内容，直接发给 AI 分析修复
+   */
+  private async handleAnalyzeTerminalError(): Promise<void> {
+    const errorText = await readErrorFromClipboard();
+    if (!errorText) {
+      vscode.window.showInformationMessage(
+        '剪贴板为空。请先在终端中选中错误文本并复制 (Ctrl+C)，然后再点击此按鈕。'
+      );
+      return;
+    }
+    const prompt = buildErrorAnalysisPrompt(errorText);
+    info('分析终端错误，剪贴板内容长度:', errorText.length);
+    await this.handleUserMessage(prompt);
+  }
+
+  /**
+   * 处理触发工作流的全流程
+   * 扫描工作区 .windsurf/workflows/ 目录 → QuickPick 选择 → 确认副作用 → 注入 Prompt 并执行
+   */
+  private async handleTriggerWorkflow(): Promise<void> {
+    const workflows = this.discoverWorkflows();
+
+    if (workflows.length === 0) {
+      vscode.window.showInformationMessage(
+        '当前工作区没有可用的工作流。\n请在 <工作区根>/.windsurf/workflows/ 目录下创建 .md 文件。'
+      );
+      return;
+    }
+
+    // 构建 QuickPick 选项，每项展示名称、说明和副作用标注
+    const items = workflows.map(w => ({
+      label: w.name,
+      description: w.description || '无说明',
+      detail: w.sideEffects.length > 0
+        ? `副作用：${w.sideEffects.join('、')}`
+        : '无文件修改 / 命令执行',
+      filePath: w.filePath,
+      promptContent: w.promptContent,
+    }));
+
+    const selected = await vscode.window.showQuickPick(items, {
+      placeHolder: '选择要运行的工作流',
+      matchOnDescription: true,
+      matchOnDetail: false,
+    });
+
+    if (!selected) { return; }
+
+    // 二次确认：展示副作用提示
+    const confirmLabel = '运行此工作流';
+    const sideEffectMsg = selected.detail !== '无文件修改 / 命令执行'
+      ? `\n注意：${selected.detail}`
+      : '';
+    const confirm = await vscode.window.showWarningMessage(
+      `将运行「${selected.label}」${sideEffectMsg}`,
+      { modal: true },
+      confirmLabel
+    );
+
+    if (confirm !== confirmLabel) { return; }
+
+    // 将工作流内容作为用户消息发送，进入正常 AI 调用链路
+    info(`触发工作流: ${selected.label}`);
+    await this.handleUserMessage(selected.promptContent);
+  }
+
+  /**
+   * 扫描工作区 .windsurf/workflows/ 目录，解析 .md 文件的元信息
+   * 返回工作流列表，含名称、说明、副作用和可用 Prompt
+   */
+  private discoverWorkflows(): Array<{
+    name: string;
+    description: string;
+    filePath: string;
+    promptContent: string;
+    sideEffects: string[];
+  }> {
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!workspaceRoot) { return []; }
+
+    const workflowsDir = path.join(workspaceRoot, '.windsurf', 'workflows');
+    if (!fs.existsSync(workflowsDir)) { return []; }
+
+    let files: string[];
+    try {
+      files = fs.readdirSync(workflowsDir).filter(f => f.endsWith('.md'));
+    } catch {
+      return [];
+    }
+
+    return files.map(f => {
+      const filePath = path.join(workflowsDir, f);
+      const raw = fs.readFileSync(filePath, 'utf-8');
+
+      // 解析 YAML frontmatter：---\n...\n---
+      const frontmatterMatch = raw.match(/^---\n([\s\S]*?)\n---\n?/);
+      let description = '';
+      if (frontmatterMatch) {
+        const descMatch = frontmatterMatch[1].match(/description:\s*(.+)/);
+        if (descMatch) { description = descMatch[1].trim(); }
+      }
+
+      // frontmatter 弹出后的正文作为 prompt
+      const promptContent = frontmatterMatch
+        ? raw.slice(frontmatterMatch[0].length).trim()
+        : raw.trim();
+
+      // 扫描 prompt 内容，识别可能的副作用关键词
+      const lowerPrompt = promptContent.toLowerCase();
+      const sideEffects: string[] = [];
+      if (/write_file|edit_file|创建文件|修改文件/.test(lowerPrompt)) {
+        sideEffects.push('可能修改文件');
+      }
+      if (/run_command|执行命令|运行命令/.test(lowerPrompt)) {
+        sideEffects.push('可能执行命令');
+      }
+
+      // 文件名转为显示名称（去掉 .md 后缀，连字符转空格）
+      const name = path.basename(f, '.md').replace(/[-_]/g, ' ');
+
+      return { name, description, filePath, promptContent, sideEffects };
+    });
   }
 
   /**
@@ -1413,9 +1745,153 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * 每次消息变更后调用，保证重启后可恢复
    */
   private saveChatHistory(): void {
-    this.context.globalState.update('chatHistory', this.chatHistory);
-    // 同步推送 token 用量估算
+    // 历史已经包含在当前会话里，直接保存整个会话列表即可
+    this.saveSessions();
+  }
+
+  // ==================== 会话管理 ====================
+
+  /**
+   * 从 globalState 加载会话数据
+   * 如果没有新式会话数据，自动将旧 chatHistory 迁移到第一个会话
+   */
+  private loadSessions(): void {
+    const savedSessions = this.context.globalState.get<ChatSession[]>('chatSessions');
+
+    if (savedSessions && savedSessions.length > 0) {
+      this.sessions = savedSessions;
+      const savedActiveId = this.context.globalState.get<string>('activeSessionId');
+      // 确保 activeSessionId 对应的会话确实存在
+      const valid = savedSessions.find(s => s.id === savedActiveId);
+      this.activeSessionId = valid ? savedActiveId! : savedSessions[0].id;
+    } else {
+      // 新安装或迁移旧数据：用旧 chatHistory 创建第一个会话
+      const oldHistory = this.context.globalState.get<Array<{ role: string; content: unknown }>>('chatHistory');
+      const first = this.createSessionObject('会话 1');
+      if (oldHistory && oldHistory.length > 0) {
+        first.history = oldHistory;
+      }
+      this.sessions = [first];
+      this.activeSessionId = first.id;
+      this.saveSessions();
+    }
+
+    info(`加载会话数据：共 ${this.sessions.length} 个会话，当前活跃: ${this.activeSessionId}`);
+  }
+
+  /**
+   * 将所有会话序列化到 globalState
+   * 同时更新 token 计数、负责所有会话数据的唯一展适备份
+   */
+  private saveSessions(): void {
+    this.context.globalState.update('chatSessions', this.sessions);
+    this.context.globalState.update('activeSessionId', this.activeSessionId);
     this.pushTokenCount();
+  }
+
+  /**
+   * 创建一个新会话对象（不导致切换）
+   * @param name 初始名称
+   */
+  private createSessionObject(name: string): ChatSession {
+    return {
+      id: `session-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name,
+      createdAt: Date.now(),
+      history: [],
+    };
+  }
+
+  /**
+   * 新建会话并切换到新会话
+   * 名称自动生成为 "会话 N"
+   */
+  private createNewSession(): void {
+    const name = `会话 ${this.sessions.length + 1}`;
+    const newSession = this.createSessionObject(name);
+    this.sessions.push(newSession);
+    this.activeSessionId = newSession.id;
+    this.saveSessions();
+    // 清空界面并确保不显示旧内容
+    this.postMessage({ type: 'clearChat' });
+    this.sendSessionList();
+    info(`新建会话: ${name}`);
+  }
+
+  /**
+   * 切换到指定会话
+   * @param sessionId 目标会话 ID
+   */
+  private switchSession(sessionId: string): void {
+    if (sessionId === this.activeSessionId) { return; }
+    const session = this.sessions.find(s => s.id === sessionId);
+    if (!session) { return; }
+    this.activeSessionId = sessionId;
+    this.saveSessions();
+    // 先清空界面，再还原新会话历史
+    this.postMessage({ type: 'clearChat' });
+    this.restoreHistoryToWebview();
+    this.sendSessionList();
+    info(`切换会话到: ${session.name}`);
+  }
+
+  /**
+   * 删除指定会话
+   * 当前会话被删时自动切换到列表中第一个
+   * @param sessionId 要删除的会话 ID
+   */
+  private deleteSession(sessionId: string): void {
+    if (this.sessions.length <= 1) {
+      vscode.window.showWarningMessage('至少保留一个会话');
+      return;
+    }
+    const index = this.sessions.findIndex(s => s.id === sessionId);
+    if (index === -1) { return; }
+    this.sessions.splice(index, 1);
+    // 删除的是当前会话则自动跳到相邻的会话
+    if (this.activeSessionId === sessionId) {
+      const newIndex = Math.min(index, this.sessions.length - 1);
+      this.activeSessionId = this.sessions[newIndex].id;
+      this.postMessage({ type: 'clearChat' });
+      this.restoreHistoryToWebview();
+    }
+    this.saveSessions();
+    this.sendSessionList();
+    info(`删除会话: ${sessionId}`);
+  }
+
+  /**
+   * 重命名指定会话
+   * @param sessionId 会话 ID
+   * @param name 新名称（自动 trim，空名称不生效）
+   */
+  private renameSession(sessionId: string, name: string): void {
+    const trimmed = name.trim();
+    if (!trimmed) { return; }
+    const session = this.sessions.find(s => s.id === sessionId);
+    if (session) {
+      session.name = trimmed;
+      this.saveSessions();
+      this.sendSessionList();
+    }
+  }
+
+  /**
+   * 将会话列表摘要推送到 Webview（不含完整历史，减少传输量）
+   */
+  public sendSessionList(): void {
+    this.postMessage({
+      type: 'updateSessions',
+      sessions: this.sessions.map(s => ({
+        id: s.id,
+        name: s.name,
+        createdAt: s.createdAt,
+        // 历史消息数：过滤工具反馈中间消息，只计用户和 AI 的回合
+        messageCount: (s.history as Array<{ role: string }>)
+          .filter(m => m.role === 'user' || m.role === 'assistant').length,
+      })),
+      activeSessionId: this.activeSessionId,
+    });
   }
 
   /**
@@ -1582,6 +2058,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       <button id="search-next" class="search-nav-btn" title="下一个">▼</button>
       <button id="search-close" class="search-nav-btn" title="关闭搜索">✕</button>
     </div>
+    <!-- 会话 Tab 标签条 -->
+    <div id="session-tabs-bar" class="session-tabs-bar">
+      <div id="session-tabs" class="session-tabs"></div>
+      <button id="btn-new-session" class="session-new-btn" title="新建会话">+</button>
+    </div>
     <!-- 消息列表区域 -->
     <div id="messages">
       <div class="welcome-message">
@@ -1624,23 +2105,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     <!-- 上下文面板（点击 + 按钮弹出） -->
     <div id="context-panel" class="context-panel hidden">
+      <div class="context-panel-group-label">添加上下文</div>
       <div class="context-panel-item" data-action="mentions">
         <div class="context-item-icon">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/></svg>
         </div>
-        <span class="context-item-label">Mentions</span>
-      </div>
-      <div class="context-panel-item" data-action="workflow">
-        <div class="context-item-icon">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 12l2 2 4-4"/></svg>
-        </div>
-        <span class="context-item-label">Trigger Workflow</span>
+        <span class="context-item-label">@ 引用文件</span>
       </div>
       <div class="context-panel-item" data-action="upload">
         <div class="context-item-icon">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
         </div>
-        <span class="context-item-label">Upload Image</span>
+        <span class="context-item-label">上传图片</span>
+      </div>
+      <div class="context-panel-separator"></div>
+      <div class="context-panel-group-label">执行动作</div>
+      <div class="context-panel-item" data-action="workflow">
+        <div class="context-item-icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 12l2 2 4-4"/></svg>
+        </div>
+        <span class="context-item-label">运行工作流</span>
       </div>
     </div>
 
@@ -1679,6 +2163,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       <!-- @ 文件搜索下拉菜单（绝对定位在输入区上方） -->
       <div id="mention-dropdown" class="mention-dropdown hidden"></div>
       <div id="context-files" class="context-files"></div>
+      <div id="image-attachments" class="image-attachments"></div>
       <textarea
         id="user-input"
         placeholder="输入任何问题...（Ctrl+L）"
@@ -1687,6 +2172,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       <div id="input-toolbar">
         <div class="input-toolbar-left">
           <button id="btn-add-context" class="toolbar-icon-btn" title="添加上下文">+</button>
+          <button id="btn-terminal-error" class="toolbar-icon-btn" title="分析终端错误（先在终端复制错误文本）">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><polyline points="7 9 12 12 17 9" style="stroke-width:1.5"/></svg>
+          </button>
           <button id="btn-code-mode" class="toolbar-icon-btn" title="切换工作模式">&lt;&gt;<span class="toolbar-text"> Code</span></button>
           <div id="model-selector" class="model-selector">
             <span id="model-label" class="model-label"><span class="toolbar-text">DeepSeek Chat</span></span>

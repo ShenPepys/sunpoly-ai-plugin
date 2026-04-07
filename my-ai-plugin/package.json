@@ -203,6 +203,12 @@
           "type": "string",
           "default": "AI 助理",
           "description": "侧边栏面板标题，可自定义为企业名称（如 SUERY AI、XXX 智能助手）"
+        },
+        "myAiPlugin.systemPrompt": {
+          "type": "string",
+          "default": "",
+          "editPresentation": "multilineText",
+          "markdownDescription": "自定义系统提示词（System Prompt）。\n\n**非空时**完全覆盖内置提示词；**留空时**使用内置默认提示词。\n\n示例：`你是一个专注 Python 小程序设计的助手，不使用第三方库`"
         }
       }
     }

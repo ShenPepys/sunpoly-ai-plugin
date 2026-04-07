@@ -7,10 +7,26 @@
 /** 聊天消息角色 */
 export type ChatRole = 'system' | 'user' | 'assistant';
 
-/** 单条聊天消息 */
+/** 文本内容块 */
+export interface TextContentPart {
+  type: 'text';
+  text: string;
+}
+
+/** 图片内容块（OpenAI Vision API 格式，url 使用 base64 data URL） */
+export interface ImageContentPart {
+  type: 'image_url';
+  image_url: { url: string };
+}
+
+/** 多模态内容块：文本或图片 */
+export type ContentPart = TextContentPart | ImageContentPart;
+
+/** 单条聊天消息（支持纯文本或多模态内容数组） */
 export interface ChatMessageParam {
   role: ChatRole;
-  content: string;
+  /** 纯文本传 string；含图片时传 ContentPart 数组 */
+  content: string | ContentPart[];
 }
 
 /** Chat Completion 请求体 */

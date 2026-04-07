@@ -209,7 +209,24 @@ export function getModelConfig(): ModelConfig {
     baseUrl: model.baseUrl,
     apiKey: model.apiKey,
     knowledgeCutoff: CUTOFF_MAP[model.modelId] ?? '未知',
+    supportsVision: detectVisionSupport(model.modelId),
   };
+}
+
+/**
+ * 根据 modelId 判断该模型是否支持图片输入
+ * 已知支持 Vision 的模型字符串匹配，新增模型时在此数组中补充
+ */
+function detectVisionSupport(modelId: string): boolean {
+  const lowerModelId = modelId.toLowerCase();
+  const visionPrefixes = [
+    'gpt-4o', 'gpt-4-turbo', 'gpt-4-vision',
+    'claude-3', 'claude-3-5', 'claude-3-7',
+    'gemini',
+    'doubao-vision',
+    'qwen-vl',
+  ];
+  return visionPrefixes.some(prefix => lowerModelId.includes(prefix));
 }
 
 /**
@@ -262,6 +279,15 @@ export function getMaxTokens(): number {
 /** 获取温度参数 */
 export function getTemperature(): number {
   return get<number>('temperature', 0.3);
+}
+
+/**
+ * 获取用户自定义系统提示词
+ * 非空时应完全替换内置 buildSystemPrompt 的输出
+ * @returns 自定义提示词字符串，空字符串表示使用内置提示词
+ */
+export function getCustomSystemPrompt(): string {
+  return get<string>('systemPrompt', '').trim();
 }
 
 /**

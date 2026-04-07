@@ -11,12 +11,28 @@
 /** 工作模式类型 */
 export type WorkMode = 'code' | 'ask' | 'plan';
 
+// ==================== 会话数据结构 ====================
+
+/** 单个聊天会话的完整数据，存储到 globalState中 */
+export interface ChatSession {
+  /** 会话唯一 ID */
+  id: string;
+  /** 用户可修改的显示名称 */
+  name: string;
+  /** 创建时间戳 */
+  createdAt: number;
+  /** 对话历史（OpenAI 消息格式） */
+  history: Array<{ role: string; content: unknown }>;
+}
+
 // ==================== Webview → Extension ====================
 
 /** 用户发送聊天消息 */
 export interface SendMessageRequest {
   type: 'sendMessage';
   text: string;
+  /** 可选：随消息一起发送的图片附件（base64 DataURL 格式） */
+  images?: Array<{ id: string; dataUrl: string; fileName: string; mimeType: string; sizeKB: number }>;
 }
 
 /** 用户点击"复制代码"按钮 */
@@ -93,6 +109,40 @@ export interface ExecuteCommandRequest {
   command: string;
 }
 
+/** 用户点击「分析终端错误」按钮，后端从剪贴板读取错误并发给 AI */
+export interface AnalyzeTerminalErrorRequest {
+  type: 'analyzeTerminalError';
+}
+
+/** 用户点击「重新生成」按钮，后端删除最后一条 AI 回复并重新发送 */
+export interface RegenerateRequest {
+  type: 'regenerate';
+}
+
+/** 新建会话 */
+export interface CreateSessionRequest {
+  type: 'createSession';
+}
+
+/** 切换会话 */
+export interface SwitchSessionRequest {
+  type: 'switchSession';
+  sessionId: string;
+}
+
+/** 删除会话 */
+export interface DeleteSessionRequest {
+  type: 'deleteSession';
+  sessionId: string;
+}
+
+/** 重命名会话 */
+export interface RenameSessionRequest {
+  type: 'renameSession';
+  sessionId: string;
+  name: string;
+}
+
 /** Webview 发送给 Extension 的所有消息类型 */
 export type WebviewMessage =
   | SendMessageRequest
@@ -112,7 +162,13 @@ export type WebviewMessage =
   | AcceptChangeRequest
   | RejectChangeRequest
   | AcceptAllChangesRequest
-  | RejectAllChangesRequest;
+  | RejectAllChangesRequest
+  | CreateSessionRequest
+  | SwitchSessionRequest
+  | DeleteSessionRequest
+  | RenameSessionRequest
+  | AnalyzeTerminalErrorRequest
+  | RegenerateRequest;
 
 // ==================== Extension → Webview ====================
 
@@ -164,6 +220,8 @@ export interface UpdateModelsResponse {
   models: { name: string; index: number }[];
   /** 当前活跃模型的序号 */
   activeIndex: number;
+  /** 当前活跃模型是否支持图片输入 */
+  supportsVision?: boolean;
 }
 
 /** 更新已有消息的内容（用于剥离 tool_call 标签后刷新显示） */
@@ -297,6 +355,49 @@ export interface ThinkingCompleteResponse {
   elapsed: number;
 }
 
+// ==================== 图片附件（Image Attachment） ====================
+
+/** 前端准备发送的图片附件数据 */
+export interface ImageAttachment {
+  /** 唯一标识，由前端生成 */
+  id: string;
+  /** base64 data URL，格式为 data:image/jpeg;base64,... */
+  dataUrl: string;
+  /** 原始文件名 */
+  fileName: string;
+  /** MIME 类型，如 image/jpeg */
+  mimeType: string;
+  /** 文件大小（KB） */
+  sizeKB: number;
+}
+
+/** 后端通知前端当前模型不支持视觉输入（发送图片时才触发） */
+export interface VisionNotSupportedResponse {
+  type: 'visionNotSupported';
+  /** 当前模型名称，用于在提示中展示 */
+  modelName: string;
+}
+
+/** 后端通知前端清空图片附件缩略图（消息发送后图片已处理，可以清除展示） */
+export interface ClearImageAttachmentsResponse {
+  type: 'clearImageAttachments';
+}
+
+/** 推送会话列表到 Webview（新建/切换/删除/重命名后触发） */
+export interface UpdateSessionsResponse {
+  type: 'updateSessions';
+  /** 所有会话的摘要信息（不含完整历史，减少传输量） */
+  sessions: Array<{
+    id: string;
+    name: string;
+    createdAt: number;
+    /** 对话轮数（用于在 Tab 上展示徽章） */
+    messageCount: number;
+  }>;
+  /** 当前活跃会话 ID */
+  activeSessionId: string;
+}
+
 // ==================== Webview → Extension（Accept/Reject） ====================
 
 /** 用户接受文件变更 */
@@ -343,4 +444,7 @@ export type ExtensionMessage =
   | ShowDiffResponse
   | ShowChangeSummaryResponse
   | UpdateChangeSummaryResponse
-  | ThinkingCompleteResponse;
+  | ThinkingCompleteResponse
+  | VisionNotSupportedResponse
+  | ClearImageAttachmentsResponse
+  | UpdateSessionsResponse;
