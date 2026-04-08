@@ -22,8 +22,8 @@ export interface ChatSession {
   /** 创建时间戳 */
   createdAt: number;
   updatedAt: number;
-  /** 对话历史（OpenAI 消息格式）；timestamp 为可选字段，旧存档没有也不影响加载 */
-  history: Array<{ role: string; content: unknown; timestamp?: number }>;
+  /** 对话历史（OpenAI 消息格式） */
+  history: Array<{ role: string; content: unknown }>;
 }
 
 // ==================== Webview → Extension ====================
@@ -159,6 +159,11 @@ export interface OpenSettingsRequest {
   type: 'openSettings';
 }
 
+/** 用户启用"本轮自动接受"模式，后续文件变更不再弹确认 */
+export interface SetAutoAcceptRunRequest {
+  type: 'setAutoAcceptRun';
+}
+
 /** Webview 发送给 Extension 的所有消息类型 */
 export type WebviewMessage =
   | SendMessageRequest
@@ -175,6 +180,10 @@ export type WebviewMessage =
   | ExportChatRequest
   | StopGenerationRequest
   | ExecuteCommandRequest
+  | AcceptChangeRequest
+  | RejectChangeRequest
+  | AcceptAllChangesRequest
+  | RejectAllChangesRequest
   | CreateSessionRequest
   | SwitchSessionRequest
   | DeleteSessionRequest
@@ -183,8 +192,8 @@ export type WebviewMessage =
   | RegenerateRequest
   | OpenFilesInIdeRequest
   | OpenSettingsRequest
-  | UndoAllChangesRequest
-  | UndoFileChangeRequest;
+  | ResolveChangeSummaryRequest
+  | SetAutoAcceptRunRequest;
 
 // ==================== Extension → Webview ====================
 
@@ -374,7 +383,7 @@ export interface ShowChangeSummaryResponse {
 export interface UpdateChangeSummaryResponse {
   type: 'updateChangeSummary';
   summaryId: string;
-  status: 'accepted' | 'partial' | 'failed' | 'undone' | 'partial-undone' | 'cancelled';
+  status: 'applying' | 'accepted' | 'partial' | 'failed' | 'rejected' | 'cancelled';
   text: string;
 }
 
@@ -432,19 +441,36 @@ export interface UpdateSessionsResponse {
   activeSessionId: string;
 }
 
-// ==================== Webview → Extension（Undo） ====================
+// ==================== Webview → Extension（Accept/Reject） ====================
 
-/** 用户点击"Undo all"按钮，撤销本轮所有文件变更 */
-export interface UndoAllChangesRequest {
-  type: 'undoAllChanges';
+/** 用户接受文件变更 */
+export interface AcceptChangeRequest {
+  type: 'acceptChange';
+  stepId: string;
+}
+
+/** 用户拒绝文件变更 */
+export interface RejectChangeRequest {
+  type: 'rejectChange';
+  stepId: string;
+}
+
+export interface AcceptAllChangesRequest {
+  type: 'acceptAllChanges';
   summaryId: string;
 }
 
-/** 用户点击单文件"↩"按钮，撤销指定文件的变更 */
-export interface UndoFileChangeRequest {
-  type: 'undoFileChange';
-  filePath: string;
+export interface RejectAllChangesRequest {
+  type: 'rejectAllChanges';
   summaryId: string;
+}
+
+/** 用户对汇总中每个文件分别做出决策后，统一提交 */
+export interface ResolveChangeSummaryRequest {
+  type: 'resolveChangeSummary';
+  summaryId: string;
+  /** stepId → true(接受) / false(拒绝) */
+  decisions: Record<string, boolean>;
 }
 
 /** Extension 发送给 Webview 的所有消息类型 */

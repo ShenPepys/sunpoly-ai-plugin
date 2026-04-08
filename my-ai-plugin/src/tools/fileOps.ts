@@ -28,7 +28,7 @@ function getWorkspaceRoot(): string | undefined {
  * @param targetPath 待校验的文件/目录路径
  * @returns 规范化后的绝对路径，如果不安全则返回 undefined
  */
-function resolveAndValidatePath(targetPath: string): string | undefined {
+export function resolveAndValidatePath(targetPath: string): string | undefined {
   const workspaceRoot = getWorkspaceRoot();
   if (!workspaceRoot) {
     return undefined;

@@ -1042,37 +1042,31 @@
   }
 
   function setSummaryStatusState(summaryEl, summaryId, statusClass, statusText) {
-    // 只更新专用的状态文字 span，不替换整个 .summary-actions
-    // 这样 [↩ Undo all] 按钮不会被覆盖掉
-    var statusEl = summaryEl.querySelector('.summary-status');
-    if (statusEl) {
-      statusEl.className = 'summary-status ' + statusClass;
-      statusEl.textContent = statusText;
-    }
+    var actionsEl = summaryEl.querySelector('.summary-actions');
+    if (!actionsEl) { return; }
+
+    actionsEl.innerHTML =
+      '<button class="summary-btn summary-btn-view">View all changes</button>' +
+      '<span class="' + statusClass + '">' + statusText + '</span>';
 
     summaryEl.classList.remove('change-summary-pending');
     bindSummaryViewButton(summaryEl, summaryId);
     updateSummaryViewButtons(summaryId);
+  }
 
-    // 撤销完成后隐藏所有 Undo 入口，防止重复撤销
-    var isUndone = statusClass === 'summary-undone' || statusClass === 'summary-partial';
-    if (isUndone && statusText.indexOf('\u21a9') === 0) {
-      var undoAllBtn = summaryEl.querySelector('.summary-btn-undo');
-      if (undoAllBtn) { undoAllBtn.style.display = 'none'; }
-      var fileUndoBtns = summaryEl.querySelectorAll('.file-btn-undo');
-      Array.prototype.forEach.call(fileUndoBtns, function (btn) {
-        btn.style.display = 'none';
-      });
-    }
+  function setSummaryDecisionState(summaryEl, summaryId, accepted) {
+    var statusClass = accepted ? 'summary-applying' : 'summary-rejected';
+    var statusText = accepted ? 'Applying changes...' : 'Rejecting changes...';
+    setSummaryStatusState(summaryEl, summaryId, statusClass, statusText);
   }
 
   function getSummaryStatusClass(status) {
     switch (status) {
+      case 'applying': return 'summary-applying';
       case 'accepted': return 'summary-accepted';
       case 'partial': return 'summary-partial';
       case 'failed': return 'summary-failed';
-      case 'undone': return 'summary-undone';
-      case 'partial-undone': return 'summary-partial';
+      case 'rejected': return 'summary-rejected';
       case 'cancelled': return 'summary-cancelled';
       default: return 'summary-cancelled';
     }
@@ -1086,7 +1080,11 @@
   }
 
   function cancelPendingChangeSummaries() {
-    // 新架构下不再有待确认的汇总面板，保留此函数是为了兼容 chat.js 调用
+    var summaryEls = document.querySelectorAll('.change-summary.change-summary-pending[data-summary-id]');
+    Array.prototype.forEach.call(summaryEls, function (summaryEl) {
+      var summaryId = summaryEl.getAttribute('data-summary-id') || '';
+      setSummaryStatusState(summaryEl, summaryId, 'summary-cancelled', '✗ Cancelled');
+    });
   }
 
   /**
@@ -1111,48 +1109,44 @@
     });
   }
 
-  /**
-   * 绑定汇总面板的 Undo all 和单文件 ↩ 按钮
-   * Undo all → 通知后端撤销本轮所有写文件操作
-   * 单文件 ↩  → 通知后端撤销指定文件
-   */
-  function bindUndoButtons(summaryEl, summaryId) {
-    var undoAllBtn = summaryEl.querySelector('.summary-btn-undo');
-    if (undoAllBtn) {
-      undoAllBtn.addEventListener('click', function () {
+  function bindBatchSummaryActions(summaryEl, data) {
+    bindSummaryViewButton(summaryEl, data.summaryId);
+
+    var acceptBtn = summaryEl.querySelector('.summary-btn-accept');
+    var rejectBtn = summaryEl.querySelector('.summary-btn-reject');
+
+    if (acceptBtn) {
+      acceptBtn.addEventListener('click', function () {
         if (window.vscodeApi) {
-          window.vscodeApi.postMessage({ type: 'undoAllChanges', summaryId: summaryId });
+          window.vscodeApi.postMessage({ type: 'acceptAllChanges', summaryId: data.summaryId });
         }
+        setSummaryDecisionState(summaryEl, data.summaryId, true);
       });
     }
 
-    var fileUndoBtns = summaryEl.querySelectorAll('.file-btn-undo');
-    Array.prototype.forEach.call(fileUndoBtns, function (btn) {
-      btn.addEventListener('click', function (e) {
-        e.stopPropagation();
-        var filePath = btn.getAttribute('data-file-path');
-        if (filePath && window.vscodeApi) {
-          window.vscodeApi.postMessage({ type: 'undoFileChange', filePath: filePath, summaryId: summaryId });
+    if (rejectBtn) {
+      rejectBtn.addEventListener('click', function () {
+        if (window.vscodeApi) {
+          window.vscodeApi.postMessage({ type: 'rejectAllChanges', summaryId: data.summaryId });
         }
-        // 视觉反馈：按钮灰显，防止重复点击
-        btn.disabled = true;
-        btn.textContent = '↩…';
+        setSummaryDecisionState(summaryEl, data.summaryId, false);
       });
-    });
+    }
   }
 
   // ==================== 变更汇总 ====================
 
   /**
-   * 显示文件变更汇总（只读面板 + Undo 入口）
-   * 文件已立即写入磁盘，此面板仅用于展示和撤销，不再需要 Accept/Reject
-   *
-   * @param {object} data { messageId, summaryId, needsConfirm, files: [{ path, displayPath, additions, deletions, status }] }
+   * 显示文件变更汇总
+   * 支持 Accept all / Reject all 和行级 ✓/✗ 操作
+   * 
+   * @param {object} data { messageId, summaryId, needsConfirm, files: [{ path, displayPath, additions, deletions, status, stepId }] }
    */
   function showChangeSummary(data) {
     var container = getOrCreateStepsContainer(data.messageId);
     if (!container) { return; }
 
+    // 缓存文件数据，供 View all changes 按钮使用（需要绝对路径）
     summaryFilesStore[data.summaryId] = data.files;
 
     var existingSummaryEl = document.querySelector('.change-summary[data-summary-id="' + data.summaryId + '"]');
@@ -1161,18 +1155,23 @@
     }
 
     var summaryEl = document.createElement('div');
-    summaryEl.className = 'change-summary';
+    summaryEl.className = data.needsConfirm ? 'change-summary change-summary-pending' : 'change-summary';
     summaryEl.setAttribute('data-summary-id', data.summaryId);
 
     var totalAdd = 0;
     var totalDel = 0;
+    // 筛选出写操作文件（可以行级操作）和只读操作文件（不可操作）
+    var writeFiles = [];
     data.files.forEach(function (file) {
       totalAdd += file.additions;
       totalDel += file.deletions;
+      if (file.status === 'created' || file.status === 'modified') {
+        writeFiles.push(file);
+      }
     });
     var fileCountLabel = data.files.length + ' file' + (data.files.length > 1 ? 's' : '');
 
-    // 构建文件行 HTML：写操作文件带单文件 ↩ 撤销按钮
+    // 构建文件行 HTML
     var fileRowsHtml = '';
     data.files.forEach(function (file) {
       var fileName = file.displayPath || file.path;
@@ -1185,21 +1184,29 @@
       if (file.deletions > 0) { statsHtml += '<span class="diff-del">-' + file.deletions + '</span>'; }
 
       var isWriteFile = file.status === 'created' || file.status === 'modified';
+      var stepIdAttr = file.stepId ? ' data-step-id="' + file.stepId + '"' : '';
       var pathAttr = ' data-file-path="' + escapeHtml(file.path) + '"';
+
+      // 写操作文件显示行级 ✓/✗ 按钮
+      var fileActionsHtml = '';
+      if (data.needsConfirm && isWriteFile && file.stepId) {
+        fileActionsHtml =
+          '<span class="summary-file-actions">' +
+            '<button class="file-btn file-btn-accept" title="接受此文件">✓</button>' +
+            '<button class="file-btn file-btn-reject" title="拒绝此文件">✗</button>' +
+          '</span>';
+      }
+
       var statusAttr = ' data-file-status="' + file.status + '"';
 
-      // 写操作文件右侧显示单文件 ↩ 撤销按钮
-      var fileActionsHtml = isWriteFile
-        ? '<span class="summary-file-actions"><button class="file-btn file-btn-undo" title="撤销此文件" data-file-path="' + escapeHtml(file.path) + '">↩</button></span>'
-        : '';
-
       fileRowsHtml +=
-        '<div class="summary-file' + (isWriteFile ? ' summary-file-write' : '') + '"' + pathAttr + statusAttr + '>' +
+        '<div class="summary-file' + (isWriteFile ? ' summary-file-write' : '') + '"' + stepIdAttr + pathAttr + statusAttr + '>' +
           '<div class="summary-file-row">' +
             '<span class="summary-icon">' + statusIcon + '</span>' +
             '<span class="summary-name' + (isWriteFile ? ' summary-name-clickable' : '') + '" title="' + escapeHtml(fileName) + '">' + escapeHtml(fileName) + '</span>' +
             '<span class="summary-stats">' + statsHtml + '</span>' +
             fileActionsHtml +
+            '<span class="summary-file-status"></span>' +
           '</div>' +
           issueHtml +
         '</div>';
@@ -1209,32 +1216,51 @@
     if (totalAdd > 0) { totalStats += '<span class="diff-add">+' + totalAdd + '</span> '; }
     if (totalDel > 0) { totalStats += '<span class="diff-del">-' + totalDel + '</span>'; }
 
-    summaryEl.innerHTML =
-      '<div class="summary-bar">' +
-        '<div class="summary-primary">' +
-          '<span class="summary-count">' + fileCountLabel + '</span>' +
-          '<span class="summary-total-stats">' + totalStats + '</span>' +
-          '<span class="summary-status"></span>' +
+    if (data.needsConfirm) {
+      summaryEl.innerHTML =
+        '<div class="summary-bar">' +
+          '<div class="summary-primary">' +
+            '<span class="summary-count">' + fileCountLabel + '</span>' +
+            '<span class="summary-total-stats">' + totalStats + '</span>' +
+          '</div>' +
+          '<div class="summary-actions">' +
+            '<button class="summary-btn summary-btn-view">View all changes</button>' +
+            '<button class="summary-btn summary-btn-reject">Reject all</button>' +
+            '<button class="summary-btn summary-btn-accept">Accept all</button>' +
+            '<button class="summary-btn summary-btn-auto-accept" title="接受此次变更，并自动接受本轮后续所有变更">⚡ Auto</button>' +
+          '</div>' +
         '</div>' +
-        '<div class="summary-actions">' +
-          '<button class="summary-btn summary-btn-view">View all changes</button>' +
-          '<button class="summary-btn summary-btn-undo">\u21a9 Undo all</button>' +
-        '</div>' +
-      '</div>' +
-      '<div class="summary-files">' + fileRowsHtml + '</div>';
+        '<div class="summary-files">' + fileRowsHtml + '</div>';
 
-    bindSummaryViewButton(summaryEl, data.summaryId);
-    bindUndoButtons(summaryEl, data.summaryId);
-    updateSummaryViewButtons(data.summaryId);
-    bindFileNameClicks(summaryEl);
+      bindSummaryInteractions(summaryEl, data, writeFiles);
+      updateSummaryViewButtons(data.summaryId);
+    } else {
+      summaryEl.innerHTML =
+        '<div class="summary-bar">' +
+          '<div class="summary-primary">' +
+            '<span class="summary-count">' + fileCountLabel + '</span>' +
+            '<span class="summary-total-stats">' + totalStats + '</span>' +
+          '</div>' +
+          '<div class="summary-actions">' +
+            '<button class="summary-btn summary-btn-view">View all changes</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="summary-files">' + fileRowsHtml + '</div>';
+      bindSummaryViewButton(summaryEl, data.summaryId);
+      updateSummaryViewButtons(data.summaryId);
+      // 非确认态也支持点击文件名在 IDE 中打开
+      bindFileNameClicks(summaryEl);
+    }
 
     container.appendChild(summaryEl);
     scrollToBottom();
   }
 
-  // ==================== 已删除 bindSummaryInteractions（不再使用 Accept/Reject 流程）====================
-  // 该函数在方案四（静默执行+Undo）重构中被 bindUndoButtons 替代
-  function bindSummaryInteractions_UNUSED(summaryEl, data, writeFiles) {
+  /**
+   * 绑定汇总面板的所有交互：批量按钮 + 行级按钮 + 文件名点击
+   * 使用闭包追踪文件级决策状态
+   */
+  function bindSummaryInteractions(summaryEl, data, writeFiles) {
     var summaryId = data.summaryId;
     // stepId → true(接受) / false(拒绝) / undefined(未决定)
     var fileDecisions = {};

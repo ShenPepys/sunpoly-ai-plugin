@@ -18,6 +18,7 @@ import { getEditorContext } from '../utils/editor';
 import { getEnvContext, detectProjectType, getGitStatus, getProjectContext } from '../utils/context';
 import type { ExtensionMessage, WebviewMessage, WorkMode, ChatSession } from './messageTypes';
 import { parseToolCalls, hasToolCalls, stripToolCalls, executeToolCalls, formatToolResults, readFile } from '../tools';
+import { resolveAndValidatePath } from '../tools/fileOps';
 import { readErrorFromClipboard, buildErrorAnalysisPrompt } from '../terminal/terminalCapture';
 import type { ToolExecutionResult, ParsedToolCall, ToolCallType } from '../tools';
 
@@ -89,12 +90,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** 当前流式请求的中断函数（null 表示没有进行中的请求） */
   private abortStream: AbortStreamFn | null = null;
 
-  /** 待用户确认的文件变更（stepId → resolve 函数），Accept/Reject 时触发 */
-  private pendingConfirms: Map<string, (accepted: boolean) => void> = new Map();
-
-  /** summaryId → resolve 函数，false=全部拒绝，Record=按文件路径的逐文件决策 */
-  private pendingBatchConfirms: Map<string, (result: Record<string, boolean> | false) => void> = new Map();
-
   private activeRunId: string | null = null;
 
   /** 防止 handleToolCalls 被并发执行 */
@@ -106,10 +101,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private toolCallRound = 0;
 
   /**
-   * 本轮生成期间是否自动接受所有文件变更（用户点击"Accept & auto-accept"后启用）
-   * 每次新发送消息或重新生成时重置为 false
+   * 写前备份：AI 每次写文件前先把原始内容存在这里，供 Undo 使用
+   * key = 文件路径，value.originalContent = null 表示文件原本不存在（新建）
+   * 用户发送新消息时清空（上一轮不再可撤）
    */
-  private autoAcceptRun = false;
+  private writeBackups: Map<string, { originalContent: string | null; messageId: string }> = new Map();
 
   private sessionLauncherVisible = false;
 
@@ -220,7 +216,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * 处理 Webview 发来的消息
    * 根据 message.type 分发到不同的处理逻辑
    */
-  private handleWebviewMessage(message: WebviewMessage): void {
+  private async handleWebviewMessage(message: WebviewMessage): Promise<void> {
     switch (message.type) {
       case 'sendMessage':
         info('收到用户消息:', message.text);
@@ -340,20 +336,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this.abortStream();
           this.abortStream = null;
         }
-        if (this.pendingConfirms.size > 0) {
-          info(`停止生成：清理 ${this.pendingConfirms.size} 个待确认变更`);
-          for (const resolve of this.pendingConfirms.values()) {
-            resolve(false);
-          }
-          this.pendingConfirms.clear();
-        }
-        if (this.pendingBatchConfirms.size > 0) {
-          info(`停止生成：清理 ${this.pendingBatchConfirms.size} 个待确认批量变更`);
-          for (const resolve of this.pendingBatchConfirms.values()) {
-            resolve(false);
-          }
-          this.pendingBatchConfirms.clear();
-        }
         this.postMessage({ type: 'generationStopped' });
         this.postMessage({ type: 'setLoading', loading: false });
         break;
@@ -363,68 +345,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         vscode.commands.executeCommand(message.command);
         break;
 
-      case 'acceptChange': {
-        const resolve = this.pendingConfirms.get(message.stepId);
-        if (resolve) {
-          info(`用户接受文件变更: ${message.stepId}`);
-          this.pendingConfirms.delete(message.stepId);
-          resolve(true);
-        }
+      case 'undoAllChanges': {
+        await this.undoAllWriteBackups(message.summaryId);
         break;
       }
 
-      case 'rejectChange': {
-        const resolve = this.pendingConfirms.get(message.stepId);
-        if (resolve) {
-          info(`用户拒绝文件变更: ${message.stepId}`);
-          this.pendingConfirms.delete(message.stepId);
-          resolve(false);
-        }
-        break;
-      }
-
-      case 'acceptAllChanges': {
-        const resolve = this.pendingBatchConfirms.get(message.summaryId);
-        if (resolve) {
-          info(`用户接受批量文件变更: ${message.summaryId}`);
-          this.pendingBatchConfirms.delete(message.summaryId);
-          // 空 Record 表示"全部接受"，后续逻辑会把所有文件视为 accepted
-          resolve({});
-        }
-        break;
-      }
-
-      case 'rejectAllChanges': {
-        const resolve = this.pendingBatchConfirms.get(message.summaryId);
-        if (resolve) {
-          info(`用户拒绝批量文件变更: ${message.summaryId}`);
-          this.pendingBatchConfirms.delete(message.summaryId);
-          resolve(false);
-        }
-        break;
-      }
-
-      case 'resolveChangeSummary': {
-        // 用户对每个文件分别做出了决策
-        const resolve = this.pendingBatchConfirms.get(message.summaryId);
-        if (resolve) {
-          info(`用户提交文件级决策: ${message.summaryId}，共 ${Object.keys(message.decisions).length} 项`);
-          this.pendingBatchConfirms.delete(message.summaryId);
-          resolve(message.decisions);
-        }
-        break;
-      }
-
-      case 'setAutoAcceptRun': {
-        // 用户启用本轮自动接受模式，后续所有待确认批量变更立即以"接受全部"结算
-        info('用户启用本轮自动接受模式');
-        this.autoAcceptRun = true;
-        // 立即 resolve 当前所有 pending 的批量确认（空 Record = 全部接受）
-        for (const [sid, resolve] of this.pendingBatchConfirms.entries()) {
-          info(`自动接受批量变更: ${sid}`);
-          this.pendingBatchConfirms.delete(sid);
-          resolve({});
-        }
+      case 'undoFileChange': {
+        await this.undoSingleWriteBackup(message.filePath, message.summaryId);
         break;
       }
 
@@ -542,7 +469,10 @@ ${projectCtx}` : baseSystemPrompt;
     this.postMessage({ type: 'clearContextFiles' });
 
     // 添加到对话历史并持久化（历史只存文本部分，图片不持久化以节省空间）
-    this.chatHistory.push({ role: 'user', content: userContent });
+    // 通过类型断言写入 timestamp，供导出时标注对话时间
+    (this.chatHistory as { role: string; content: unknown; timestamp?: number }[]).push(
+      { role: 'user', content: userContent, timestamp: Date.now() }
+    );
     this.saveChatHistory();
 
     // 上下文窗口管理：估算 token 数，超过阈值时截断旧消息
@@ -602,11 +532,9 @@ ${projectCtx}` : baseSystemPrompt;
       this.abortStream();
       this.abortStream = null;
     }
-    for (const resolve of this.pendingConfirms.values()) { resolve(false); }
-    this.pendingConfirms.clear();
-    for (const resolve of this.pendingBatchConfirms.values()) { resolve(false); }
-    this.pendingBatchConfirms.clear();
     this.toolCallsInProgress = false;
+    // 新消息开始：清空上一轮写文件备份（上一轮的 Undo 不再有效）
+    this.writeBackups.clear();
 
     // 发起流式请求，保存 abort 句柄用于停止生成
     const assistantMsgId = `assistant-${Date.now()}`;
@@ -614,7 +542,6 @@ ${projectCtx}` : baseSystemPrompt;
     this.activeRunId = assistantMsgId;
     this.stepSequence = 0;
     this.toolCallRound = 0;
-    this.autoAcceptRun = false;
 
     this.abortStream = sendStreamRequest(
       apiConfig,
@@ -744,16 +671,14 @@ ${projectCtx}` : baseSystemPrompt;
 
     try {
 
-      info(`检测到 ${toolCalls.length} 个工具调用，逐步执行，当前轮次: ${this.toolCallRound}`);  
+      info(`检测到 ${toolCalls.length} 个工具调用，立即执行，当前轮次: ${this.toolCallRound}`);
 
       const results: ToolExecutionResult[] = [];
-      const previewBaseStates = new Map<string, PreviewFileState>();
-      const previewCurrentStates = new Map<string, PreviewFileState>();
-      const previewIssues = new Map<string, string>();
-      const deferredSteps: DeferredToolStep[] = [];
-      const writeFilePaths = new Set<string>();
       const summaryId = `summary-${reuseMsgId}-${Date.now()}-${this.stepSequence}`;
-      let deferRemainingSteps = false;
+      // 收集本批次成功写入的文件（用于汇总面板）
+      const batchWriteFiles: ChangeSummaryFile[] = [];
+      let writeSuccessCount = 0;
+      let writeFailCount = 0;
 
       for (let i = 0; i < toolCalls.length; i++) {
         if (this.activeRunId !== reuseMsgId) {
@@ -764,311 +689,123 @@ ${projectCtx}` : baseSystemPrompt;
         const stepDesc = this.getToolStepDescription(tc);
         const stepIcon = this.getToolStepIcon(tc.type);
 
-        // 发送步骤开始（前端显示 spinner）
         this.postMessage({ type: 'addStep', messageId: reuseMsgId, stepId, icon: stepIcon, description: stepDesc, status: 'running' });
 
         const startTime = Date.now();
-
         const isWriteOp = tc.type === 'write_file' || tc.type === 'edit_file';
 
-        if (deferRemainingSteps || isWriteOp) {
-          deferRemainingSteps = true;
-          deferredSteps.push({ stepId, stepDesc, toolCall: tc, startedAt: startTime });
+        if (isWriteOp) {
+          const requestedFilePath = (tc as { path: string }).path;
+          const resolvedFilePath = resolveAndValidatePath(requestedFilePath);
+          const filePath = resolvedFilePath ?? requestedFilePath;
 
-          if (isWriteOp) {
-            if (tc.type === 'write_file') { writeFilePaths.add(tc.path); }
-            const initialPreviewState = await this.ensurePreviewFileState(previewBaseStates, tc.path);
-            if (!previewCurrentStates.has(tc.path)) {
-              previewCurrentStates.set(tc.path, {
-                content: initialPreviewState.content,
-                exists: initialPreviewState.exists,
-              });
+          if (resolvedFilePath && resolvedFilePath !== requestedFilePath) {
+            info(`写操作路径已解析: ${requestedFilePath} -> ${resolvedFilePath}`);
+          }
+
+          // 写前备份：同一文件只备份第一次，保留最原始的内容
+          if (resolvedFilePath && !this.writeBackups.has(filePath)) {
+            let originalContent: string | null = null;
+            try {
+              originalContent = fs.readFileSync(filePath, 'utf-8');
+            } catch {
+              // 文件不存在（新建场景），备份为 null
             }
+            this.writeBackups.set(filePath, { originalContent, messageId: reuseMsgId });
+          }
 
-            const currentPreviewState = previewCurrentStates.get(tc.path) || initialPreviewState;
-            const previewResult = this.buildPreviewContent(tc, currentPreviewState.content);
-            const nextPreviewState: PreviewFileState = previewResult.canApply || tc.type === 'write_file'
-              ? {
-                content: previewResult.newContent,
-                exists: tc.type === 'write_file' ? true : currentPreviewState.exists,
-              }
-              : {
-                content: currentPreviewState.content,
-                exists: currentPreviewState.exists,
-              };
+          // 记录写前内容，用于计算 diff
+          const backupBeforeWrite = this.writeBackups.get(filePath)?.originalContent ?? '';
+          const diffOldContent = tc.type === 'write_file' ? '' : backupBeforeWrite;
 
-            previewCurrentStates.set(tc.path, nextPreviewState);
+          // 立即执行写操作
+          const result = await executeToolCalls([tc], this.currentMode);
+          const singleResult = result[0];
+          results.push(singleResult);
+          const elapsed = Date.now() - startTime;
 
-            if (previewResult.issueText) {
-              previewIssues.set(tc.path, previewResult.issueText);
-            } else {
-              previewIssues.delete(tc.path);
-            }
+          if (singleResult.result.success) {
+            writeSuccessCount += 1;
 
-            // write_file 语义是"创建/覆盖"，始终展示完整新内容（以空内容为基准）
-            // edit_file 语义是"局部修改"，展示实际差异
-            const diffOldContent = tc.type === 'write_file' ? '' : currentPreviewState.content;
-            const { additions, deletions } = this.calculateDiffStats(diffOldContent, nextPreviewState.content);
-            const lang = this.detectLanguage(tc.path);
+            // 写完后读取实际新内容计算 diff
+            let newContent = '';
+            try {
+              newContent = fs.readFileSync(filePath, 'utf-8');
+            } catch { /* 读取失败时 diff 为空 */ }
+
+            const { additions, deletions } = this.calculateDiffStats(diffOldContent, newContent);
+            const lang = this.detectLanguage(filePath);
 
             this.postMessage({
               type: 'showDiff',
               messageId: reuseMsgId,
               stepId,
               summaryId,
-              filePath: tc.path,
+              filePath,
               language: lang,
               additions,
               deletions,
               oldContent: diffOldContent,
-              newContent: nextPreviewState.content,
-              noticeText: previewResult.issueText,
+              newContent,
               needsConfirm: false,
               collapsed: true,
             });
+
+            const sfEntry: ChangeSummaryFile = {
+              path: filePath,
+              displayPath: this.getDisplayPath(filePath),
+              additions,
+              deletions,
+              status: tc.type === 'write_file' ? 'created' : 'modified',
+            };
+            batchWriteFiles.push(sfEntry);
+
+            // 收集到本轮汇总（去重）
+            if (!this.turnWriteFiles.some(f => f.path === filePath)) {
+              this.turnWriteFiles.push(sfEntry);
+            }
+          } else {
+            writeFailCount += 1;
           }
 
+          this.postMessage({ type: 'updateStep', stepId, status: singleResult.result.success ? 'done' : 'error', elapsed });
           continue;
         }
 
+        // 非写操作：直接执行
         const result = await executeToolCalls([tc], this.currentMode);
         const singleResult = result[0];
         results.push(singleResult);
         const elapsed = Date.now() - startTime;
-        const status = singleResult.result.success ? 'done' : 'error';
-        this.postMessage({ type: 'updateStep', stepId, status, elapsed });
+        this.postMessage({ type: 'updateStep', stepId, status: singleResult.result.success ? 'done' : 'error', elapsed });
       }
 
       if (this.activeRunId !== reuseMsgId) {
         return;
       }
 
-      if (deferredSteps.length > 0) {
-        // 构建 filePath → 第一个 stepId 的映射，用于前端文件级操作
-        const fileStepIdMap = new Map<string, string>();
-        for (const ds of deferredSteps) {
-          const isWrite = ds.toolCall.type === 'write_file' || ds.toolCall.type === 'edit_file';
-          if (isWrite) {
-            const dsPath = (ds.toolCall as { path: string }).path;
-            if (!fileStepIdMap.has(dsPath)) {
-              fileStepIdMap.set(dsPath, ds.stepId);
-            }
-          }
-        }
-
-        const summaryFiles = this.buildPreviewSummaryFiles(previewBaseStates, previewCurrentStates, writeFilePaths, previewIssues);
-        // 注入 stepId 供前端文件级决策使用
-        for (const sf of summaryFiles) {
-          sf.stepId = fileStepIdMap.get(sf.path);
-        }
+      // 本批次有写操作时展示只读汇总面板 + Undo 入口
+      if (batchWriteFiles.length > 0 || writeFailCount > 0) {
+        this.turnWriteRounds += 1;
 
         this.postMessage({
           type: 'showChangeSummary',
           messageId: reuseMsgId,
           summaryId,
-          // 自动接受模式下无需确认，展示为已接受状态
-          needsConfirm: !this.autoAcceptRun,
-          files: summaryFiles,
+          needsConfirm: false,
+          files: batchWriteFiles,
         });
 
-        let decisions: Record<string, boolean> | false;
+        const statusText = writeFailCount === 0
+          ? `✓ Applied ${writeSuccessCount} change${writeSuccessCount > 1 ? 's' : ''}`
+          : `⚠ ${writeSuccessCount} applied, ${writeFailCount} failed`;
 
-        if (this.autoAcceptRun) {
-          // 自动接受：跳过确认对话框，直接以"全部接受"结算
-          decisions = {};
-        } else {
-          // 等待用户决策：false=全部拒绝，空 Record=全部接受，非空 Record=文件级决策
-          decisions = await new Promise<Record<string, boolean> | false>((resolve) => {
-            this.pendingBatchConfirms.set(summaryId, resolve);
-          });
-          this.pendingBatchConfirms.delete(summaryId);
-        }
-
-        // ---------- 全部拒绝（Reject all 或 停止生成）----------
-        if (decisions === false) {
-          const isCancelled = this.activeRunId !== reuseMsgId;
-          this.postMessage({
-            type: 'updateChangeSummary',
-            summaryId,
-            status: isCancelled ? 'cancelled' : 'rejected',
-            text: isCancelled ? '✗ Cancelled' : '✗ Rejected all changes',
-          });
-
-          for (const deferredStep of deferredSteps) {
-            const deferredIsWriteOp = deferredStep.toolCall.type === 'write_file' || deferredStep.toolCall.type === 'edit_file';
-            const suffix = isCancelled ? '(已取消)' : (deferredIsWriteOp ? '(已拒绝)' : '(已跳过)');
-            const message = isCancelled
-              ? '用户取消了生成'
-              : (deferredIsWriteOp ? '用户拒绝了批量文件变更' : '由于用户拒绝了批量文件变更，后续工具调用已跳过');
-
-            results.push({
-              toolCall: deferredStep.toolCall,
-              result: { success: false, content: message },
-            });
-
-            this.postMessage({
-              type: 'updateStep',
-              stepId: deferredStep.stepId,
-              status: 'error',
-              elapsed: Date.now() - deferredStep.startedAt,
-              description: `${deferredStep.stepDesc} ${suffix}`,
-            });
-          }
-
-          if (isCancelled) {
-            return;
-          }
-        }
-
-        if (this.activeRunId !== reuseMsgId) {
-          this.postMessage({
-            type: 'updateChangeSummary',
-            summaryId,
-            status: 'cancelled',
-            text: '✗ Cancelled',
-          });
-          return;
-        }
-
-        // ---------- 全部或部分接受 ----------
-        if (decisions !== false) {
-          // 判断每个 deferred step 对应文件是否被接受
-          // 空 Record = Accept all，非空 Record = 文件级决策（key 可以是 stepId 或 filePath）
-          const isAcceptAll = Object.keys(decisions).length === 0;
-
-          const isFileAccepted = (ds: DeferredToolStep): boolean => {
-            const isWrite = ds.toolCall.type === 'write_file' || ds.toolCall.type === 'edit_file';
-            if (!isWrite) {
-              // 非写操作（如 run_command）：只要有任何文件被接受就执行
-              if (isAcceptAll) { return true; }
-              return Object.values(decisions).some(v => v === true);
-            }
-            if (isAcceptAll) { return true; }
-            const dsPath = (ds.toolCall as { path: string }).path;
-            const dsStepId = fileStepIdMap.get(dsPath);
-            // 优先用 stepId 匹配，兼容 filePath 匹配
-            if (dsStepId && decisions[dsStepId] !== undefined) { return decisions[dsStepId]; }
-            if (decisions[dsPath] !== undefined) { return decisions[dsPath]; }
-            return false;
-          };
-
-          this.postMessage({
-            type: 'updateChangeSummary',
-            summaryId,
-            status: 'applying',
-            text: 'Applying changes...',
-          });
-
-          let successCount = 0;
-          let failureCount = 0;
-          let rejectedCount = 0;
-
-          for (const deferredStep of deferredSteps) {
-            if (this.activeRunId !== reuseMsgId) {
-              this.postMessage({
-                type: 'updateChangeSummary',
-                summaryId,
-                status: successCount > 0 || failureCount > 0 ? 'partial' : 'cancelled',
-                text: successCount > 0 || failureCount > 0
-                  ? `⚠ Cancelled after applying ${successCount}/${deferredSteps.length} changes`
-                  : '✗ Cancelled',
-              });
-              return;
-            }
-
-            // 检查当前步骤是否被接受
-            const isDeferredWrite = deferredStep.toolCall.type === 'write_file' || deferredStep.toolCall.type === 'edit_file';
-            if (!isFileAccepted(deferredStep)) {
-              // 只对写操作计入 rejectedCount，非写操作的跳过不影响文件统计
-              if (isDeferredWrite) { rejectedCount += 1; }
-              results.push({
-                toolCall: deferredStep.toolCall,
-                result: { success: false, content: '用户拒绝了此文件的变更' },
-              });
-              this.postMessage({
-                type: 'updateStep',
-                stepId: deferredStep.stepId,
-                status: 'error',
-                elapsed: Date.now() - deferredStep.startedAt,
-                description: `${deferredStep.stepDesc} (已拒绝)`,
-              });
-              continue;
-            }
-
-            const result = await executeToolCalls([deferredStep.toolCall], this.currentMode);
-            const singleResult = result[0];
-            results.push(singleResult);
-
-            // 只对写操作计入成功/失败数，保持与 totalWriteSteps 分母对齐
-            if (isDeferredWrite) {
-              if (singleResult.result.success) {
-                successCount += 1;
-              } else {
-                failureCount += 1;
-              }
-            }
-
-            const status = singleResult.result.success ? 'done' : 'error';
-            this.postMessage({
-              type: 'updateStep',
-              stepId: deferredStep.stepId,
-              status,
-              elapsed: Date.now() - deferredStep.startedAt,
-            });
-          }
-
-          // 生成最终汇总文案
-          const totalWriteSteps = deferredSteps.filter(ds =>
-            ds.toolCall.type === 'write_file' || ds.toolCall.type === 'edit_file'
-          ).length;
-          if (rejectedCount === 0 && failureCount === 0) {
-            this.postMessage({
-              type: 'updateChangeSummary',
-              summaryId,
-              status: 'accepted',
-              text: `✓ Applied all ${successCount} changes`,
-            });
-          } else if (successCount === 0 && failureCount === 0) {
-            this.postMessage({
-              type: 'updateChangeSummary',
-              summaryId,
-              status: 'rejected',
-              text: `✗ Rejected all changes`,
-            });
-          } else if (successCount === 0 && failureCount > 0) {
-            this.postMessage({
-              type: 'updateChangeSummary',
-              summaryId,
-              status: 'failed',
-              text: `✗ Failed to apply ${failureCount} changes`,
-            });
-          } else {
-            this.postMessage({
-              type: 'updateChangeSummary',
-              summaryId,
-              status: 'partial',
-              text: `⚠ Applied ${successCount}/${totalWriteSteps} files` +
-                (rejectedCount > 0 ? `, ${rejectedCount} rejected` : '') +
-                (failureCount > 0 ? `, ${failureCount} failed` : ''),
-            });
-          }
-
-          // 收集已成功应用的文件到本轮汇总（用于最终全量汇总）
-          if (successCount > 0) {
-            this.turnWriteRounds += 1;
-            for (const sf of summaryFiles) {
-              // 仅收集被接受的文件
-              const sfStepId = fileStepIdMap.get(sf.path);
-              const sfAccepted = isAcceptAll || (sfStepId ? decisions[sfStepId] === true : false) || decisions[sf.path] === true;
-              if (sfAccepted) {
-                const alreadyTracked = this.turnWriteFiles.some(f => f.path === sf.path);
-                if (!alreadyTracked) {
-                  this.turnWriteFiles.push(sf);
-                }
-              }
-            }
-          }
-        }
+        this.postMessage({
+          type: 'updateChangeSummary',
+          summaryId,
+          status: writeFailCount > 0 ? 'partial' : 'accepted',
+          text: statusText,
+        });
       }
 
       const resultText = formatToolResults(results);
@@ -1190,6 +927,119 @@ ${projectCtx}` : baseSystemPrompt;
       needsConfirm: false,
       files: this.turnWriteFiles,
     });
+  }
+
+  /**
+   * 撤销本轮所有写文件操作（Undo all）
+   * 遍历 writeBackups，将文件恢复到写前状态；originalContent 为 null 表示新建文件，撤销时删除
+   *
+   * @param summaryId 对应的汇总面板 ID，用于更新面板状态显示
+   */
+  private async undoAllWriteBackups(summaryId: string): Promise<void> {
+    if (this.writeBackups.size === 0) {
+      info('Undo all：备份为空，无需操作');
+      vscode.window.showWarningMessage('⚠ Undo：没有可撤销的备份（可能已发送新消息导致备份清空，或插件已重载）');
+      return;
+    }
+    const fileList = [...this.writeBackups.keys()].map(p => path.basename(p)).join(', ');
+    info(`Undo all：开始恢复 ${this.writeBackups.size} 个文件：${fileList}`);
+
+    let undoneCount = 0;
+    let failCount = 0;
+    const restoredFiles: string[] = [];
+    const deletedFiles: string[] = [];
+
+    for (const [filePath, backup] of this.writeBackups.entries()) {
+      try {
+        if (backup.originalContent === null) {
+          // 文件是 AI 新建的，撤销 = 删除
+          if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            info(`Undo：已删除新建文件 ${filePath}`);
+            deletedFiles.push(filePath);
+          } else {
+            info(`Undo：新建文件已不存在，视为已撤销 ${filePath}`);
+          }
+        } else {
+          // 文件是 AI 修改的，撤销 = 写回原始内容
+          fs.writeFileSync(filePath, backup.originalContent, 'utf-8');
+          info(`Undo：已恢复文件 ${filePath}`);
+          restoredFiles.push(filePath);
+        }
+        undoneCount += 1;
+      } catch (err) {
+        error(`Undo 失败 ${filePath}:`, err);
+        failCount += 1;
+      }
+    }
+
+    this.writeBackups.clear();
+
+    if (restoredFiles.length > 0) {
+      info(`Undo all：已恢复原内容文件 -> ${restoredFiles.join(' | ')}`);
+    }
+    if (deletedFiles.length > 0) {
+      info(`Undo all：已删除新建文件 -> ${deletedFiles.join(' | ')}`);
+    }
+
+    if (failCount === 0) {
+      vscode.window.showInformationMessage(`✓ Undo 成功：已还原 ${undoneCount} 个文件（恢复 ${restoredFiles.length} 个，删除 ${deletedFiles.length} 个）`);
+    } else {
+      vscode.window.showErrorMessage(`⚠ Undo 部分失败：${undoneCount} 成功，${failCount} 失败（查看 Output 面板日志）`);
+    }
+
+    const statusText = failCount === 0
+      ? `↩ Undone ${undoneCount} change${undoneCount > 1 ? 's' : ''}`
+      : `↩ Undone ${undoneCount}, ${failCount} failed`;
+
+    this.postMessage({
+      type: 'updateChangeSummary',
+      summaryId,
+      status: failCount > 0 ? 'partial-undone' : 'undone',
+      text: statusText,
+    });
+  }
+
+  /**
+   * 撤销单个文件的写操作（单文件 ↩ Undo）
+   *
+   * @param filePath 要还原的文件路径
+   * @param summaryId 对应的汇总面板 ID
+   */
+  private async undoSingleWriteBackup(filePath: string, summaryId: string): Promise<void> {
+    const backup = this.writeBackups.get(filePath);
+    if (!backup) {
+      info(`单文件 Undo：未找到 ${filePath} 的备份，可能已撤销或未被修改`);
+      return;
+    }
+
+    try {
+      if (backup.originalContent === null) {
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+          info(`单文件 Undo：已删除新建文件 ${filePath}`);
+        } else {
+          info(`单文件 Undo：新建文件已不存在，视为已撤销 ${filePath}`);
+        }
+      } else {
+        fs.writeFileSync(filePath, backup.originalContent, 'utf-8');
+        info(`单文件 Undo：已恢复文件 ${filePath}`);
+      }
+      this.writeBackups.delete(filePath);
+
+      // 若所有备份都已撤销，更新汇总面板为"全部撤销"
+      const remainCount = this.writeBackups.size;
+      this.postMessage({
+        type: 'updateChangeSummary',
+        summaryId,
+        status: remainCount === 0 ? 'undone' : 'partial-undone',
+        text: remainCount === 0
+          ? '↩ All changes undone'
+          : `↩ Undone 1 file (${remainCount} remaining)`,
+      });
+    } catch (err) {
+      error(`单文件 Undo 失败 ${filePath}:`, err);
+    }
   }
 
   /**
@@ -1751,18 +1601,15 @@ ${projectCtx}` : baseSystemPrompt;
       this.abortStream();
       this.abortStream = null;
     }
-    for (const resolve of this.pendingConfirms.values()) { resolve(false); }
-    this.pendingConfirms.clear();
-    for (const resolve of this.pendingBatchConfirms.values()) { resolve(false); }
-    this.pendingBatchConfirms.clear();
     this.toolCallsInProgress = false;
+    // 重新生成：清空上一轮写文件备份
+    this.writeBackups.clear();
 
     const regenMsgId = `ai-regen-${Date.now()}`;
     const streamStartTime = Date.now();
     this.activeRunId = regenMsgId;
     this.stepSequence = 0;
     this.toolCallRound = 0;
-    this.autoAcceptRun = false;
     this.postMessage({ type: 'addMessage', role: 'assistant', content: '', messageId: regenMsgId });
 
     let fullContent = '';
@@ -2130,11 +1977,7 @@ ${projectCtx}` : baseSystemPrompt;
     this.clearHistory();
     this.contextFiles = [];
 
-    for (const resolve of this.pendingConfirms.values()) { resolve(false); }
-    this.pendingConfirms.clear();
-    for (const resolve of this.pendingBatchConfirms.values()) { resolve(false); }
-    this.pendingBatchConfirms.clear();
-
+    this.writeBackups.clear();
     this.postMessage({ type: 'setLoading', loading: false });
     this.postMessage({ type: 'clearChat' });
     this.postMessage({ type: 'clearContextFiles' });
@@ -2223,9 +2066,7 @@ ${projectCtx}` : baseSystemPrompt;
   private hasRunningTask(): boolean {
     return this.activeRunId !== null
       || this.abortStream !== null
-      || this.toolCallsInProgress
-      || this.pendingConfirms.size > 0
-      || this.pendingBatchConfirms.size > 0;
+      || this.toolCallsInProgress;
   }
 
   private buildSessionTitle(text: string): string {
@@ -2479,7 +2320,11 @@ ${projectCtx}` : baseSystemPrompt;
     lines.push(`> 导出时间：${new Date().toLocaleString('zh-CN')}`);
     lines.push('');
 
-    for (const msg of this.chatHistory) {
+    // 直接遍历 session.history，该类型包含可选 timestamp 字段
+    const session = this.sessions.find(s => s.id === this.activeSessionId);
+    const rawHistory = session ? session.history : [];
+
+    for (const msg of rawHistory) {
       const content = typeof msg.content === 'string' ? msg.content : '';
 
       // 跳过工具反馈消息
@@ -2488,7 +2333,11 @@ ${projectCtx}` : baseSystemPrompt;
       }
 
       if (msg.role === 'user') {
-        lines.push('## 🧑 用户');
+        // 有时间戳时展示在标题后面，方便区分每轮对话发送时间
+        const ts = msg.timestamp
+          ? `  \`${new Date(msg.timestamp).toLocaleString('zh-CN', { hour12: false })}\``
+          : '';
+        lines.push(`## 🧑 用户${ts}`);
         lines.push('');
         // 截断附加的上下文信息
         const cutIndex = content.indexOf('\n\n## ');

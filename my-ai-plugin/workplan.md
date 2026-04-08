@@ -637,3 +637,131 @@
 - [x] 开始第一子阶段：文件改动聚合展示升级
 - [ ] 开始第二子阶段：模型 `contextWindow` 与上下文占用展示
 - [ ] 开始第三子阶段：折叠过程展示
+
+---
+
+## 架构重构：静默执行 + Undo all（方案四）
+
+### 目标
+
+移除所有写操作确认对话框，文件立即写入磁盘，AI 零阻塞地完成整个任务。
+AI 完成后展示统一的变更汇总面板，提供 **Undo all** 和**单文件撤销**入口。
+用户如果满意直接继续对话；如不满意点 Undo 一键还原。
+
+### 现状 vs 目标对比
+
+| 维度 | 现状 | 目标 |
+|------|------|------|
+| 写文件时 | 停住等用户确认 | 立即写入，不打断 AI |
+| 确认次数 | N 个文件 = N 次弹窗 | 0 次（改为事后撤销） |
+| 用户干预时机 | 事前：逐步批准 | 事后：整体撤销 |
+| 体验 | 烦躁，多次点击 | 流畅，不满意再撤 |
+
+### 核心设计
+
+**写前备份，写后可撤**
+
+```
+AI 调用 write_file("A") → 备份原内容到内存 → 立即写入磁盘 → 继续
+AI 调用 edit_file("B") → 备份原内容到内存 → 立即写入磁盘 → 继续
+AI 调用 run_command    → 正常执行 → 继续
+AI 全部完成，输出文本
+  ↓
+展示汇总面板（只读，无 Accept/Reject）
+  ├─ [Undo all]      → 恢复所有备份文件
+  └─ 每行 [↩ Undo]  → 恢复单个文件
+用户发送下一条消息 → 备份清空
+```
+
+**备份结构（内存）**
+
+```typescript
+// 写前备份：key = 文件路径
+private writeBackups = new Map<string, WriteBackup>();
+
+interface WriteBackup {
+  originalContent: string | null;  // null 表示文件原本不存在（新建文件）
+  messageId: string;               // 属于哪一轮 AI 对话
+}
+```
+
+### 详细实现清单
+
+#### 阶段 1：删除旧的确认流程（ChatViewProvider.ts）
+
+- [ ] 删除 `deferredSteps`、`deferRemainingSteps` 相关逻辑
+- [ ] 删除 `pendingBatchConfirms`、`pendingConfirms` Map 和等待逻辑
+- [ ] 删除 `autoAcceptRun` 字段及相关重置逻辑
+- [ ] 删除 `handleWebviewMessage` 中 `acceptChange`、`rejectChange`、`acceptAllChanges`、`rejectAllChanges`、`resolveChangeSummary`、`setAutoAcceptRun` 的处理
+
+#### 阶段 2：写操作改为立即执行 + 备份（handleToolCalls）
+
+- [ ] 遇到 `write_file` / `edit_file` → 先读原文件内容存入 `writeBackups`
+- [ ] 立即执行写操作（不再 defer）
+- [ ] 写成功后步骤状态正常显示为 done/error
+- [ ] 无需等待任何 Promise
+
+#### 阶段 3：汇总面板改为只读 + Undo 入口
+
+- [ ] `showChangeSummary` 的 `needsConfirm` 永远为 `false`
+- [ ] 面板操作区改为：`[View all changes]` + `[↩ Undo all]`
+- [ ] 每个文件行右侧增加 `[↩]` 单文件撤销按钮
+- [ ] 点 Undo all → 发送 `undoAllChanges` 消息
+- [ ] 点单行 ↩ → 发送 `undoFileChange` 消息（带文件路径）
+
+#### 阶段 4：Undo 逻辑（ChatViewProvider.ts）
+
+- [ ] 收到 `undoAllChanges` → 遍历 `writeBackups` 恢复所有文件
+  - 原内容为 `null`（新建文件）→ 删除该文件
+  - 原内容非空 → 写回原内容
+- [ ] 收到 `undoFileChange` → 只恢复指定文件
+- [ ] 恢复完成后发送 `updateChangeSummary`（status: 'undone'，text: '↩ Undone'）
+- [ ] 更新对应步骤状态为 error/cancelled（表示已回退）
+
+#### 阶段 5：备份生命周期管理
+
+- [ ] 用户发送新消息时 → 清空 `writeBackups`（上一轮修改不再可撤）
+- [ ] 重新生成时 → 清空 `writeBackups`
+- [ ] 停止生成时 → 保留已执行的备份（文件已写，允许撤销）
+- [ ] 切换会话时 → 清空 `writeBackups`
+
+#### 阶段 6：清理前端旧代码（chat_b_steps.js / chat.css）
+
+- [ ] 删除 `bindSummaryInteractions`（含行级 ✓/✗ 按钮绑定）
+- [ ] 删除 `⚡ Auto` 按钮及相关逻辑
+- [ ] 删除 `fileDecisions`、`checkAutoSubmit`、`submitDecisions` 相关代码
+- [ ] `showChangeSummary` 统一走 `needsConfirm = false` 的只读分支
+- [ ] 添加 Undo all / 单文件 ↩ 按钮及点击处理
+
+#### 阶段 7：消息类型清理（messageTypes.ts）
+
+- [ ] 新增 `UndoAllChangesRequest`（type: 'undoAllChanges', summaryId）
+- [ ] 新增 `UndoFileChangeRequest`（type: 'undoFileChange', filePath）
+- [ ] 新增 status = 'undone' 到 `UpdateChangeSummaryResponse`
+- [ ] 删除 `AcceptChangeRequest`、`RejectChangeRequest`、`AcceptAllChangesRequest`、`RejectAllChangesRequest`、`ResolveChangeSummaryRequest`、`SetAutoAcceptRunRequest`
+- [ ] 从 `WebviewMessage` 联合类型中移除上述已删消息
+
+### 涉及文件清单
+
+- [ ] `src/webview/ChatViewProvider.ts`：核心重构（删除 defer/confirm，加 backup/undo）
+- [ ] `src/webview/messageTypes.ts`：删旧消息类型，加 undo 消息类型
+- [ ] `media/chat_b_steps.js`：删 confirm 交互，加 Undo 按钮
+- [ ] `media/chat.css`：删 confirm 样式，加 undo 按钮样式
+
+### 风险与注意事项
+
+- [ ] **新建文件的撤销**：backup 存 `null`，undo 时删除该文件，需用 `fs.unlinkSync`
+- [ ] **用户在 AI 写完后手动编辑了文件**：Undo 会覆盖用户的手动编辑，暂不处理（V1 不做校验）
+- [ ] **run_command 的副作用不可撤销**：如 `npm install` 无法 undo，这是 V1 的已知局限，可在面板上加说明
+- [ ] **会话切换/刷新**：备份在内存，刷新后不可撤，这是可接受行为
+
+### 回归验证清单
+
+- [ ] AI 修改多个文件 → 全程无弹窗 → 文件直接写入
+- [ ] AI 完成后展示只读汇总面板 + Undo all 按钮
+- [ ] Undo all → 所有文件恢复原状
+- [ ] 单文件 ↩ → 只还原该文件
+- [ ] 新建文件 undo → 文件被删除
+- [ ] 发送下一条消息 → Undo 不再可用（按钮消失或灰显）
+- [ ] 停止生成 → 已写文件仍可 undo
+- [ ] 普通聊天、只读工具不受影响
