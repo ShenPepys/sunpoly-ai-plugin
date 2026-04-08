@@ -9,7 +9,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { info, error } from '../logger';
-import { getModelConfig, ensureApiKey, getMaxTokens, getTemperature, getAllModels, getActiveModelIndex, setActiveModelIndex, getPanelTitle, getCustomSystemPrompt } from '../config';
+import { getModelConfig, ensureApiKey, getMaxTokens, getTemperature, getAllModels, getActiveModelIndex, setActiveModelIndex, getPanelTitle, getCustomSystemPrompt, detectVisionSupport } from '../config';
 import { sendStreamRequest } from '../api/client';
 import type { ApiClientConfig, AbortStreamFn } from '../api/client';
 import type { ChatMessageParam } from '../api/types';
@@ -526,8 +526,21 @@ ${projectCtx}` : baseSystemPrompt;
       ];
     } else {
       if (hasImages && !modelConfig.supportsVision) {
-        // 模型不支持视觉，告知前端并仅发送文本
-        this.postMessage({ type: 'visionNotSupported', modelName: modelConfig.modelName });
+        // 查找已配置模型中支持视觉的模型名称，供前端提示切换
+        const allModels = getAllModels();
+        const visionModelNames = allModels
+          .filter(m => {
+            const cfg = { ...m, supportsVision: m.supportsVision };
+            // 复用 getModelConfig 中相同的检测逻辑：用户声明优先，否则按 modelId 自动判断
+            return cfg.supportsVision === true ||
+              (cfg.supportsVision !== false && detectVisionSupport(m.modelId));
+          })
+          .map(m => m.name);
+        this.postMessage({
+          type: 'visionNotSupported',
+          modelName: modelConfig.modelName,
+          visionModels: visionModelNames,
+        });
       }
       finalUserContent = userContent;
     }
@@ -643,9 +656,14 @@ ${projectCtx}` : baseSystemPrompt;
         this.activeRunId = null;
         this.stepSequence = 0;
         this.postMessage({ type: 'setLoading', loading: false });
+        // 检测是否为模型不支持图片的 API 错误，替换为用户友好提示
+        const isImageError = errorMessage.includes('image_url') || errorMessage.includes('image') && errorMessage.includes('unknown');
+        const friendlyMessage = isImageError
+          ? `当前模型不支持图片输入，请删除图片后重新发送，或切换到支持视觉的模型（如 GPT-4o、Claude 3 等）。`
+          : errorMessage;
         this.postMessage({
           type: 'showError',
-          message: errorMessage,
+          message: friendlyMessage,
         });
         error('AI API 调用失败:', errorMessage);
       },
@@ -2458,6 +2476,7 @@ ${projectCtx}` : baseSystemPrompt;
     content="default-src 'none';
       style-src ${webview.cspSource} 'unsafe-inline';
       script-src 'nonce-${nonce}';
+      img-src ${webview.cspSource} data:;
       font-src ${webview.cspSource};">
   <link rel="stylesheet" href="${cssUri}">
   <title>AI 聊天</title>

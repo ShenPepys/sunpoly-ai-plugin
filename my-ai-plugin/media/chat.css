@@ -1418,6 +1418,35 @@ body {
   opacity: 1;
 }
 
+/* 缩略图可点击的指针样式 */
+.image-attachment-tag .img-thumb {
+  cursor: pointer;
+}
+
+/* 图片预览弹层：全屏遮罩 + 居中大图 */
+.image-preview-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  cursor: pointer;
+  animation: fadeIn 0.15s ease-in;
+}
+
+.image-preview-overlay img {
+  max-width: 90%;
+  max-height: 90%;
+  border-radius: 6px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+  object-fit: contain;
+}
+
 /* 输入框拖拽图片时高亮边框 */
 #user-input.drag-over {
   border-color: var(--vscode-focusBorder, #007fd4);

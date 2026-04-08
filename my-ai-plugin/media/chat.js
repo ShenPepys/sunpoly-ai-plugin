@@ -720,10 +720,20 @@
         renderImageAttachments();
         break;
 
-      case 'visionNotSupported':
-        // 模型不支持图片：展示提示弹窗
-        showError('当前模型「' + message.modelName + '」不支持图片输入，图片将被忽略发送文本。如需视觉能力请切换至 GPT-4o、Claude 3 等模型');
+      case 'visionNotSupported': {
+        // 根据可用视觉模型列表生成不同提示
+        var visionList = message.visionModels || [];
+        var tip;
+        if (visionList.length > 0) {
+          tip = '当前模型「' + message.modelName + '」不支持图片输入，图片已被忽略。\n' +
+            '你可以切换到以下支持图片的模型：' + visionList.join('、');
+        } else {
+          tip = '当前模型「' + message.modelName + '」不支持图片输入，图片已被忽略。\n' +
+            '你当前没有配置支持图片的模型，请删除图片后使用文字对话，或在设置中添加支持视觉的模型（如 GPT-4o、Claude 3 等）。';
+        }
+        showError(tip);
         break;
+      }
 
       case 'updateTokenCount':
         updateTokenCount(message.tokenCount);
@@ -1192,6 +1202,16 @@
           '<span class="img-size">' + img.sizeKB + 'KB</span>' +
         '</div>' +
         '<button class="img-remove" title="移除图片">\u00d7</button>';
+      // 点击缩略图弹出大图预览
+      tag.querySelector('.img-thumb').addEventListener('click', function () {
+        var overlay = document.createElement('div');
+        overlay.className = 'image-preview-overlay';
+        overlay.innerHTML = '<img src="' + img.dataUrl + '" alt="' + escapeAttr(img.fileName) + '" />';
+        overlay.addEventListener('click', function () {
+          overlay.remove();
+        });
+        document.body.appendChild(overlay);
+      });
       tag.querySelector('.img-remove').addEventListener('click', function () {
         pendingImages = pendingImages.filter(function (i) { return i.id !== img.id; });
         renderImageAttachments();

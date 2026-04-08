@@ -407,6 +407,8 @@ export interface VisionNotSupportedResponse {
   type: 'visionNotSupported';
   /** 当前模型名称，用于在提示中展示 */
   modelName: string;
+  /** 已配置中支持视觉的模型名称列表，为空则表示没有可用的视觉模型 */
+  visionModels?: string[];
 }
 
 /** 后端通知前端清空图片附件缩略图（消息发送后图片已处理，可以清除展示） */

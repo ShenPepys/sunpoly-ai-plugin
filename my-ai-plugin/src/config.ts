@@ -131,6 +131,8 @@ interface ModelProfile {
   modelId: string;
   baseUrl: string;
   apiKey: string;
+  /** 是否支持图片输入（可选，不填则按 modelId 自动判断） */
+  supportsVision?: boolean;
 }
 
 /** 默认模型配置 */
@@ -209,7 +211,8 @@ export function getModelConfig(): ModelConfig {
     baseUrl: model.baseUrl,
     apiKey: model.apiKey,
     knowledgeCutoff: CUTOFF_MAP[model.modelId] ?? '未知',
-    supportsVision: detectVisionSupport(model.modelId),
+    // 用户在 settings 中显式声明优先，否则按 modelId 自动判断
+    supportsVision: model.supportsVision ?? detectVisionSupport(model.modelId),
   };
 }
 
@@ -217,14 +220,14 @@ export function getModelConfig(): ModelConfig {
  * 根据 modelId 判断该模型是否支持图片输入
  * 已知支持 Vision 的模型字符串匹配，新增模型时在此数组中补充
  */
-function detectVisionSupport(modelId: string): boolean {
+export function detectVisionSupport(modelId: string): boolean {
   const lowerModelId = modelId.toLowerCase();
   const visionPrefixes = [
     'gpt-4o', 'gpt-4-turbo', 'gpt-4-vision',
     'claude-3', 'claude-3-5', 'claude-3-7',
     'gemini',
-    'doubao-vision',
-    'qwen-vl',
+    'doubao-vision', 'doubao-1.5-pro',
+    'qwen-vl', 'qwen2.5-vl', 'qwen-max',
   ];
   return visionPrefixes.some(prefix => lowerModelId.includes(prefix));
 }
