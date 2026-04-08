@@ -28,6 +28,8 @@ type ChangeSummaryFile = {
   deletions: number;
   status: 'created' | 'modified' | 'read' | 'listed';
   issueText?: string;
+  /** 该文件对应的第一个 stepId，用于行级接受/拒绝 */
+  stepId?: string;
 };
 
 type PreviewFileState = {
@@ -90,7 +92,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** 待用户确认的文件变更（stepId → resolve 函数），Accept/Reject 时触发 */
   private pendingConfirms: Map<string, (accepted: boolean) => void> = new Map();
 
-  private pendingBatchConfirms: Map<string, (accepted: boolean) => void> = new Map();
+  /** summaryId → resolve 函数，false=全部拒绝，Record=按文件路径的逐文件决策 */
+  private pendingBatchConfirms: Map<string, (result: Record<string, boolean> | false) => void> = new Map();
 
   private activeRunId: string | null = null;
 
@@ -101,6 +104,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /** 当次请求内工具调用的轮次计数，每次新发送/重新生成时清零 */
   private toolCallRound = 0;
+
+  /**
+   * 本轮生成期间是否自动接受所有文件变更（用户点击"Accept & auto-accept"后启用）
+   * 每次新发送消息或重新生成时重置为 false
+   */
+  private autoAcceptRun = false;
 
   private sessionLauncherVisible = false;
 
@@ -379,7 +388,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (resolve) {
           info(`用户接受批量文件变更: ${message.summaryId}`);
           this.pendingBatchConfirms.delete(message.summaryId);
-          resolve(true);
+          // 空 Record 表示"全部接受"，后续逻辑会把所有文件视为 accepted
+          resolve({});
         }
         break;
       }
@@ -390,6 +400,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           info(`用户拒绝批量文件变更: ${message.summaryId}`);
           this.pendingBatchConfirms.delete(message.summaryId);
           resolve(false);
+        }
+        break;
+      }
+
+      case 'resolveChangeSummary': {
+        // 用户对每个文件分别做出了决策
+        const resolve = this.pendingBatchConfirms.get(message.summaryId);
+        if (resolve) {
+          info(`用户提交文件级决策: ${message.summaryId}，共 ${Object.keys(message.decisions).length} 项`);
+          this.pendingBatchConfirms.delete(message.summaryId);
+          resolve(message.decisions);
+        }
+        break;
+      }
+
+      case 'setAutoAcceptRun': {
+        // 用户启用本轮自动接受模式，后续所有待确认批量变更立即以"接受全部"结算
+        info('用户启用本轮自动接受模式');
+        this.autoAcceptRun = true;
+        // 立即 resolve 当前所有 pending 的批量确认（空 Record = 全部接受）
+        for (const [sid, resolve] of this.pendingBatchConfirms.entries()) {
+          info(`自动接受批量变更: ${sid}`);
+          this.pendingBatchConfirms.delete(sid);
+          resolve({});
         }
         break;
       }
@@ -580,6 +614,7 @@ ${projectCtx}` : baseSystemPrompt;
     this.activeRunId = assistantMsgId;
     this.stepSequence = 0;
     this.toolCallRound = 0;
+    this.autoAcceptRun = false;
 
     this.abortStream = sendStreamRequest(
       apiConfig,
@@ -809,21 +844,48 @@ ${projectCtx}` : baseSystemPrompt;
       }
 
       if (deferredSteps.length > 0) {
+        // 构建 filePath → 第一个 stepId 的映射，用于前端文件级操作
+        const fileStepIdMap = new Map<string, string>();
+        for (const ds of deferredSteps) {
+          const isWrite = ds.toolCall.type === 'write_file' || ds.toolCall.type === 'edit_file';
+          if (isWrite) {
+            const dsPath = (ds.toolCall as { path: string }).path;
+            if (!fileStepIdMap.has(dsPath)) {
+              fileStepIdMap.set(dsPath, ds.stepId);
+            }
+          }
+        }
+
         const summaryFiles = this.buildPreviewSummaryFiles(previewBaseStates, previewCurrentStates, writeFilePaths, previewIssues);
+        // 注入 stepId 供前端文件级决策使用
+        for (const sf of summaryFiles) {
+          sf.stepId = fileStepIdMap.get(sf.path);
+        }
+
         this.postMessage({
           type: 'showChangeSummary',
           messageId: reuseMsgId,
           summaryId,
-          needsConfirm: true,
+          // 自动接受模式下无需确认，展示为已接受状态
+          needsConfirm: !this.autoAcceptRun,
           files: summaryFiles,
         });
 
-        const accepted = await new Promise<boolean>((resolve) => {
-          this.pendingBatchConfirms.set(summaryId, resolve);
-        });
-        this.pendingBatchConfirms.delete(summaryId);
+        let decisions: Record<string, boolean> | false;
 
-        if (!accepted) {
+        if (this.autoAcceptRun) {
+          // 自动接受：跳过确认对话框，直接以"全部接受"结算
+          decisions = {};
+        } else {
+          // 等待用户决策：false=全部拒绝，空 Record=全部接受，非空 Record=文件级决策
+          decisions = await new Promise<Record<string, boolean> | false>((resolve) => {
+            this.pendingBatchConfirms.set(summaryId, resolve);
+          });
+          this.pendingBatchConfirms.delete(summaryId);
+        }
+
+        // ---------- 全部拒绝（Reject all 或 停止生成）----------
+        if (decisions === false) {
           const isCancelled = this.activeRunId !== reuseMsgId;
           this.postMessage({
             type: 'updateChangeSummary',
@@ -868,7 +930,28 @@ ${projectCtx}` : baseSystemPrompt;
           return;
         }
 
-        if (accepted) {
+        // ---------- 全部或部分接受 ----------
+        if (decisions !== false) {
+          // 判断每个 deferred step 对应文件是否被接受
+          // 空 Record = Accept all，非空 Record = 文件级决策（key 可以是 stepId 或 filePath）
+          const isAcceptAll = Object.keys(decisions).length === 0;
+
+          const isFileAccepted = (ds: DeferredToolStep): boolean => {
+            const isWrite = ds.toolCall.type === 'write_file' || ds.toolCall.type === 'edit_file';
+            if (!isWrite) {
+              // 非写操作（如 run_command）：只要有任何文件被接受就执行
+              if (isAcceptAll) { return true; }
+              return Object.values(decisions).some(v => v === true);
+            }
+            if (isAcceptAll) { return true; }
+            const dsPath = (ds.toolCall as { path: string }).path;
+            const dsStepId = fileStepIdMap.get(dsPath);
+            // 优先用 stepId 匹配，兼容 filePath 匹配
+            if (dsStepId && decisions[dsStepId] !== undefined) { return decisions[dsStepId]; }
+            if (decisions[dsPath] !== undefined) { return decisions[dsPath]; }
+            return false;
+          };
+
           this.postMessage({
             type: 'updateChangeSummary',
             summaryId,
@@ -878,6 +961,7 @@ ${projectCtx}` : baseSystemPrompt;
 
           let successCount = 0;
           let failureCount = 0;
+          let rejectedCount = 0;
 
           for (const deferredStep of deferredSteps) {
             if (this.activeRunId !== reuseMsgId) {
@@ -892,14 +976,36 @@ ${projectCtx}` : baseSystemPrompt;
               return;
             }
 
+            // 检查当前步骤是否被接受
+            const isDeferredWrite = deferredStep.toolCall.type === 'write_file' || deferredStep.toolCall.type === 'edit_file';
+            if (!isFileAccepted(deferredStep)) {
+              // 只对写操作计入 rejectedCount，非写操作的跳过不影响文件统计
+              if (isDeferredWrite) { rejectedCount += 1; }
+              results.push({
+                toolCall: deferredStep.toolCall,
+                result: { success: false, content: '用户拒绝了此文件的变更' },
+              });
+              this.postMessage({
+                type: 'updateStep',
+                stepId: deferredStep.stepId,
+                status: 'error',
+                elapsed: Date.now() - deferredStep.startedAt,
+                description: `${deferredStep.stepDesc} (已拒绝)`,
+              });
+              continue;
+            }
+
             const result = await executeToolCalls([deferredStep.toolCall], this.currentMode);
             const singleResult = result[0];
             results.push(singleResult);
 
-            if (singleResult.result.success) {
-              successCount += 1;
-            } else {
-              failureCount += 1;
+            // 只对写操作计入成功/失败数，保持与 totalWriteSteps 分母对齐
+            if (isDeferredWrite) {
+              if (singleResult.result.success) {
+                successCount += 1;
+              } else {
+                failureCount += 1;
+              }
             }
 
             const status = singleResult.result.success ? 'done' : 'error';
@@ -911,14 +1017,25 @@ ${projectCtx}` : baseSystemPrompt;
             });
           }
 
-          if (failureCount === 0) {
+          // 生成最终汇总文案
+          const totalWriteSteps = deferredSteps.filter(ds =>
+            ds.toolCall.type === 'write_file' || ds.toolCall.type === 'edit_file'
+          ).length;
+          if (rejectedCount === 0 && failureCount === 0) {
             this.postMessage({
               type: 'updateChangeSummary',
               summaryId,
               status: 'accepted',
               text: `✓ Applied all ${successCount} changes`,
             });
-          } else if (successCount === 0) {
+          } else if (successCount === 0 && failureCount === 0) {
+            this.postMessage({
+              type: 'updateChangeSummary',
+              summaryId,
+              status: 'rejected',
+              text: `✗ Rejected all changes`,
+            });
+          } else if (successCount === 0 && failureCount > 0) {
             this.postMessage({
               type: 'updateChangeSummary',
               summaryId,
@@ -930,7 +1047,9 @@ ${projectCtx}` : baseSystemPrompt;
               type: 'updateChangeSummary',
               summaryId,
               status: 'partial',
-              text: `⚠ Applied ${successCount}/${deferredSteps.length} changes, ${failureCount} failed`,
+              text: `⚠ Applied ${successCount}/${totalWriteSteps} files` +
+                (rejectedCount > 0 ? `, ${rejectedCount} rejected` : '') +
+                (failureCount > 0 ? `, ${failureCount} failed` : ''),
             });
           }
 
@@ -938,9 +1057,14 @@ ${projectCtx}` : baseSystemPrompt;
           if (successCount > 0) {
             this.turnWriteRounds += 1;
             for (const sf of summaryFiles) {
-              const alreadyTracked = this.turnWriteFiles.some(f => f.path === sf.path);
-              if (!alreadyTracked) {
-                this.turnWriteFiles.push(sf);
+              // 仅收集被接受的文件
+              const sfStepId = fileStepIdMap.get(sf.path);
+              const sfAccepted = isAcceptAll || (sfStepId ? decisions[sfStepId] === true : false) || decisions[sf.path] === true;
+              if (sfAccepted) {
+                const alreadyTracked = this.turnWriteFiles.some(f => f.path === sf.path);
+                if (!alreadyTracked) {
+                  this.turnWriteFiles.push(sf);
+                }
               }
             }
           }
@@ -1638,6 +1762,7 @@ ${projectCtx}` : baseSystemPrompt;
     this.activeRunId = regenMsgId;
     this.stepSequence = 0;
     this.toolCallRound = 0;
+    this.autoAcceptRun = false;
     this.postMessage({ type: 'addMessage', role: 'assistant', content: '', messageId: regenMsgId });
 
     let fullContent = '';

@@ -1138,8 +1138,9 @@
 
   /**
    * 显示文件变更汇总
+   * 支持 Accept all / Reject all 和行级 ✓/✗ 操作
    * 
-   * @param {object} data { messageId, files: [{ path, additions, deletions, status }] }
+   * @param {object} data { messageId, summaryId, needsConfirm, files: [{ path, displayPath, additions, deletions, status, stepId }] }
    */
   function showChangeSummary(data) {
     var container = getOrCreateStepsContainer(data.messageId);
@@ -1159,12 +1160,20 @@
 
     var totalAdd = 0;
     var totalDel = 0;
-    var fileRows = '';
-    var fileCountLabel = data.files.length + ' file' + (data.files.length > 1 ? 's' : '');
-
+    // 筛选出写操作文件（可以行级操作）和只读操作文件（不可操作）
+    var writeFiles = [];
     data.files.forEach(function (file) {
       totalAdd += file.additions;
       totalDel += file.deletions;
+      if (file.status === 'created' || file.status === 'modified') {
+        writeFiles.push(file);
+      }
+    });
+    var fileCountLabel = data.files.length + ' file' + (data.files.length > 1 ? 's' : '');
+
+    // 构建文件行 HTML
+    var fileRowsHtml = '';
+    data.files.forEach(function (file) {
       var fileName = file.displayPath || file.path;
       var statusIcon = getFileStatusIcon(file.status);
       var statsHtml = '';
@@ -1174,12 +1183,30 @@
       if (file.additions > 0) { statsHtml += '<span class="diff-add">+' + file.additions + '</span> '; }
       if (file.deletions > 0) { statsHtml += '<span class="diff-del">-' + file.deletions + '</span>'; }
 
-      fileRows +=
-        '<div class="summary-file">' +
+      var isWriteFile = file.status === 'created' || file.status === 'modified';
+      var stepIdAttr = file.stepId ? ' data-step-id="' + file.stepId + '"' : '';
+      var pathAttr = ' data-file-path="' + escapeHtml(file.path) + '"';
+
+      // 写操作文件显示行级 ✓/✗ 按钮
+      var fileActionsHtml = '';
+      if (data.needsConfirm && isWriteFile && file.stepId) {
+        fileActionsHtml =
+          '<span class="summary-file-actions">' +
+            '<button class="file-btn file-btn-accept" title="接受此文件">✓</button>' +
+            '<button class="file-btn file-btn-reject" title="拒绝此文件">✗</button>' +
+          '</span>';
+      }
+
+      var statusAttr = ' data-file-status="' + file.status + '"';
+
+      fileRowsHtml +=
+        '<div class="summary-file' + (isWriteFile ? ' summary-file-write' : '') + '"' + stepIdAttr + pathAttr + statusAttr + '>' +
           '<div class="summary-file-row">' +
             '<span class="summary-icon">' + statusIcon + '</span>' +
-            '<span class="summary-name" title="' + escapeHtml(fileName) + '">' + escapeHtml(fileName) + '</span>' +
+            '<span class="summary-name' + (isWriteFile ? ' summary-name-clickable' : '') + '" title="' + escapeHtml(fileName) + '">' + escapeHtml(fileName) + '</span>' +
             '<span class="summary-stats">' + statsHtml + '</span>' +
+            fileActionsHtml +
+            '<span class="summary-file-status"></span>' +
           '</div>' +
           issueHtml +
         '</div>';
@@ -1200,23 +1227,228 @@
             '<button class="summary-btn summary-btn-view">View all changes</button>' +
             '<button class="summary-btn summary-btn-reject">Reject all</button>' +
             '<button class="summary-btn summary-btn-accept">Accept all</button>' +
+            '<button class="summary-btn summary-btn-auto-accept" title="接受此次变更，并自动接受本轮后续所有变更">⚡ Auto</button>' +
           '</div>' +
         '</div>' +
-        '<div class="summary-files">' + fileRows + '</div>';
+        '<div class="summary-files">' + fileRowsHtml + '</div>';
 
-      bindBatchSummaryActions(summaryEl, data);
+      bindSummaryInteractions(summaryEl, data, writeFiles);
       updateSummaryViewButtons(data.summaryId);
     } else {
       summaryEl.innerHTML =
-        '<div class="summary-header">' +
-          '<span>' + fileCountLabel + '</span> ' +
-          totalStats +
+        '<div class="summary-bar">' +
+          '<div class="summary-primary">' +
+            '<span class="summary-count">' + fileCountLabel + '</span>' +
+            '<span class="summary-total-stats">' + totalStats + '</span>' +
+          '</div>' +
+          '<div class="summary-actions">' +
+            '<button class="summary-btn summary-btn-view">View all changes</button>' +
+          '</div>' +
         '</div>' +
-        '<div class="summary-files">' + fileRows + '</div>';
+        '<div class="summary-files">' + fileRowsHtml + '</div>';
+      bindSummaryViewButton(summaryEl, data.summaryId);
+      updateSummaryViewButtons(data.summaryId);
+      // 非确认态也支持点击文件名在 IDE 中打开
+      bindFileNameClicks(summaryEl);
     }
 
     container.appendChild(summaryEl);
     scrollToBottom();
+  }
+
+  /**
+   * 绑定汇总面板的所有交互：批量按钮 + 行级按钮 + 文件名点击
+   * 使用闭包追踪文件级决策状态
+   */
+  function bindSummaryInteractions(summaryEl, data, writeFiles) {
+    var summaryId = data.summaryId;
+    // stepId → true(接受) / false(拒绝) / undefined(未决定)
+    var fileDecisions = {};
+    var resolved = false;
+
+    // 绑定 View all changes 按钮
+    bindSummaryViewButton(summaryEl, summaryId);
+
+    // 绑定文件名点击（在 IDE 中打开对应的 diff）
+    bindFileNameClicks(summaryEl);
+
+    /**
+     * 提交所有决策到后端
+     */
+    function submitDecisions() {
+      if (resolved) { return; }
+      resolved = true;
+      if (window.vscodeApi) {
+        window.vscodeApi.postMessage({
+          type: 'resolveChangeSummary',
+          summaryId: summaryId,
+          decisions: fileDecisions,
+        });
+      }
+      // 判断是否有任何文件被接受，决定过渡态显示 Applying 还是 Rejecting
+      var hasAccepted = Object.values(fileDecisions).some(function (v) { return v === true; });
+      setSummaryDecisionState(summaryEl, summaryId, hasAccepted);
+    }
+
+    /**
+     * 检查是否所有写文件都有了决策，如果是则自动提交
+     */
+    function checkAutoSubmit() {
+      var allDecided = writeFiles.every(function (f) {
+        // 无 stepId 的文件无法行级操作，视为"已决定"，不阻塞自动提交
+        if (!f.stepId) { return true; }
+        return fileDecisions[f.stepId] !== undefined;
+      });
+      if (allDecided) {
+        submitDecisions();
+      }
+    }
+
+    /**
+     * 更新单个文件行的视觉状态
+     */
+    function updateFileRowState(fileEl, accepted) {
+      var statusEl = fileEl.querySelector('.summary-file-status');
+      var actionsEl = fileEl.querySelector('.summary-file-actions');
+      if (accepted) {
+        fileEl.classList.add('summary-file-accepted');
+        fileEl.classList.remove('summary-file-rejected');
+        if (statusEl) { statusEl.innerHTML = '<span class="file-accepted-label">✓</span>'; }
+        if (actionsEl) { actionsEl.style.display = 'none'; }
+      } else {
+        fileEl.classList.add('summary-file-rejected');
+        fileEl.classList.remove('summary-file-accepted');
+        if (statusEl) { statusEl.innerHTML = '<span class="file-rejected-label">✗</span>'; }
+        if (actionsEl) { actionsEl.style.display = 'none'; }
+      }
+    }
+
+    // 绑定每行的 ✓/✗ 按钮
+    var fileEls = summaryEl.querySelectorAll('.summary-file-write[data-step-id]');
+    Array.prototype.forEach.call(fileEls, function (fileEl) {
+      var stepId = fileEl.getAttribute('data-step-id');
+
+      var acceptBtn = fileEl.querySelector('.file-btn-accept');
+      var rejectBtn = fileEl.querySelector('.file-btn-reject');
+
+      if (acceptBtn) {
+        acceptBtn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          if (resolved) { return; }
+          fileDecisions[stepId] = true;
+          updateFileRowState(fileEl, true);
+          checkAutoSubmit();
+        });
+      }
+
+      if (rejectBtn) {
+        rejectBtn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          if (resolved) { return; }
+          fileDecisions[stepId] = false;
+          updateFileRowState(fileEl, false);
+          checkAutoSubmit();
+        });
+      }
+    });
+
+    // Accept all：将所有未决定的文件标记为接受，立即提交
+    var acceptAllBtn = summaryEl.querySelector('.summary-btn-accept');
+    if (acceptAllBtn) {
+      acceptAllBtn.addEventListener('click', function () {
+        if (resolved) { return; }
+        // 如果没有任何文件级决策，直接走 acceptAllChanges 快速路径
+        var hasAnyDecision = Object.keys(fileDecisions).length > 0;
+        if (!hasAnyDecision) {
+          resolved = true;
+          if (window.vscodeApi) {
+            window.vscodeApi.postMessage({ type: 'acceptAllChanges', summaryId: summaryId });
+          }
+          setSummaryDecisionState(summaryEl, summaryId, true);
+          return;
+        }
+        // 将未决定的文件标记为接受
+        writeFiles.forEach(function (f) {
+          if (f.stepId && fileDecisions[f.stepId] === undefined) {
+            fileDecisions[f.stepId] = true;
+            var fileEl = summaryEl.querySelector('.summary-file-write[data-step-id="' + f.stepId + '"]');
+            if (fileEl) { updateFileRowState(fileEl, true); }
+          }
+        });
+        submitDecisions();
+      });
+    }
+
+    // ⚡ Auto：接受本次 + 启用本轮自动接受
+    var autoAcceptBtn = summaryEl.querySelector('.summary-btn-auto-accept');
+    if (autoAcceptBtn) {
+      autoAcceptBtn.addEventListener('click', function () {
+        if (resolved) { return; }
+        resolved = true;
+        if (window.vscodeApi) {
+          // 先通知后端启用自动接受（会立即 resolve 所有 pending 的 confirm）
+          window.vscodeApi.postMessage({ type: 'setAutoAcceptRun' });
+          // 再发送 acceptAllChanges 以确保当前 pending 也被接受
+          window.vscodeApi.postMessage({ type: 'acceptAllChanges', summaryId: summaryId });
+        }
+        // 更新本面板 UI 为自动接受状态
+        var barEl = summaryEl.querySelector('.summary-bar');
+        if (barEl) {
+          barEl.innerHTML =
+            '<span class="summary-auto-accepted-label">⚡ Auto-accept enabled — all changes will be applied automatically</span>';
+        }
+      });
+    }
+
+    // Reject all：两种情况
+    var rejectAllBtn = summaryEl.querySelector('.summary-btn-reject');
+    if (rejectAllBtn) {
+      rejectAllBtn.addEventListener('click', function () {
+        if (resolved) { return; }
+        var hasAnyDecision = Object.keys(fileDecisions).length > 0;
+        if (!hasAnyDecision) {
+          // 没有任何文件级决策，走 rejectAllChanges 快速路径
+          resolved = true;
+          if (window.vscodeApi) {
+            window.vscodeApi.postMessage({ type: 'rejectAllChanges', summaryId: summaryId });
+          }
+          setSummaryDecisionState(summaryEl, summaryId, false);
+          return;
+        }
+        // 将未决定的文件标记为拒绝
+        writeFiles.forEach(function (f) {
+          if (f.stepId && fileDecisions[f.stepId] === undefined) {
+            fileDecisions[f.stepId] = false;
+            var fileEl = summaryEl.querySelector('.summary-file-write[data-step-id="' + f.stepId + '"]');
+            if (fileEl) { updateFileRowState(fileEl, false); }
+          }
+        });
+        submitDecisions();
+      });
+    }
+  }
+
+  /**
+   * 绑定文件名点击事件：在 IDE 中打开文件
+   */
+  function bindFileNameClicks(summaryEl) {
+    var nameEls = summaryEl.querySelectorAll('.summary-name-clickable');
+    Array.prototype.forEach.call(nameEls, function (nameEl) {
+      nameEl.addEventListener('click', function () {
+        var fileEl = nameEl.closest('.summary-file');
+        if (!fileEl) { return; }
+        var filePath = fileEl.getAttribute('data-file-path');
+        var status = fileEl.classList.contains('summary-file-write')
+          ? (fileEl.getAttribute('data-file-status') || 'modified')
+          : 'read';
+        if (filePath && window.vscodeApi) {
+          window.vscodeApi.postMessage({
+            type: 'openFilesInIde',
+            files: [{ path: filePath, status: status }],
+          });
+        }
+      });
+    });
   }
 
   /** 文件状态图标 */

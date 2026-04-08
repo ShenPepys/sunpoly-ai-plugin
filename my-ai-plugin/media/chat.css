@@ -1891,8 +1891,85 @@ body {
   white-space: nowrap;
 }
 
+/* 写操作文件名可点击，显示下划线和手型指针 */
+.summary-name-clickable {
+  cursor: pointer;
+}
+
+.summary-name-clickable:hover {
+  text-decoration: underline;
+  color: var(--vscode-textLink-foreground, #3794ff);
+}
+
 .summary-stats {
   flex-shrink: 0;
+}
+
+/* ---- 文件行级操作按钮（hover 时显示） ---- */
+.summary-file-actions {
+  display: none;
+  flex-shrink: 0;
+  gap: 2px;
+}
+
+.summary-file-write:hover .summary-file-actions {
+  display: inline-flex;
+}
+
+.file-btn {
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 20px;
+  text-align: center;
+  padding: 0;
+  color: var(--vscode-foreground, #ccc);
+  background: transparent;
+}
+
+.file-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.12));
+}
+
+.file-btn-accept:hover {
+  color: var(--vscode-testing-iconPassed, #73c991);
+}
+
+.file-btn-reject:hover {
+  color: var(--vscode-testing-iconFailed, #f48771);
+}
+
+/* ---- 文件行决策后的状态标签 ---- */
+.summary-file-status {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.file-accepted-label {
+  color: var(--vscode-testing-iconPassed, #73c991);
+  font-weight: 600;
+}
+
+.file-rejected-label {
+  color: var(--vscode-testing-iconFailed, #f48771);
+  font-weight: 600;
+}
+
+/* 已接受的文件行降低透明度 */
+.summary-file-accepted {
+  opacity: 0.6;
+}
+
+/* 已拒绝的文件行用删除线 + 降低透明度 */
+.summary-file-rejected .summary-name {
+  text-decoration: line-through;
+}
+
+.summary-file-rejected {
+  opacity: 0.5;
 }
 
 .summary-issue {
@@ -1986,6 +2063,25 @@ body {
 
 .summary-btn-accept:hover:not(:disabled) {
   background: var(--vscode-button-hoverBackground, #1a8cff);
+}
+
+/* ⚡ Auto 按钮：琥珀色调，区别于蓝色 Accept all */
+.summary-btn-auto-accept {
+  background: rgba(220, 160, 0, 0.18);
+  color: #e8b84b;
+  border: 1px solid rgba(220, 160, 0, 0.35);
+}
+
+.summary-btn-auto-accept:hover:not(:disabled) {
+  background: rgba(220, 160, 0, 0.3);
+  color: #f0c060;
+}
+
+/* 启用 auto-accept 后的状态标签 */
+.summary-auto-accepted-label {
+  font-size: 12px;
+  color: #e8b84b;
+  padding: 4px 0;
 }
 
 .summary-accepted {

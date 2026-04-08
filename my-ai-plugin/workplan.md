@@ -481,10 +481,10 @@
 
 ### 目标清单
 
-- [ ] 将本轮修改文件集中展示在一个汇总面板中
-- [ ] 支持 `Accept all` / `Reject all`
-- [ ] 每行文件支持单独接受 / 拒绝
-- [ ] 每行文件支持点击后在 IDE 中打开
+- [x] 将本轮修改文件集中展示在一个汇总面板中
+- [x] 支持 `Accept all` / `Reject all`
+- [x] 每行文件支持单独接受 / 拒绝
+- [x] 每行文件支持点击后在 IDE 中打开
 
 ### 交互语义清单
 
@@ -496,30 +496,30 @@
 
 ### 实现清单
 
-- [ ] 扩展汇总数据结构，支持文件级操作状态与唯一标识
-- [ ] 将当前“整批确认”的后端链路拆分为“批量 + 单文件”两级确认能力
-- [ ] 前端汇总区增加文件列表行、状态展示、hover 操作和批量操作区
-- [ ] 明确文件被单独接受 / 拒绝后，汇总状态如何更新
+- [x] 扩展汇总数据结构，支持文件级操作状态与唯一标识
+- [x] 将当前“整批确认”的后端链路拆分为“批量 + 单文件”两级确认能力
+- [x] 前端汇总区增加文件列表行、状态展示、hover 操作和批量操作区
+- [x] 明确文件被单独接受 / 拒绝后，汇总状态如何更新
 
 ### 涉及文件清单
 
-- [ ] `src/webview/ChatViewProvider.ts`：调整批量变更确认的数据结构与状态流转
-- [ ] `src/webview/ChatViewProvider.ts`：支持汇总级与单文件级接受 / 拒绝消息
-- [ ] `src/webview/ChatViewProvider.ts`：统一“打开文件”“批量接受”“单文件接受”的处理逻辑
-- [ ] `src/webview/messageTypes.ts`：扩展 `showChangeSummary` 的文件项结构
-- [ ] `src/webview/messageTypes.ts`：增加单文件级确认与状态更新消息类型
-- [ ] `media/chat_b_steps.js`：重构 change summary 渲染
-- [ ] `media/chat_b_steps.js`：增加文件行点击打开、单文件 `✓ / X`、批量确认状态更新
-- [ ] `media/chat.css`：为聚合文件列表、行级按钮、状态反馈补充样式
+- [x] `src/webview/ChatViewProvider.ts`：调整批量变更确认的数据结构与状态流转
+- [x] `src/webview/ChatViewProvider.ts`：支持汇总级与单文件级接受 / 拒绝消息
+- [x] `src/webview/ChatViewProvider.ts`：统一“打开文件”“批量接受”“单文件接受”的处理逻辑
+- [x] `src/webview/messageTypes.ts`：扩展 `showChangeSummary` 的文件项结构
+- [x] `src/webview/messageTypes.ts`：增加单文件级确认与状态更新消息类型
+- [x] `media/chat_b_steps.js`：重构 change summary 渲染
+- [x] `media/chat_b_steps.js`：增加文件行点击打开、单文件 `✓ / X`、批量确认状态更新
+- [x] `media/chat.css`：为聚合文件列表、行级按钮、状态反馈补充样式
 
 ### 回归验证清单
 
-- [ ] 多文件改动是否始终聚合到同一个汇总区
-- [ ] `Accept all` / `Reject all` 是否只作用于当前汇总
-- [ ] 行级 `✓ / X` 是否只作用于当前文件
-- [ ] 单击文件行是否正确在 IDE 中打开
-- [ ] 部分接受、部分拒绝后的汇总状态是否正确
-- [ ] 与现有 Diff 预览、步骤流、最终 summary 是否不冲突
+- [x] 多文件改动是否始终聚合到同一个汇总区
+- [x] `Accept all` / `Reject all` 是否只作用于当前汇总
+- [x] 行级 `✓ / X` 是否只作用于当前文件
+- [x] 单击文件行是否正确在 IDE 中打开
+- [x] 部分接受、部分拒绝后的汇总状态是否正确
+- [x] 与现有 Diff 预览、步骤流、最终 summary 是否不冲突
 
 ---
 
@@ -634,6 +634,6 @@
 
 - [x] 完成下一阶段交互增强方向确认
 - [x] 输出下一阶段 workplan
-- [ ] 开始第一子阶段：文件改动聚合展示升级
+- [x] 开始第一子阶段：文件改动聚合展示升级
 - [ ] 开始第二子阶段：模型 `contextWindow` 与上下文占用展示
 - [ ] 开始第三子阶段：折叠过程展示

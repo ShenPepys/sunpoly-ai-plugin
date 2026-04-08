@@ -159,6 +159,11 @@ export interface OpenSettingsRequest {
   type: 'openSettings';
 }
 
+/** 用户启用"本轮自动接受"模式，后续文件变更不再弹确认 */
+export interface SetAutoAcceptRunRequest {
+  type: 'setAutoAcceptRun';
+}
+
 /** Webview 发送给 Extension 的所有消息类型 */
 export type WebviewMessage =
   | SendMessageRequest
@@ -186,7 +191,9 @@ export type WebviewMessage =
   | AnalyzeTerminalErrorRequest
   | RegenerateRequest
   | OpenFilesInIdeRequest
-  | OpenSettingsRequest;
+  | OpenSettingsRequest
+  | ResolveChangeSummaryRequest
+  | SetAutoAcceptRunRequest;
 
 // ==================== Extension → Webview ====================
 
@@ -367,6 +374,8 @@ export interface ShowChangeSummaryResponse {
     deletions: number;
     status: 'created' | 'modified' | 'read' | 'listed';
     issueText?: string;
+    /** 该文件对应的 stepId，用于行级接受/拒绝 */
+    stepId?: string;
   }>;
 }
 
@@ -454,6 +463,14 @@ export interface AcceptAllChangesRequest {
 export interface RejectAllChangesRequest {
   type: 'rejectAllChanges';
   summaryId: string;
+}
+
+/** 用户对汇总中每个文件分别做出决策后，统一提交 */
+export interface ResolveChangeSummaryRequest {
+  type: 'resolveChangeSummary';
+  summaryId: string;
+  /** stepId → true(接受) / false(拒绝) */
+  decisions: Record<string, boolean>;
 }
 
 /** Extension 发送给 Webview 的所有消息类型 */
