@@ -736,7 +736,7 @@
       }
 
       case 'updateTokenCount':
-        updateTokenCount(message.tokenCount);
+        updateTokenCount(message);
         break;
 
       case 'focusInput':
@@ -1580,16 +1580,62 @@
 
   /**
    * 更新 Token 用量显示
-   * @param {number} count 估算的 Token 数
+   * @param {object|number} payload 估算的上下文占用数据
    */
-  function updateTokenCount(count) {
-    if (count > 0) {
-      // 格式化：超过 1000 时显示为 1.2k
-      var display = count >= 1000 ? (count / 1000).toFixed(1) + 'k' : String(count);
-      tokenCountEl.textContent = '~' + display + ' tokens';
-    } else {
-      tokenCountEl.textContent = '';
+  function updateTokenCount(payload) {
+    var tokenCount = 0;
+    var contextWindow = 0;
+    var usagePercentage = 0;
+
+    if (typeof payload === 'number') {
+      tokenCount = payload;
+    } else if (payload && typeof payload === 'object') {
+      tokenCount = Number(payload.tokenCount) || 0;
+      contextWindow = Number(payload.contextWindow) || 0;
+      usagePercentage = Number(payload.usagePercentage) || 0;
     }
+
+    tokenCountEl.classList.remove('token-count-warn', 'token-count-danger');
+
+    if (contextWindow > 0) {
+      tokenCountEl.textContent = '约 ' + formatCompactTokenCount(tokenCount) + ' / ' + formatCompactTokenCount(contextWindow) + ' · ' + usagePercentage + '%';
+      tokenCountEl.title = '当前会话上下文占用为估算值，用于帮助你判断是否接近模型上下文上限。\n' +
+        '估算已用：' + tokenCount + ' tokens\n' +
+        '上下文上限：' + contextWindow + ' tokens\n' +
+        '当前使用率：' + usagePercentage + '%';
+
+      if (usagePercentage >= 80) {
+        tokenCountEl.classList.add('token-count-danger');
+      } else if (usagePercentage >= 60) {
+        tokenCountEl.classList.add('token-count-warn');
+      }
+      return;
+    }
+
+    if (tokenCount > 0) {
+      tokenCountEl.textContent = '~' + formatCompactTokenCount(tokenCount) + ' tokens';
+      tokenCountEl.title = '当前对话估算 Token 数';
+      return;
+    }
+
+    tokenCountEl.textContent = '';
+    tokenCountEl.title = '当前对话估算 Token 数';
+  }
+
+  function formatCompactTokenCount(count) {
+    if (count >= 1000000) {
+      return trimTrailingZero((count / 1000000).toFixed(1)) + 'M';
+    }
+
+    if (count >= 1000) {
+      return trimTrailingZero((count / 1000).toFixed(1)) + 'K';
+    }
+
+    return String(count);
+  }
+
+  function trimTrailingZero(text) {
+    return String(text).replace(/\.0$/, '');
   }
 
   // ==================== 导出对话 ====================

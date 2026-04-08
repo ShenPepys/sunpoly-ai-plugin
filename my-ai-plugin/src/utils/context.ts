@@ -46,6 +46,7 @@ export function getModelConfig(): ModelConfig {
     baseUrl: config.get<string>('baseUrl', 'https://api.deepseek.com'),
     apiKey: config.get<string>('apiKey', ''),
     knowledgeCutoff: getKnowledgeCutoff(modelId),
+    contextWindow: config.get<number>('contextWindow', 32000),
   };
 }
 

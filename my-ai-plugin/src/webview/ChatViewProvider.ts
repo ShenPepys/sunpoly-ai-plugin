@@ -122,6 +122,93 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private turnWriteRounds: number = 0;
 
+  private estimateTextTokenCount(text: string): number {
+    return Math.max(0, Math.round(text.length / 3));
+  }
+
+  private estimateMessageTokenCount(message: ChatMessageParam): number {
+    if (typeof message.content === 'string') {
+      return this.estimateTextTokenCount(message.content);
+    }
+
+    if (!Array.isArray(message.content)) {
+      return 0;
+    }
+
+    let charCount = 0;
+    for (const part of message.content) {
+      const textPart = part as { type?: string; text?: string };
+      if (textPart.type === 'text' && typeof textPart.text === 'string') {
+        charCount += textPart.text.length;
+      }
+    }
+
+    return Math.max(0, Math.round(charCount / 3));
+  }
+
+  private estimateHistoryTokenCount(history: ChatMessageParam[]): number {
+    let totalTokens = 0;
+    for (const message of history) {
+      totalTokens += this.estimateMessageTokenCount(message);
+    }
+    return totalTokens;
+  }
+
+  private getHistoryTokenBudget(contextWindow: number): number {
+    const normalizedContextWindow = Math.max(contextWindow, 1);
+    const responseReserveTokens = Math.min(
+      getMaxTokens(),
+      Math.max(1024, Math.floor(normalizedContextWindow * 0.25)),
+    );
+    const systemReserveTokens = Math.min(
+      2000,
+      Math.max(256, Math.floor(normalizedContextWindow * 0.1)),
+    );
+    const rawBudget = normalizedContextWindow - responseReserveTokens - systemReserveTokens;
+    return Math.min(normalizedContextWindow, Math.max(256, rawBudget));
+  }
+
+  private buildHistoryWindowSnapshot(history: ChatMessageParam[]): {
+    contextWindow: number;
+    historyTokenBudget: number;
+    retainedHistory: ChatMessageParam[];
+    skippedCount: number;
+  } {
+    const modelConfig = getModelConfig();
+    const contextWindow = Math.max(modelConfig.contextWindow, 1);
+    const historyTokenBudget = this.getHistoryTokenBudget(contextWindow);
+    let totalTokens = 0;
+    let startIndex = history.length;
+
+    for (let i = history.length - 1; i >= 0; i--) {
+      totalTokens += this.estimateMessageTokenCount(history[i]);
+      if (totalTokens > historyTokenBudget) {
+        startIndex = i + 1;
+        break;
+      }
+      startIndex = i;
+    }
+
+    return {
+      contextWindow,
+      historyTokenBudget,
+      retainedHistory: history.slice(startIndex),
+      skippedCount: startIndex,
+    };
+  }
+
+  private buildContextUsageSnapshot(): { tokenCount: number; contextWindow: number; usagePercentage: number } {
+    const historyWindow = this.buildHistoryWindowSnapshot(this.chatHistory);
+    const tokenCount = this.estimateHistoryTokenCount(historyWindow.retainedHistory);
+    const usagePercentage = Math.min(100, Math.round((tokenCount / historyWindow.contextWindow) * 100));
+
+    return {
+      tokenCount,
+      contextWindow: historyWindow.contextWindow,
+      usagePercentage,
+    };
+  }
+
   /** 模型切换回调，外部设置后在切换模型时触发 */
   public onModelSwitch?: (modelName: string) => void;
 
@@ -181,6 +268,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.sendModelList();
     this.postMessage({ type: 'updateMode', mode: this.currentMode });
     this.sendSessionList();
+    this.pushTokenCount();
 
     if (this.sessionLauncherVisible) {
       this.postMessage({ type: 'clearChat' });
@@ -248,8 +336,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'switchModel':
         // 用户切换模型
         info(`用户切换模型到索引: ${message.index}`);
-        setActiveModelIndex(message.index);
+        await setActiveModelIndex(message.index);
         this.sendModelList();
+        this.pushTokenCount();
         // 通知外部更新状态栏
         const models = getAllModels();
         if (this.onModelSwitch && models[message.index]) {
@@ -1990,28 +2079,13 @@ ${projectCtx}` : baseSystemPrompt;
    * @returns 截断后的消息数组（发送给 API 用）
    */
   private trimChatHistory(history: ChatMessageParam[]): ChatMessageParam[] {
-    // 上下文窗口 token 上限（预留 4000 给 system prompt + 回复）
-    const maxContextTokens = 28000;
-    let totalChars = 0;
+    const historyWindow = this.buildHistoryWindowSnapshot(history);
 
-    // 从最新消息往前累加，直到超过阈值
-    let startIndex = history.length;
-    for (let i = history.length - 1; i >= 0; i--) {
-      const content = typeof history[i].content === 'string' ? history[i].content as string : '';
-      totalChars += content.length;
-      // 粗略估算：混合语言约 3 字符/token
-      if (totalChars / 3 > maxContextTokens) {
-        startIndex = i + 1;
-        break;
-      }
-      startIndex = i;
+    if (historyWindow.skippedCount > 0) {
+      info(`上下文窗口截断：总窗口 ${historyWindow.contextWindow}，历史预算 ${historyWindow.historyTokenBudget}，跳过前 ${historyWindow.skippedCount} 条消息，保留 ${history.length - historyWindow.skippedCount} 条`);
     }
 
-    if (startIndex > 0) {
-      info(`上下文窗口截断：跳过前 ${startIndex} 条消息，保留 ${history.length - startIndex} 条`);
-    }
-
-    return history.slice(startIndex);
+    return historyWindow.retainedHistory;
   }
 
   /**
@@ -2293,15 +2367,13 @@ ${projectCtx}` : baseSystemPrompt;
    * 粗略估算：英文约 4 字符/token，中文约 2 字符/token
    */
   private pushTokenCount(): void {
-    let charCount = 0;
-    for (const msg of this.chatHistory) {
-      if (typeof msg.content === 'string') {
-        charCount += msg.content.length;
-      }
-    }
-    // 混合语言粗略估算：平均 3 字符/token
-    const tokenCount = Math.round(charCount / 3);
-    this.postMessage({ type: 'updateTokenCount', tokenCount });
+    const contextUsage = this.buildContextUsageSnapshot();
+    this.postMessage({
+      type: 'updateTokenCount',
+      tokenCount: contextUsage.tokenCount,
+      contextWindow: contextUsage.contextWindow,
+      usagePercentage: contextUsage.usagePercentage,
+    });
   }
 
   /**

@@ -45,6 +45,7 @@ export interface ModelConfig {
   apiKey: string;
   /** 知识截止日期 */
   knowledgeCutoff: string;
+  contextWindow: number;
   /** 是否支持图片输入（Vision API），不支持时不应允许发送图片 */
   supportsVision?: boolean;
 }

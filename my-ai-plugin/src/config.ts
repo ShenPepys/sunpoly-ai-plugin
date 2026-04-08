@@ -131,6 +131,7 @@ interface ModelProfile {
   modelId: string;
   baseUrl: string;
   apiKey: string;
+  contextWindow?: number;
   /** 是否支持图片输入（可选，不填则按 modelId 自动判断） */
   supportsVision?: boolean;
 }
@@ -141,6 +142,18 @@ const DEFAULT_MODEL: ModelProfile = {
   modelId: 'deepseek-chat',
   baseUrl: 'https://api.deepseek.com',
   apiKey: '',
+  contextWindow: 64000,
+};
+
+const DEFAULT_CONTEXT_WINDOW = 32000;
+
+const CONTEXT_WINDOW_MAP: Record<string, number> = {
+  'deepseek-chat': 64000,
+  'deepseek-coder': 64000,
+  'gpt-4o': 128000,
+  'gpt-4o-mini': 128000,
+  'doubao-pro-32k': 32768,
+  'doubao-lite-32k': 32768,
 };
 
 /** 知识截止日期映射表 */
@@ -161,17 +174,18 @@ export function getAllModels(): ModelProfile[] {
   // .env 中的配置作为第一个模型（开发调试用）
   const env = loadEnvFile();
   if (env.API_KEY) {
-    const envModel: ModelProfile = {
+    const envModel = normalizeModelProfile({
       name: env.MODEL_NAME ?? 'DeepSeek Chat',
       modelId: env.MODEL_ID ?? 'deepseek-chat',
       baseUrl: env.BASE_URL ?? 'https://api.deepseek.com',
       apiKey: env.API_KEY,
-    };
+      contextWindow: env.CONTEXT_WINDOW ? Number(env.CONTEXT_WINDOW) : undefined,
+    });
     // .env 配置与 VS Code 设置中的合并，.env 排第一
     const settingsModels = vscode.workspace
       .getConfiguration(CONFIG_PREFIX)
       .get<ModelProfile[]>('models', [DEFAULT_MODEL]);
-    return [envModel, ...settingsModels.filter(m => m.apiKey)];
+    return [envModel, ...settingsModels.filter(m => m.apiKey).map(normalizeModelProfile)];
   }
 
   // 仅从 VS Code 设置读取
@@ -179,7 +193,34 @@ export function getAllModels(): ModelProfile[] {
     .getConfiguration(CONFIG_PREFIX)
     .get<ModelProfile[]>('models', [DEFAULT_MODEL]);
 
-  return models.length > 0 ? models : [DEFAULT_MODEL];
+  const normalizedModels = models.map(normalizeModelProfile);
+  return normalizedModels.length > 0 ? normalizedModels : [normalizeModelProfile(DEFAULT_MODEL)];
+}
+
+function normalizeContextWindow(value: number | undefined): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return undefined;
+  }
+
+  const safeValue = Math.floor(value);
+  return safeValue > 0 ? safeValue : undefined;
+}
+
+function normalizeModelProfile(model: ModelProfile): ModelProfile {
+  return {
+    ...model,
+    contextWindow: resolveContextWindow(model.modelId, model.contextWindow),
+  };
+}
+
+function resolveContextWindow(modelId: string, contextWindow?: number): number {
+  const normalizedConfigured = normalizeContextWindow(contextWindow);
+  if (normalizedConfigured !== undefined) {
+    return normalizedConfigured;
+  }
+
+  const normalizedModelId = (modelId || '').toLowerCase();
+  return CONTEXT_WINDOW_MAP[normalizedModelId] ?? DEFAULT_CONTEXT_WINDOW;
 }
 
 /** 获取当前活跃模型的序号 */
@@ -211,6 +252,7 @@ export function getModelConfig(): ModelConfig {
     baseUrl: model.baseUrl,
     apiKey: model.apiKey,
     knowledgeCutoff: CUTOFF_MAP[model.modelId] ?? '未知',
+    contextWindow: resolveContextWindow(model.modelId, model.contextWindow),
     // 用户在 settings 中显式声明优先，否则按 modelId 自动判断
     supportsVision: model.supportsVision ?? detectVisionSupport(model.modelId),
   };

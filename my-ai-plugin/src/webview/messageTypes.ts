@@ -281,6 +281,8 @@ export interface WorkspaceFilesResponse {
 export interface UpdateTokenCountResponse {
   type: 'updateTokenCount';
   tokenCount: number;
+  contextWindow: number;
+  usagePercentage: number;
 }
 
 /** 推送当前工作模式到 Webview */

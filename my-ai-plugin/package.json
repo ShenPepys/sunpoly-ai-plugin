@@ -144,7 +144,8 @@
               "name": "DeepSeek Chat",
               "modelId": "deepseek-chat",
               "baseUrl": "https://api.deepseek.com",
-              "apiKey": ""
+              "apiKey": "",
+              "contextWindow": 64000
             }
           ],
           "items": {
@@ -166,6 +167,11 @@
               "apiKey": {
                 "type": "string",
                 "description": "API 密钥"
+              },
+              "contextWindow": {
+                "type": "number",
+                "minimum": 1,
+                "description": "模型上下文窗口上限，用于估算当前会话占用；不填时插件会按已知模型或默认兜底值自动推断"
               }
             }
           }

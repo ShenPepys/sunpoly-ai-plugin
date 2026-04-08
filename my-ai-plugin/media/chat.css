@@ -1256,16 +1256,28 @@ body {
   color: var(--vscode-errorForeground, #f44);
 }
 
-/* Token 计数显示 */
-.token-count {
-  font-size: 11px;
-  color: var(--vscode-descriptionForeground, #888);
-  white-space: nowrap;
-  user-select: none;
-}
+ /* Token 计数显示 */
+ .token-count {
+   font-size: 11px;
+   color: var(--vscode-descriptionForeground, #888);
+   white-space: nowrap;
+   user-select: none;
+   max-width: 180px;
+   overflow: hidden;
+   text-overflow: ellipsis;
+   font-variant-numeric: tabular-nums;
+ }
 
-/* 发送按钮（圆形） */
-.send-btn {
+ .token-count.token-count-warn {
+   color: var(--vscode-editorWarning-foreground, #cca700);
+ }
+
+ .token-count.token-count-danger {
+   color: var(--vscode-errorForeground, #f44);
+  }
+
+  /* 发送按钮（圆形） */
+  .send-btn {
   width: 28px;
   height: 28px;
   border-radius: 50%;
