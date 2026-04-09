@@ -3217,18 +3217,19 @@ ${projectCtx}` : baseSystemPrompt;
    * 注入 CSS/JS 资源的 Webview URI 和 CSP 安全策略
    */
   private getHtmlContent(webview: vscode.Webview): string {
-    // 获取 media 文件夹中资源的 Webview 安全 URI
+    // 获取 Webview 资源的安全 URI
+    // JS 文件从 dist/media/ 加载（生产模式下已压缩混淆），CSS 仍从 media/ 加载
     const cssUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.extensionUri, 'media', 'chat.css')
     );
     const renderJsUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, 'media', 'chat_a_render.js')
+      vscode.Uri.joinPath(this.extensionUri, 'dist', 'media', 'chat_a_render.js')
     );
     const stepsJsUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, 'media', 'chat_b_steps.js')
+      vscode.Uri.joinPath(this.extensionUri, 'dist', 'media', 'chat_b_steps.js')
     );
     const jsUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, 'media', 'chat.js')
+      vscode.Uri.joinPath(this.extensionUri, 'dist', 'media', 'chat.js')
     );
 
     // CSP nonce：防止 XSS 注入，只允许带有此 nonce 的脚本执行

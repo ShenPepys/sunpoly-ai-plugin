@@ -3,12 +3,15 @@ src/**
 node_modules/**
 test/**
 esbuild.js
+esbuild copy.js
 tsconfig.json
 **/*.ts
 **/*.map
 .gitignore
 .env
 .env.*
+# 排除原始前端 JS 源码（含中文注释），只保留 dist/media/ 下的压缩版
+media/*.js
 media/chat copy*.js
 media/*copy*.js
 **/*.md
