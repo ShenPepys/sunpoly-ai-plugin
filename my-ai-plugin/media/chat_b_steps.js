@@ -689,7 +689,7 @@
         return;
       }
 
-      setProcessPanelCollapsed(sections.container, true);
+      setProcessPanelCollapsed(sections.container, false);
     }, 140);
   }
 
