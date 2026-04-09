@@ -177,6 +177,9 @@
   modePanel.querySelectorAll('.mode-panel-item').forEach(function (item) {
     item.addEventListener('click', function () {
       var mode = item.getAttribute('data-mode');
+      if (mode) {
+        updateModeUI(mode);
+      }
       vscode.postMessage({ type: 'switchMode', mode: mode });
       modePanel.classList.add('hidden');
     });
@@ -189,6 +192,7 @@
       var modes = ['code', 'ask', 'plan'];
       var currentBtn = btnCodeMode.getAttribute('data-mode') || 'code';
       var nextIndex = (modes.indexOf(currentBtn) + 1) % modes.length;
+      updateModeUI(modes[nextIndex]);
       vscode.postMessage({ type: 'switchMode', mode: modes[nextIndex] });
     }
   });
@@ -617,9 +621,6 @@
     inputHistoryIndex = -1;
     inputHistoryDraft = '';
 
-    // 保存用于重试
-    lastUserMessage = text;
-
     if (sessionLauncherVisible) {
       setSessionLauncherVisible(false);
       messagesContainer.innerHTML = '';
@@ -628,6 +629,7 @@
     vscode.postMessage({
       type: 'sendMessage',
       text: text,
+      mode: btnCodeMode.getAttribute('data-mode') || 'code',
       // 同时把图片附件一并发送，后端会根据模型视觉能力决定是否注入
       images: pendingImages.length > 0 ? pendingImages.slice() : undefined,
     });
@@ -662,7 +664,7 @@
 
       case 'showError':
         clearSessionLauncherRequestTimer();
-        showError(message.message);
+        showError(message.message, message.retryRequestId);
         break;
 
       case 'setLoading':
@@ -692,6 +694,10 @@
 
       case 'updateMessage':
         updateMessageContent(message.messageId, message.content);
+        break;
+
+      case 'resetMessageState':
+        resetMessageState(message.messageId);
         break;
 
       case 'showHistoryProcessSummary':
@@ -762,11 +768,12 @@
             window.chatSteps.cancelPendingChangeSummaries();
           }
           // 兜底：将所有仍在转圈的步骤标记为已取消
-          if (window.chatSteps.cancelAllRunningSteps) {
+          if (window.chatSteps && window.chatSteps.cancelAllRunningSteps) {
             window.chatSteps.cancelAllRunningSteps();
           }
         }
         setLoading(false);
+        syncRegenButtonForLatestTurn();
         break;
 
       case 'updateMode':
@@ -846,6 +853,9 @@
       '</div>';
 
     messagesContainer.appendChild(messageEl);
+    if (typeof messageId === 'string' && messageId.indexOf('restored-') === 0) {
+      scheduleRestoredHistoryRegenButtonSync();
+    }
     scrollToBottom();
   }
 
@@ -1004,6 +1014,44 @@
     scrollToBottom();
   }
 
+  function clearMessageStreamState(messageId) {
+    if (streamRenderTimers[messageId]) {
+      clearTimeout(streamRenderTimers[messageId]);
+      delete streamRenderTimers[messageId];
+    }
+
+    if (streamBuffers.hasOwnProperty(messageId)) {
+      delete streamBuffers[messageId];
+    }
+  }
+
+  function resetMessageState(messageId) {
+    if (!messageId) {
+      return;
+    }
+
+    clearMessageStreamState(messageId);
+
+    var messageEl = messagesContainer.querySelector('[data-message-id="' + messageId + '"]');
+    if (!messageEl) {
+      return;
+    }
+
+    var bodyEl = messageEl.querySelector('.message-body');
+    if (bodyEl) {
+      bodyEl.classList.remove('streaming');
+    }
+
+    var statusEls = messageEl.querySelectorAll('.stream-status');
+    Array.prototype.forEach.call(statusEls, function (statusEl) {
+      statusEl.remove();
+    });
+
+    if (window.chatSteps && window.chatSteps.resetMessageState) {
+      window.chatSteps.resetMessageState(messageId);
+    }
+  }
+
   function removeLastAssistantMessage() {
     var assistantMessages = messagesContainer.querySelectorAll('.message.assistant');
     if (assistantMessages.length === 0) {
@@ -1014,6 +1062,7 @@
     if (lastAssistantMessage) {
       lastAssistantMessage.remove();
     }
+    syncRegenButtonForLatestTurn();
   }
 
   /**
@@ -1481,6 +1530,7 @@
 
   /** 流式渲染节流定时器 */
   var streamRenderTimers = {};
+  var restoredRedoSyncTimer = 0;
 
   /**
    * 处理流式追加的文本片段
@@ -1581,15 +1631,21 @@
     setLoading(false);
 
     // 流式完成后：移除旧的重新生成按钮，在本条 AI 消息底部加新的
-    removeAllRegenButtons();
-    var doneEl = messagesContainer.querySelector('[data-message-id="' + messageId + '"]');
-    if (doneEl && doneEl.classList.contains('assistant')) {
-      addRegenButton(getRelatedUserMessage(doneEl));
-    }
+    syncRegenButtonForLatestTurn();
 
     if (window.chatSteps && window.chatSteps.markProcessComplete) {
       window.chatSteps.markProcessComplete(messageId);
     }
+  }
+
+  function scheduleRestoredHistoryRegenButtonSync() {
+    if (restoredRedoSyncTimer) {
+      clearTimeout(restoredRedoSyncTimer);
+    }
+    restoredRedoSyncTimer = window.setTimeout(function () {
+      restoredRedoSyncTimer = 0;
+      syncRegenButtonForLatestTurn();
+    }, 0);
   }
 
   function getRelatedUserMessage(messageEl) {
@@ -1607,13 +1663,47 @@
     return null;
   }
 
+  function syncRegenButtonForLatestTurn() {
+    removeAllRegenButtons();
+
+    var messageItems = messagesContainer.querySelectorAll('.message');
+    if (messageItems.length === 0) {
+      return;
+    }
+
+    var lastAssistantMessage = null;
+    for (var i = messageItems.length - 1; i >= 0; i -= 1) {
+      var currentMessage = messageItems[i];
+      if (!currentMessage || !currentMessage.classList.contains('assistant')) {
+        continue;
+      }
+
+      var currentMessageId = currentMessage.getAttribute('data-message-id') || '';
+      if (!currentMessageId) {
+        continue;
+      }
+
+      lastAssistantMessage = currentMessage;
+      break;
+    }
+
+    if (!lastAssistantMessage) {
+      return;
+    }
+
+    addRegenButton(
+      getRelatedUserMessage(lastAssistantMessage),
+      lastAssistantMessage.getAttribute('data-message-id') || ''
+    );
+  }
+
   /**
    * 将重新生成按钮插入到 .msg-actions 区域（复制按钮后面）
    * 样式复用 btn-copy-msg，在 hover 时与复制按钮一起展示
    * @param {Element} messageEl 消息气泡 DOM 元素
    */
-  function addRegenButton(messageEl) {
-    if (!messageEl) { return; }
+  function addRegenButton(messageEl, assistantMessageId) {
+    if (!messageEl || !assistantMessageId) { return; }
     var actionsEl = messageEl.querySelector('.msg-actions');
     if (!actionsEl) { return; }
 
@@ -1622,7 +1712,8 @@
     btn.title = '重做这句要求';
     btn.textContent = '重做';
     btn.addEventListener('click', function () {
-      vscode.postMessage({ type: 'regenerate' });
+      removeAllRegenButtons();
+      vscode.postMessage({ type: 'regenerate', assistantMessageId: assistantMessageId });
     });
     actionsEl.appendChild(btn);
   }
@@ -1637,11 +1728,8 @@
     });
   }
 
-  /** 最近一次发送的用户消息文本（用于重试） */
-  var lastUserMessage = '';
-
   /** 显示错误消息（带重试按钮） */
-  function showError(errorMessage) {
+  function showError(errorMessage, retryRequestId) {
     // 清理所有残留的流式指示器（出错时 streamDone 可能未被调用）
     messagesContainer.querySelectorAll('.message-body.streaming').forEach(function (el) {
       el.classList.remove('streaming');
@@ -1650,17 +1738,26 @@
       el.remove();
     });
 
+    var retryButtonHtml = '';
+    if (retryRequestId) {
+      retryButtonHtml = '<button class="btn-retry" title="重新发送">重试</button>';
+    }
+
     var errorEl = document.createElement('div');
     errorEl.className = 'message assistant error-message';
+    if (retryRequestId) {
+      errorEl.setAttribute('data-retry-request-id', retryRequestId);
+    }
     errorEl.innerHTML =
       '<div class="message-body" style="color: var(--vscode-errorForeground, #f44);">' +
         '⚠️ ' + escapeHtml(errorMessage) +
-        '<button class="btn-retry" title="重新发送">重试</button>' +
+        retryButtonHtml +
       '</div>';
 
     messagesContainer.appendChild(errorEl);
     scrollToBottom();
     setLoading(false);
+    syncRegenButtonForLatestTurn();
   }
 
   /** 是否正在生成中 */
@@ -1695,6 +1792,10 @@
     if (scheduledScrollFrame) {
       cancelAnimationFrame(scheduledScrollFrame);
       scheduledScrollFrame = 0;
+    }
+    if (restoredRedoSyncTimer) {
+      clearTimeout(restoredRedoSyncTimer);
+      restoredRedoSyncTimer = 0;
     }
     Object.keys(streamRenderTimers).forEach(function (messageId) {
       clearTimeout(streamRenderTimers[messageId]);
@@ -1899,9 +2000,10 @@
       // 移除错误消息元素
       var errorMsg = target.closest('.error-message');
       if (errorMsg) { errorMsg.remove(); }
+      var retryRequestId = errorMsg ? (errorMsg.getAttribute('data-retry-request-id') || '') : '';
       // 重新发送
-      if (lastUserMessage) {
-        vscode.postMessage({ type: 'sendMessage', text: lastUserMessage });
+      if (retryRequestId) {
+        vscode.postMessage({ type: 'retryRequest', requestId: retryRequestId });
       }
       return;
     }

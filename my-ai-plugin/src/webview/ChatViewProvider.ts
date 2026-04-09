@@ -51,6 +51,38 @@ type DeferredToolStep = {
   startedAt: number;
 };
 
+type PendingRegenerateState = {
+  runId: string;
+  messageId: string;
+  history: ChatSessionHistoryMessage[];
+  displayHistory: ChatSessionDisplayMessage[];
+  restoreContent: string;
+  restoreProcessSummary?: HistoryProcessSummary;
+};
+
+type RequestImageAttachment = {
+  id: string;
+  dataUrl: string;
+  fileName: string;
+  mimeType: string;
+  sizeKB: number;
+};
+
+type RetryableRequestState = {
+  requestId: string;
+  sessionId: string;
+  text: string;
+  userContent: string;
+  images: RequestImageAttachment[];
+  requestMode: WorkMode;
+};
+
+type UserMessageRequestOptions = {
+  userContentOverride?: string;
+  retryRequestId?: string;
+  requestMode?: WorkMode;
+};
+
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Provider 的注册 ID，必须与 package.json 中 views.id 一致 */
   public static readonly viewType = 'my-ai-plugin.chatView';
@@ -123,6 +155,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private turnWriteRounds: number = 0;
 
   private activeHistoryProcessSummary: HistoryProcessSummary | null = null;
+
+  private pendingRegenerateState: PendingRegenerateState | null = null;
+
+  private retryableRequests: Map<string, RetryableRequestState> = new Map();
 
   private estimateTextTokenCount(text: string): number {
     return Math.max(0, Math.round(text.length / 3));
@@ -311,7 +347,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'sendMessage':
         info('收到用户消息:', message.text);
         // 同时传递图片附件（如果有），由 handleUserMessage 检测视觉能力后决定是否注入
-        this.handleUserMessage(message.text, message.images);
+        info('收到 sendMessage 模式快照', { uiMode: message.mode, currentMode: this.currentMode });
+        this.handleUserMessage(message.text, message.images, { requestMode: message.mode });
         break;
 
       case 'copyCode':
@@ -404,7 +441,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'regenerate':
-        this.handleRegenerate();
+        this.handleRegenerate(message.assistantMessageId);
+        break;
+
+      case 'retryRequest':
+        this.handleRetryRequest(message.requestId);
         break;
 
       case 'openFilesInIde':
@@ -417,7 +458,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         vscode.commands.executeCommand('my-ai-plugin.editModels');
         break;
 
-      case 'stopGeneration':
+      case 'stopGeneration': {
+        const stoppedRunId = this.activeRunId;
         this.activeRunId = null;
         this.stepSequence = 0;
         this.toolCallRound = 0;
@@ -428,9 +470,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this.abortStream();
           this.abortStream = null;
         }
+        if (stoppedRunId) {
+          this.rollbackPendingRegenerateState(stoppedRunId);
+        }
         this.postMessage({ type: 'generationStopped' });
         this.postMessage({ type: 'setLoading', loading: false });
         break;
+      }
 
       case 'executeCommand':
         info(`Slash 命令执行: ${message.command}`);
@@ -488,7 +534,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private async handleUserMessage(
     text: string,
-    images?: Array<{ id: string; dataUrl: string; fileName: string; mimeType: string; sizeKB: number }>
+    images?: RequestImageAttachment[],
+    requestOptions?: UserMessageRequestOptions,
   ): Promise<void> {
     if (this.sessionLauncherVisible || !this.getActiveSession()) {
       this.createNewSession(this.buildSessionTitle(text));
@@ -514,6 +561,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // 显示加载状态
     this.postMessage({ type: 'setLoading', loading: true });
 
+    const retryRequestId = requestOptions?.retryRequestId || this.createRetryRequestId();
+    const requestMode = requestOptions?.requestMode || this.currentMode;
+    this.currentMode = requestMode;
+    this.postMessage({ type: 'updateMode', mode: this.currentMode });
+    info('handleUserMessage 模式快照', {
+      requestMode,
+      currentMode: this.currentMode,
+      hasUserContentOverride: !!requestOptions?.userContentOverride,
+      retryRequestId,
+    });
+    const clonedImages = this.cloneRequestImages(images);
+    const contextFilePaths = requestOptions?.userContentOverride ? [] : this.contextFiles.slice();
+    let userContent = requestOptions?.userContentOverride ?? text;
+
+    if (!requestOptions?.userContentOverride) {
+      const editorCtx = getEditorContext();
+      if (editorCtx && editorCtx.selectedCode) {
+        userContent += `\n\n## 当前选中的代码\n- 文件：${editorCtx.fileName}\n- 语言：${editorCtx.fileLanguage}\n- 行号：第 ${editorCtx.startLine} 行 ~ 第 ${editorCtx.endLine} 行\n\n\`\`\`${editorCtx.fileLanguage}\n${editorCtx.selectedCode}\n\`\`\``;
+      }
+
+      const contextContent = await this.buildContextContent(contextFilePaths, false);
+      if (contextContent) {
+        userContent += `\n\n${contextContent}`;
+      }
+
+      this.rememberRetryableRequest(retryRequestId, text, userContent, clonedImages, requestMode);
+    }
+
     // 确保 API Key 已配置
     const apiKey = await ensureApiKey();
     if (!apiKey) {
@@ -521,6 +596,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.postMessage({
         type: 'showError',
         message: '未配置 API Key，请在设置中配置 myAiPlugin.apiKey',
+        retryRequestId,
       });
       return;
     }
@@ -535,31 +611,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const customPrompt = getCustomSystemPrompt();
     const baseSystemPrompt = customPrompt
       ? customPrompt
-      : buildSystemPrompt(envContext, modelConfig, this.currentMode, '中文', projectType, gitInfo);
+      : buildSystemPrompt(envContext, modelConfig, requestMode, '中文', projectType, gitInfo);
     // 自动读取项目背景（README.md + package.json）并追加到系统提示词末尾
     const projectCtx = getProjectContext();
     const systemPrompt = projectCtx ? `${baseSystemPrompt}
 
 ${projectCtx}` : baseSystemPrompt;
+    info('首轮系统提示词模式', { requestMode, systemPromptModePreview: systemPrompt.slice(0, 120) });
 
-    // 构建消息列表：系统提示词 + 历史对话 + 当前用户消息
-    // 附带上下文：选中代码 + @ Mentions 引用的文件
-    const editorCtx = getEditorContext();
-    let userContent = text;
-
-    // 附加编辑器中选中的代码
-    if (editorCtx && editorCtx.selectedCode) {
-      userContent += `\n\n## 当前选中的代码\n- 文件：${editorCtx.fileName}\n- 语言：${editorCtx.fileLanguage}\n- 行号：第 ${editorCtx.startLine} 行 ~ 第 ${editorCtx.endLine} 行\n\n\`\`\`${editorCtx.fileLanguage}\n${editorCtx.selectedCode}\n\`\`\``;
+    if (contextFilePaths.length > 0) {
+      this.contextFiles = [];
+      this.postMessage({ type: 'clearContextFiles' });
     }
-
-    // 附加 @ Mentions 引用的文件内容
-    const contextContent = await this.buildContextContent();
-    if (contextContent) {
-      userContent += `\n\n${contextContent}`;
-    }
-
-    // 通知 Webview 清空文件标签（文件已注入到本次消息）
-    this.postMessage({ type: 'clearContextFiles' });
 
     // 添加到对话历史并持久化（历史只存文本部分，图片不持久化以节省空间）
     // 通过类型断言写入 timestamp，供导出时标注对话时间
@@ -573,13 +636,13 @@ ${projectCtx}` : baseSystemPrompt;
 
     // 构建最终发送给 API 的用户消息内容
     // 有图片且模型支持视觉时，组装为多模态 ContentPart 数组
-    const hasImages = images && images.length > 0;
+    const hasImages = clonedImages.length > 0;
     let finalUserContent: ChatMessageParam['content'];
     if (hasImages && modelConfig.supportsVision) {
       // OpenAI Vision API 格式：先文本，再图片内容块
       finalUserContent = [
         { type: 'text', text: userContent },
-        ...images.map(img => ({ type: 'image_url' as const, image_url: { url: img.dataUrl } })),
+        ...clonedImages.map(img => ({ type: 'image_url' as const, image_url: { url: img.dataUrl } })),
       ];
     } else {
       if (hasImages && !modelConfig.supportsVision) {
@@ -607,7 +670,7 @@ ${projectCtx}` : baseSystemPrompt;
 
     const messages: ChatMessageParam[] = [
       { role: 'system', content: systemPrompt },
-      ...contextMessages.slice(0, -1), // 历史消息（不含最后一条，最后一条用 finalUserContent 替换）
+      ...this.injectModeReminder(contextMessages.slice(0, -1), requestMode),
       { role: 'user', content: finalUserContent },
     ];
 
@@ -658,7 +721,6 @@ ${projectCtx}` : baseSystemPrompt;
         this.abortStream = null;
         const thinkingElapsed = Date.now() - streamStartTime;
         const assistantTimestamp = Date.now();
-        this.recordThinkingElapsedInActiveHistorySummary(thinkingElapsed);
 
         // 将 AI 回复加入对话历史并持久化
         (this.chatHistory as ChatSessionHistoryMessage[]).push({ role: 'assistant', content: fullContent, timestamp: assistantTimestamp });
@@ -667,6 +729,7 @@ ${projectCtx}` : baseSystemPrompt;
         const parsedToolCalls = parseToolCalls(fullContent);
 
         if (parsedToolCalls.length > 0) {
+          this.recordThinkingElapsedInActiveHistorySummary(thinkingElapsed);
           // 剥离 tool_call 标签后更新界面显示（用户看不到原始 XML）
           const cleanContent = stripToolCalls(fullContent);
           this.upsertAssistantDisplayHistoryMessage(cleanContent, assistantTimestamp);
@@ -678,10 +741,10 @@ ${projectCtx}` : baseSystemPrompt;
           });
           this.postMessage({ type: 'streamDone', messageId: assistantMsgId });
           if (thinkingElapsed > 1000) {
-            this.postMessage({ type: 'thinkingComplete', messageId: assistantMsgId, elapsed: thinkingElapsed });
+            this.postMessage({ type: 'thinkingComplete', messageId: assistantMsgId, elapsed: thinkingElapsed, isExecutionMessage: true });
           }
           this.postMessage({ type: 'setLoading', loading: true });
-          this.handleToolCalls(fullContent, apiConfig, assistantMsgId, parsedToolCalls);
+          this.handleToolCalls(fullContent, apiConfig, assistantMsgId, requestMode, parsedToolCalls, retryRequestId);
         } else {
           // 回复中包含 tool_call 标签但未能解析成有效工具调用时，
           // 不能进入工具执行流程，否则前端会残留 loading 状态。
@@ -696,15 +759,13 @@ ${projectCtx}` : baseSystemPrompt;
             this.postMessage({
               type: 'showError',
               message: '检测到无效的工具调用格式，已忽略本次工具执行',
+              retryRequestId,
             });
           } else {
             this.upsertAssistantDisplayHistoryMessage(fullContent, assistantTimestamp);
           }
           this.saveChatHistory();
           this.postMessage({ type: 'streamDone', messageId: assistantMsgId });
-          if (thinkingElapsed > 1000) {
-            this.postMessage({ type: 'thinkingComplete', messageId: assistantMsgId, elapsed: thinkingElapsed });
-          }
           this.activeRunId = null;
           this.stepSequence = 0;
           this.resetActiveHistoryProcessSummary();
@@ -727,6 +788,7 @@ ${projectCtx}` : baseSystemPrompt;
         this.postMessage({
           type: 'showError',
           message: friendlyMessage,
+          retryRequestId,
         });
         this.resetActiveHistoryProcessSummary();
         error('AI API 调用失败:', errorMessage);
@@ -748,7 +810,9 @@ ${projectCtx}` : baseSystemPrompt;
     aiResponse: string,
     apiConfig: ApiClientConfig,
     reuseMsgId: string,
+    requestMode: WorkMode,
     parsedToolCalls?: ParsedToolCall[],
+    retryRequestId?: string,
   ): Promise<void> {
     const toolCalls = parsedToolCalls ?? parseToolCalls(aiResponse);
     if (toolCalls.length === 0) {
@@ -770,6 +834,9 @@ ${projectCtx}` : baseSystemPrompt;
     }
     this.toolCallsInProgress = true;
     this.toolCallRound++;
+    this.currentMode = requestMode;
+    this.postMessage({ type: 'updateMode', mode: this.currentMode });
+    info('handleToolCalls 模式快照', { reuseMsgId, requestMode, currentMode: this.currentMode, toolCallRound: this.toolCallRound });
 
     try {
 
@@ -821,7 +888,7 @@ ${projectCtx}` : baseSystemPrompt;
           const diffOldContent = tc.type === 'write_file' ? '' : backupBeforeWrite;
 
           // 立即执行写操作
-          const result = await executeToolCalls([tc], this.currentMode);
+          const result = await executeToolCalls([tc], requestMode);
           const singleResult = result[0];
           results.push(singleResult);
           const elapsed = Date.now() - startTime;
@@ -876,7 +943,7 @@ ${projectCtx}` : baseSystemPrompt;
         }
 
         // 非写操作：直接执行
-        const result = await executeToolCalls([tc], this.currentMode);
+        const result = await executeToolCalls([tc], requestMode);
         const singleResult = result[0];
         results.push(singleResult);
         const elapsed = Date.now() - startTime;
@@ -926,11 +993,12 @@ ${projectCtx}` : baseSystemPrompt;
       // 构建续轮消息
       const modelConfig = getModelConfig();
       const envContext = getEnvContext();
-      const systemPrompt = buildSystemPrompt(envContext, modelConfig, this.currentMode, '中文', detectProjectType(), getGitStatus());
+      const systemPrompt = buildSystemPrompt(envContext, modelConfig, requestMode, '中文', detectProjectType(), getGitStatus());
+      info('续轮系统提示词模式', { requestMode, systemPromptModePreview: systemPrompt.slice(0, 120) });
 
       const followUpMessages: ChatMessageParam[] = [
         { role: 'system', content: systemPrompt },
-        ...this.trimChatHistory(this.chatHistory),
+        ...this.injectModeReminder(this.trimChatHistory(this.chatHistory), requestMode),
       ];
 
       let isFirstChunk = true;
@@ -966,13 +1034,25 @@ ${projectCtx}` : baseSystemPrompt;
             this.postMessage({ type: 'updateMessage', messageId: reuseMsgId, content: cleanContent });
             this.postMessage({ type: 'setLoading', loading: true });
             if (this.toolCallRound < 10) {
-              this.handleToolCalls(fullContent, apiConfig, reuseMsgId, parsedToolCalls);
+              this.handleToolCalls(fullContent, apiConfig, reuseMsgId, requestMode, parsedToolCalls, retryRequestId);
             } else {
-              this.upsertAssistantDisplayHistoryMessage(cleanContent, assistantTimestamp, this.getClonedActiveHistoryProcessSummary());
-              this.saveChatHistory();
+              const rolledBack = this.rollbackPendingRegenerateState(reuseMsgId);
+              const finalProcessSummary = this.getClonedActiveHistoryProcessSummary();
+              if (!rolledBack) {
+                this.upsertAssistantDisplayHistoryMessage(cleanContent, assistantTimestamp, finalProcessSummary);
+                this.saveChatHistory();
+                if (finalProcessSummary) {
+                  this.postMessage({
+                    type: 'showHistoryProcessSummary',
+                    messageId: reuseMsgId,
+                    summary: finalProcessSummary,
+                  });
+                }
+              }
               this.postMessage({
                 type: 'showError',
                 message: '工具调用轮次过多（已达 10 轮），已停止继续执行。请缩小任务范围后重试。',
+                retryRequestId,
               });
               this.postMessage({ type: 'setLoading', loading: false });
               this.activeRunId = null;
@@ -988,13 +1068,23 @@ ${projectCtx}` : baseSystemPrompt;
               this.postMessage({
                 type: 'showError',
                 message: '检测到无效的工具调用格式，已忽略本次工具执行',
+                retryRequestId,
               });
             }
-            this.upsertAssistantDisplayHistoryMessage(finalDisplayContent, assistantTimestamp, this.getClonedActiveHistoryProcessSummary());
+            const finalProcessSummary = this.getClonedActiveHistoryProcessSummary();
+            this.upsertAssistantDisplayHistoryMessage(finalDisplayContent, assistantTimestamp, finalProcessSummary);
             this.saveChatHistory();
             this.postMessage({ type: 'streamDone', messageId: reuseMsgId });
+            if (finalProcessSummary) {
+              this.postMessage({
+                type: 'showHistoryProcessSummary',
+                messageId: reuseMsgId,
+                summary: finalProcessSummary,
+              });
+            }
             // 所有工具调用轮次结束，若本轮有 2+ 文件变更则发送全量汇总
             this.maybeSendFinalTurnSummary(reuseMsgId);
+            this.clearPendingRegenerateState(reuseMsgId);
             this.activeRunId = null;
             this.stepSequence = 0;
             this.resetActiveHistoryProcessSummary();
@@ -1007,11 +1097,22 @@ ${projectCtx}` : baseSystemPrompt;
           this.abortStream = null;
           this.activeRunId = null;
           this.stepSequence = 0;
-          this.upsertAssistantDisplayHistoryMessage('⚠️ 工具执行出错，请重试。', Date.now(), this.getClonedActiveHistoryProcessSummary());
-          this.saveChatHistory();
-          this.postMessage({ type: 'streamDone', messageId: reuseMsgId });
-          this.postMessage({ type: 'updateMessage', messageId: reuseMsgId, content: '⚠️ 工具执行出错，请重试。' });
-          this.postMessage({ type: 'showError', message: errorMessage });
+          const rolledBack = this.rollbackPendingRegenerateState(reuseMsgId);
+          const finalProcessSummary = this.getClonedActiveHistoryProcessSummary();
+          if (!rolledBack) {
+            this.upsertAssistantDisplayHistoryMessage('⚠️ 工具执行出错，请重试。', Date.now(), finalProcessSummary);
+            this.saveChatHistory();
+            this.postMessage({ type: 'streamDone', messageId: reuseMsgId });
+            this.postMessage({ type: 'updateMessage', messageId: reuseMsgId, content: '⚠️ 工具执行出错，请重试。' });
+            if (finalProcessSummary) {
+              this.postMessage({
+                type: 'showHistoryProcessSummary',
+                messageId: reuseMsgId,
+                summary: finalProcessSummary,
+              });
+            }
+          }
+          this.postMessage({ type: 'showError', message: errorMessage, retryRequestId });
           this.resetActiveHistoryProcessSummary();
           error('续轮 AI 调用失败:', errorMessage);
         },
@@ -1020,6 +1121,76 @@ ${projectCtx}` : baseSystemPrompt;
     } finally {
       this.toolCallsInProgress = false;
     }
+  }
+
+  private createRetryRequestId(): string {
+    return `retry-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  private cloneRequestImages(images?: RequestImageAttachment[]): RequestImageAttachment[] {
+    if (!Array.isArray(images) || images.length === 0) {
+      return [];
+    }
+
+    return images.map(image => ({ ...image }));
+  }
+
+  private rememberRetryableRequest(
+    requestId: string,
+    text: string,
+    userContent: string,
+    images: RequestImageAttachment[],
+    requestMode: WorkMode,
+  ): void {
+    this.retryableRequests.set(requestId, {
+      requestId,
+      sessionId: this.activeSessionId,
+      text,
+      userContent,
+      images: this.cloneRequestImages(images),
+      requestMode,
+    });
+
+    while (this.retryableRequests.size > 20) {
+      const oldestKey = this.retryableRequests.keys().next().value;
+      if (!oldestKey) {
+        break;
+      }
+      this.retryableRequests.delete(oldestKey);
+    }
+  }
+
+  private async handleRetryRequest(requestId: string): Promise<void> {
+    if (!requestId) {
+      this.postMessage({ type: 'showError', message: '找不到可重试的请求' });
+      return;
+    }
+
+    if (this.hasRunningTask()) {
+      this.postMessage({ type: 'showError', message: '当前仍在生成，请先停止当前任务后再重试。' });
+      return;
+    }
+
+    const retryableRequest = this.retryableRequests.get(requestId);
+    if (!retryableRequest) {
+      this.postMessage({ type: 'showError', message: '找不到可重试的请求快照，请重新发送一次消息。' });
+      return;
+    }
+
+    if (retryableRequest.sessionId !== this.activeSessionId) {
+      this.postMessage({ type: 'showError', message: '当前不在原始会话中，请切回对应会话后再重试。' });
+      return;
+    }
+
+    await this.handleUserMessage(
+      retryableRequest.text,
+      this.cloneRequestImages(retryableRequest.images),
+      {
+        userContentOverride: retryableRequest.userContent,
+        retryRequestId: retryableRequest.requestId,
+        requestMode: retryableRequest.requestMode,
+      },
+    );
   }
 
   /**
@@ -1625,8 +1796,13 @@ ${projectCtx}` : baseSystemPrompt;
    * 处理「重新生成」请求
    * 将历史中最后一条 assistant 消息删除，然后重新发送前一条 user 消息
    */
-  private async handleRegenerate(): Promise<void> {
-    const history = this.chatHistory;
+  private async handleRegenerate(targetAssistantMessageId: string): Promise<void> {
+    const history = this.chatHistory as ChatSessionHistoryMessage[];
+
+    if (!targetAssistantMessageId) {
+      vscode.window.showInformationMessage('找不到对应的 AI 消息');
+      return;
+    }
 
     // 找到最后一条 assistant 消息的位置
     let lastAssistantIdx = -1;
@@ -1645,7 +1821,7 @@ ${projectCtx}` : baseSystemPrompt;
     // 找到该 assistant 消息前面的最后一条 user 消息
     let lastUserIdx = -1;
     for (let i = lastAssistantIdx - 1; i >= 0; i--) {
-      if (history[i].role === 'user') {
+      if (history[i].role === 'user' && !this.isToolFeedbackMessage(history[i])) {
         lastUserIdx = i;
         break;
       }
@@ -1660,31 +1836,43 @@ ${projectCtx}` : baseSystemPrompt;
     const userContent = history[lastUserIdx].content;
     const userText = typeof userContent === 'string' ? userContent : '';
 
-    // 剔除最后一条 assistant 消息（最后一轮从用户消息开始重做）
-    this.chatHistory = history.slice(0, lastAssistantIdx);
-    this.removeLastAssistantDisplayHistoryMessage();
-    this.saveChatHistory();
-    this.postMessage({ type: 'removeLastAssistantMessage' });
+    const displayHistoryBackup = this.cloneDisplayHistoryMessages(this.displayHistory);
+    const lastAssistantDisplay = this.getLastAssistantDisplayHistoryMessage(displayHistoryBackup);
+    this.pendingRegenerateState = {
+      runId: targetAssistantMessageId,
+      messageId: targetAssistantMessageId,
+      history: history.slice(),
+      displayHistory: displayHistoryBackup,
+      restoreContent: lastAssistantDisplay?.content ?? this.getAssistantDisplayContent(history[lastAssistantIdx].content),
+      restoreProcessSummary: lastAssistantDisplay?.processSummary
+        ? this.cloneHistoryProcessSummary(lastAssistantDisplay.processSummary)
+        : undefined,
+    };
+
+    this.chatHistory = history.slice(0, lastUserIdx + 1) as ChatMessageParam[];
 
     info('重新生成回复，参考用户消息长度:', userText.length);
     // 直接调用内部发送方法，不再显示用户消息气泡（已有）
-    await this.regenerateResponse(userText);
+    await this.regenerateResponse(userText, this.currentMode, targetAssistantMessageId);
   }
 
   /**
    * 重新发起 AI 请求，不向界面添加用户消息气泡
    * 与 handleUserMessage 区别：跳过添加用户 UI 消息和保存用户历史这两步
    */
-  private async regenerateResponse(userText: string): Promise<void> {
+  private async regenerateResponse(userText: string, requestMode: WorkMode, reuseMessageId?: string): Promise<void> {
     // 重新生成也是新的一轮，清空跨轮文件记录和轮次计数器
     this.turnWriteFiles = [];
     this.turnWriteRounds = 0;
     this.resetActiveHistoryProcessSummary();
     this.postMessage({ type: 'setLoading', loading: true });
 
+    const regenMsgId = reuseMessageId || `ai-regen-${Date.now()}`;
+
     const apiKey = await ensureApiKey();
     if (!apiKey) {
       this.postMessage({ type: 'setLoading', loading: false });
+      this.rollbackPendingRegenerateState(regenMsgId);
       this.postMessage({ type: 'showError', message: '未配置 API Key，请在设置中配置 myAiPlugin.apiKey' });
       return;
     }
@@ -1696,17 +1884,22 @@ ${projectCtx}` : baseSystemPrompt;
     const customPrompt = getCustomSystemPrompt();
     const baseSystemPromptRegen = customPrompt
       ? customPrompt
-      : buildSystemPrompt(envContext, modelConfig, this.currentMode, '中文', projectType, gitInfo);
+      : buildSystemPrompt(envContext, modelConfig, requestMode, '中文', projectType, gitInfo);
     const projectCtxRegen = getProjectContext();
     const systemPrompt = projectCtxRegen
       ? `${baseSystemPromptRegen}\n\n${projectCtxRegen}`
       : baseSystemPromptRegen;
 
     const contextMessages = this.trimChatHistory(this.chatHistory);
+    const remindedMessages = this.injectModeReminder(contextMessages, requestMode);
+    const lastContextMessage = remindedMessages[remindedMessages.length - 1];
     const messages: ChatMessageParam[] = [
       { role: 'system', content: systemPrompt },
-      ...contextMessages,
+      ...remindedMessages,
     ];
+    if ((!lastContextMessage || lastContextMessage.role !== 'user') && userText) {
+      messages.push({ role: 'user', content: userText });
+    }
 
     const apiConfig: ApiClientConfig = {
       baseUrl: modelConfig.baseUrl,
@@ -1724,12 +1917,15 @@ ${projectCtx}` : baseSystemPrompt;
     // 重新生成：清空上一轮写文件备份
     this.writeBackups.clear();
 
-    const regenMsgId = `ai-regen-${Date.now()}`;
     const streamStartTime = Date.now();
     this.activeRunId = regenMsgId;
     this.stepSequence = 0;
     this.toolCallRound = 0;
-    this.postMessage({ type: 'addMessage', role: 'assistant', content: '', messageId: regenMsgId });
+    if (reuseMessageId) {
+      this.postMessage({ type: 'resetMessageState', messageId: regenMsgId });
+    } else {
+      this.postMessage({ type: 'addMessage', role: 'assistant', content: '', messageId: regenMsgId });
+    }
 
     let fullContent = '';
     this.abortStream = sendStreamRequest(
@@ -1749,23 +1945,23 @@ ${projectCtx}` : baseSystemPrompt;
         this.abortStream = null;
         const thinkingElapsed = Date.now() - streamStartTime;
         const assistantTimestamp = Date.now();
-        this.recordThinkingElapsedInActiveHistorySummary(thinkingElapsed);
         (this.chatHistory as ChatSessionHistoryMessage[]).push({ role: 'assistant', content: fullContent, timestamp: assistantTimestamp });
         info('重新生成完成，长度:', fullContent.length);
 
         const parsedToolCalls = parseToolCalls(fullContent);
 
         if (parsedToolCalls.length > 0) {
+          this.recordThinkingElapsedInActiveHistorySummary(thinkingElapsed);
           const cleanContent = stripToolCalls(fullContent);
           this.upsertAssistantDisplayHistoryMessage(cleanContent, assistantTimestamp);
           this.saveChatHistory();
           this.postMessage({ type: 'updateMessage', messageId: regenMsgId, content: cleanContent });
           this.postMessage({ type: 'streamDone', messageId: regenMsgId });
           if (thinkingElapsed > 1000) {
-            this.postMessage({ type: 'thinkingComplete', messageId: regenMsgId, elapsed: thinkingElapsed });
+            this.postMessage({ type: 'thinkingComplete', messageId: regenMsgId, elapsed: thinkingElapsed, isExecutionMessage: true });
           }
           this.postMessage({ type: 'setLoading', loading: true });
-          this.handleToolCalls(fullContent, apiConfig, regenMsgId, parsedToolCalls);
+          this.handleToolCalls(fullContent, apiConfig, regenMsgId, requestMode, parsedToolCalls);
           return;
         }
 
@@ -1780,12 +1976,18 @@ ${projectCtx}` : baseSystemPrompt;
           });
         }
 
-        this.upsertAssistantDisplayHistoryMessage(finalDisplayContent, assistantTimestamp, this.getClonedActiveHistoryProcessSummary());
+        const finalProcessSummary = this.getClonedActiveHistoryProcessSummary();
+        this.upsertAssistantDisplayHistoryMessage(finalDisplayContent, assistantTimestamp, finalProcessSummary);
         this.saveChatHistory();
         this.postMessage({ type: 'streamDone', messageId: regenMsgId });
-        if (thinkingElapsed > 1000) {
-          this.postMessage({ type: 'thinkingComplete', messageId: regenMsgId, elapsed: thinkingElapsed });
+        if (finalProcessSummary) {
+          this.postMessage({
+            type: 'showHistoryProcessSummary',
+            messageId: regenMsgId,
+            summary: finalProcessSummary,
+          });
         }
+        this.clearPendingRegenerateState(regenMsgId);
         this.activeRunId = null;
         this.stepSequence = 0;
         this.resetActiveHistoryProcessSummary();
@@ -1798,6 +2000,7 @@ ${projectCtx}` : baseSystemPrompt;
         this.activeRunId = null;
         this.stepSequence = 0;
         this.postMessage({ type: 'setLoading', loading: false });
+        this.rollbackPendingRegenerateState(regenMsgId);
         this.postMessage({ type: 'showError', message: String(err) });
         this.resetActiveHistoryProcessSummary();
       }
@@ -2015,15 +2218,15 @@ ${projectCtx}` : baseSystemPrompt;
    * 读取上下文文件内容，构建注入 Prompt 的文本
    * 读取后清空文件列表（每次发送消息只注入一次）
    */
-  private async buildContextContent(): Promise<string> {
-    if (this.contextFiles.length === 0) {
+  private async buildContextContent(filePaths: string[] = this.contextFiles, clearAfterRead: boolean = true): Promise<string> {
+    if (filePaths.length === 0) {
       return '';
     }
 
     const sections: string[] = [];
     sections.push('## 用户引用的上下文文件\n');
 
-    for (const filePath of this.contextFiles) {
+    for (const filePath of filePaths) {
       try {
         const fileName = filePath.split(/[\\/]/).pop() || filePath;
         const preview = this.readContextFilePreview(filePath);
@@ -2047,8 +2250,9 @@ ${projectCtx}` : baseSystemPrompt;
       }
     }
 
-    // 读取后清空列表
-    this.contextFiles = [];
+    if (clearAfterRead) {
+      this.contextFiles = [];
+    }
 
     return sections.join('\n');
   }
@@ -2130,6 +2334,59 @@ ${projectCtx}` : baseSystemPrompt;
   }
 
   /**
+   * 在裁剪后的历史消息中注入模式变更提醒
+   *
+   * 当历史中存在与当前模式不一致的 AI 回复时（例如历史里 AI 说"我当前处于 Ask 模式"），
+   * 在最后一条 user 消息前插入一条 system 提醒，
+   * 明确告知模型当前模式已变更，避免模型跟随旧历史的模式行为。
+   * 如果历史中不存在模式冲突，则不注入（零额外 token 开销）。
+   *
+   * @param history 裁剪后的历史消息数组（不含首条 system prompt）
+   * @param requestMode 本次请求冻结的工作模式
+   * @returns 可能注入了提醒的消息数组（原数组不会被修改）
+   */
+  private injectModeReminder(history: ChatMessageParam[], requestMode: WorkMode): ChatMessageParam[] {
+    const modeLabels: Record<string, string> = { code: 'Code', ask: 'Ask', plan: 'Plan' };
+    const currentLabel = modeLabels[requestMode] || requestMode;
+    const otherLabels = Object.entries(modeLabels)
+      .filter(([k]) => k !== requestMode)
+      .map(([, v]) => v);
+
+    // 只检查 assistant 消息是否提及了其他模式
+    const hasMismatch = history.some(msg => {
+      if (msg.role !== 'assistant') { return false; }
+      const text = typeof msg.content === 'string' ? msg.content : '';
+      return otherLabels.some(label => text.includes(`${label} 模式`));
+    });
+
+    if (!hasMismatch) { return history; }
+
+    // 找到最后一条 user 消息的位置，在其前面插入提醒
+    const result = [...history];
+    let lastUserIdx = -1;
+    for (let i = result.length - 1; i >= 0; i--) {
+      if (result[i].role === 'user') {
+        lastUserIdx = i;
+        break;
+      }
+    }
+
+    const reminder: ChatMessageParam = {
+      role: 'system',
+      content: `[重要模式变更提醒] 用户已切换到 ${currentLabel} 模式。请忽略之前对话中关于其他模式的描述，严格按照当前 ${currentLabel} 模式的能力和规则来回应。`,
+    };
+
+    if (lastUserIdx >= 0) {
+      result.splice(lastUserIdx, 0, reminder);
+    } else {
+      result.push(reminder);
+    }
+
+    info('注入模式变更提醒', { requestMode, mismatchDetected: true, insertPosition: lastUserIdx });
+    return result;
+  }
+
+  /**
    * 将对话历史持久化到 globalState
    * 每次消息变更后调用，保证重启后可恢复
    */
@@ -2183,7 +2440,7 @@ ${projectCtx}` : baseSystemPrompt;
     }
 
     const displayHistory = Array.isArray(session.displayHistory)
-      ? session.displayHistory
+      ? this.sanitizeDisplayHistory(session.displayHistory)
       : this.buildDisplayHistoryFromRawHistory(session.history);
 
     session.displayHistory = displayHistory;
@@ -2193,8 +2450,76 @@ ${projectCtx}` : baseSystemPrompt;
   private set displayHistory(value: ChatSessionDisplayMessage[]) {
     const session = this.getActiveSession();
     if (session) {
-      session.displayHistory = value;
+      session.displayHistory = this.sanitizeDisplayHistory(value);
     }
+  }
+
+  private cloneDisplayHistoryMessages(displayHistory: ChatSessionDisplayMessage[]): ChatSessionDisplayMessage[] {
+    return displayHistory.map(message => ({
+      ...message,
+      processSummary: message.processSummary
+        ? this.cloneHistoryProcessSummary(message.processSummary)
+        : undefined,
+    }));
+  }
+
+  private getLastAssistantDisplayHistoryMessage(displayHistory: ChatSessionDisplayMessage[]): ChatSessionDisplayMessage | undefined {
+    for (let i = displayHistory.length - 1; i >= 0; i--) {
+      if (displayHistory[i].role === 'assistant') {
+        return displayHistory[i];
+      }
+    }
+
+    return undefined;
+  }
+
+  private clearPendingRegenerateState(runId: string): void {
+    if (!this.pendingRegenerateState || this.pendingRegenerateState.runId !== runId) {
+      return;
+    }
+
+    this.pendingRegenerateState = null;
+  }
+
+  private rollbackPendingRegenerateState(runId: string): boolean {
+    if (!this.pendingRegenerateState || this.pendingRegenerateState.runId !== runId) {
+      return false;
+    }
+
+    const pendingState = this.pendingRegenerateState;
+    this.pendingRegenerateState = null;
+
+    this.chatHistory = pendingState.history as ChatMessageParam[];
+    this.displayHistory = this.cloneDisplayHistoryMessages(pendingState.displayHistory);
+    this.saveChatHistory();
+    this.postMessage({ type: 'resetMessageState', messageId: pendingState.messageId });
+    this.postMessage({ type: 'updateMessage', messageId: pendingState.messageId, content: pendingState.restoreContent });
+    if (pendingState.restoreProcessSummary) {
+      this.postMessage({
+        type: 'showHistoryProcessSummary',
+        messageId: pendingState.messageId,
+        summary: this.cloneHistoryProcessSummary(pendingState.restoreProcessSummary),
+      });
+    }
+
+    return true;
+  }
+
+  private sanitizeDisplayHistory(displayHistory: ChatSessionDisplayMessage[]): ChatSessionDisplayMessage[] {
+    let hasChanges = false;
+    const normalizedHistory = displayHistory.map(message => {
+      if (!message.processSummary || message.processSummary.totalSteps > 0) {
+        return message;
+      }
+
+      hasChanges = true;
+      return {
+        ...message,
+        processSummary: undefined,
+      };
+    });
+
+    return hasChanges ? normalizedHistory : displayHistory;
   }
 
   private resetActiveHistoryProcessSummary(): void {
@@ -2204,7 +2529,7 @@ ${projectCtx}` : baseSystemPrompt;
   private getClonedActiveHistoryProcessSummary(): HistoryProcessSummary | undefined {
     if (
       !this.activeHistoryProcessSummary
-      || (this.activeHistoryProcessSummary.totalSteps === 0 && typeof this.activeHistoryProcessSummary.thinkingElapsedMs !== 'number')
+      || this.activeHistoryProcessSummary.totalSteps === 0
     ) {
       return undefined;
     }
@@ -2380,13 +2705,16 @@ ${projectCtx}` : baseSystemPrompt;
           ? session.updatedAt
           : (typeof session.createdAt === 'number' ? session.createdAt : Date.now());
         const displayHistory = Array.isArray(session.displayHistory)
-          ? session.displayHistory
+          ? this.sanitizeDisplayHistory(session.displayHistory)
           : this.buildDisplayHistoryFromRawHistory(history);
 
         if (typeof session.updatedAt !== 'number') {
           shouldResave = true;
         }
         if (!Array.isArray(session.history) || !Array.isArray(session.displayHistory)) {
+          shouldResave = true;
+        }
+        if (Array.isArray(session.displayHistory) && displayHistory !== session.displayHistory) {
           shouldResave = true;
         }
 

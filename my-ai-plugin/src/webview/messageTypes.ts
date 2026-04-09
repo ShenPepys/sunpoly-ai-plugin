@@ -58,6 +58,7 @@ export interface ChatSession {
 export interface SendMessageRequest {
   type: 'sendMessage';
   text: string;
+  mode?: WorkMode;
   /** 可选：随消息一起发送的图片附件（base64 DataURL 格式） */
   images?: Array<{ id: string; dataUrl: string; fileName: string; mimeType: string; sizeKB: number }>;
 }
@@ -144,6 +145,12 @@ export interface AnalyzeTerminalErrorRequest {
 /** 用户点击「重新生成」按钮，后端删除最后一条 AI 回复并重新发送 */
 export interface RegenerateRequest {
   type: 'regenerate';
+  assistantMessageId: string;
+}
+
+export interface RetryRequestRequest {
+  type: 'retryRequest';
+  requestId: string;
 }
 
 /**
@@ -207,6 +214,7 @@ export type WebviewMessage =
   | RenameSessionRequest
   | AnalyzeTerminalErrorRequest
   | RegenerateRequest
+  | RetryRequestRequest
   | OpenFilesInIdeRequest
   | OpenSettingsRequest
   | UndoAllChangesRequest
@@ -242,6 +250,7 @@ export interface StreamDoneResponse {
 export interface ShowErrorResponse {
   type: 'showError';
   message: string;
+  retryRequestId?: string;
 }
 
 /** 设置加载状态 */
@@ -281,6 +290,11 @@ export interface ShowHistoryProcessSummaryResponse {
 
 export interface RemoveLastAssistantMessageResponse {
   type: 'removeLastAssistantMessage';
+}
+
+export interface ResetMessageStateResponse {
+  type: 'resetMessageState';
+  messageId: string;
 }
 
 /** 在指定气泡中显示 Thinking 动画 */
@@ -418,6 +432,7 @@ export interface ThinkingCompleteResponse {
   messageId: string;
   /** 思考耗时（毫秒） */
   elapsed: number;
+  isExecutionMessage: boolean;
 }
 
 // ==================== 图片附件（Image Attachment） ====================
@@ -493,6 +508,7 @@ export type ExtensionMessage =
   | UpdateMessageResponse
   | ShowHistoryProcessSummaryResponse
   | RemoveLastAssistantMessageResponse
+  | ResetMessageStateResponse
   | ShowThinkingResponse
   | AddContextFileResponse
   | ClearContextFilesResponse

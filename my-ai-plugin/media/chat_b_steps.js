@@ -158,6 +158,16 @@
     return ensureStepSections(container);
   }
 
+  function findStepSections(messageId) {
+    var messageEl = document.querySelector('[data-message-id="' + messageId + '"]');
+    if (!messageEl) { return null; }
+
+    var container = messageEl.querySelector('.steps-container');
+    if (!container) { return null; }
+
+    return ensureStepSections(container);
+  }
+
   function getMessageIdByElement(el) {
     var messageEl = el && el.closest ? el.closest('[data-message-id]') : null;
     return messageEl ? (messageEl.getAttribute('data-message-id') || '') : '';
@@ -171,6 +181,32 @@
       hintEl.classList.add('is-' + state);
     }
     hintEl.textContent = text || '';
+  }
+
+  function setExecutionResultTitle(resultPanelEl, completed) {
+    if (!resultPanelEl) { return; }
+
+    var titleEl = resultPanelEl.querySelector('.message-result-title');
+    if (!titleEl) {
+      titleEl = document.createElement('div');
+      titleEl.className = 'message-result-title';
+      resultPanelEl.insertBefore(titleEl, resultPanelEl.firstChild || null);
+    }
+
+    titleEl.textContent = completed ? '最终结果' : '最终结果（整理中）';
+  }
+
+  function applyExecutionLayoutState(layout, completed) {
+    if (!layout) { return; }
+
+    setExecutionResultTitle(layout.resultPanelEl, completed);
+    applyExecutionHintState(
+      layout.hintEl,
+      completed
+        ? 'AI 已完成执行，下方是最终结果。'
+        : 'AI 正在执行任务，最终结果会显示在下方。',
+      completed ? 'complete' : 'running'
+    );
   }
 
   function ensureExecutionLayout(messageId, options) {
@@ -196,7 +232,7 @@
     if (!resultPanelEl) {
       resultPanelEl = document.createElement('div');
       resultPanelEl.className = 'message-result-panel';
-      resultPanelEl.innerHTML = '<div class="message-result-title">执行结果</div>';
+      resultPanelEl.innerHTML = '<div class="message-result-title"></div>';
     }
 
     if (resultPanelEl.parentNode !== contentEl) {
@@ -226,13 +262,13 @@
     }
 
     messageEl.classList.add('assistant-execution-layout');
-    applyExecutionHintState(
-      hintEl,
-      normalizedOptions.completed
-        ? 'AI 已完成执行，请查看下方执行结果。'
-        : 'AI 正在执行任务，执行结果会显示在底部。',
-      normalizedOptions.completed ? 'complete' : 'running'
-    );
+    applyExecutionLayoutState({
+      messageEl: messageEl,
+      contentEl: contentEl,
+      hintEl: hintEl,
+      resultPanelEl: resultPanelEl,
+      bodyEl: bodyEl,
+    }, normalizedOptions.completed === true);
 
     return {
       messageEl: messageEl,
@@ -290,7 +326,6 @@
     if (!sections) { return; }
 
     ensureExecutionLayout(messageId, { preserveExistingContent: false, completed: false });
-    setExecutionHint(messageId, 'AI 正在执行任务，执行结果会显示在底部。', 'running');
 
     sections.container.classList.remove('process-panel-complete');
     setProcessPanelCollapsed(sections.container, false);
@@ -412,8 +447,8 @@
     }
   }
 
-  function buildProcessGroupsForMessage(messageId) {
-    var sections = getStepSections(messageId);
+  function buildProcessGroupsForMessage(messageId, existingSections) {
+    var sections = existingSections || getStepSections(messageId);
     if (!sections) { return null; }
 
     var groups = createProcessGroupsState();
@@ -588,6 +623,15 @@
     return parts.join(' · ') || '执行过程';
   }
 
+  function decorateProcessPanelSummaryText(summaryText, isComplete) {
+    var normalizedText = String(summaryText || '').trim();
+    if (!normalizedText || normalizedText === '执行过程') {
+      return isComplete ? '已完成' : '处理中';
+    }
+
+    return (isComplete ? '已完成 · ' : '处理中 · ') + normalizedText;
+  }
+
   function refreshProcessPanel(messageId, processState) {
     var resolvedState = processState || buildProcessGroupsForMessage(messageId);
     var sections = resolvedState ? resolvedState.sections : getStepSections(messageId);
@@ -596,15 +640,17 @@
     var storedSummary = processSummaryStore[messageId];
     var prefixEl = sections.headerEl.querySelector('.process-panel-toggle-prefix');
     var summaryEl = sections.headerEl.querySelector('.process-panel-toggle-summary');
-    var summaryText = storedSummary
+    var rawSummaryText = storedSummary
       ? buildHistoryProcessSummaryText(storedSummary)
       : (resolvedState ? buildLiveProcessSummaryText(resolvedState.groups) : '执行过程');
+    var isComplete = !!storedSummary || sections.container.classList.contains('process-panel-complete');
+    var summaryText = decorateProcessPanelSummaryText(rawSummaryText, isComplete);
     var hasContent = sections.linesEl.children.length > 0
       || sections.groupsEl.children.length > 0
       || sections.detailsEl.children.length > 0;
 
     if (prefixEl) {
-      prefixEl.textContent = storedSummary ? '过程摘要' : '执行过程';
+      prefixEl.textContent = '执行过程';
     }
     if (summaryEl) {
       summaryEl.textContent = summaryText;
@@ -629,17 +675,20 @@
     clearProcessCollapseTimer(messageId);
     processCollapseTimers[messageId] = setTimeout(function () {
       delete processCollapseTimers[messageId];
-      var processState = buildProcessGroupsForMessage(messageId);
-      var sections = processState ? processState.sections : getStepSections(messageId);
+      var existingSections = findStepSections(messageId);
+      if (!existingSections) { return; }
+
+      var processState = buildProcessGroupsForMessage(messageId, existingSections);
+      var sections = processState ? processState.sections : existingSections;
       if (!sections) { return; }
 
+      ensureExecutionLayout(messageId, { preserveExistingContent: true, completed: true });
+      sections.container.classList.add('process-panel-complete');
       refreshProcessPanel(messageId, processState);
       if (sections.container.style.display === 'none') {
         return;
       }
 
-      setExecutionHint(messageId, 'AI 已完成执行，请查看下方执行结果。', 'complete');
-      sections.container.classList.add('process-panel-complete');
       setProcessPanelCollapsed(sections.container, true);
     }, 140);
   }
@@ -788,6 +837,10 @@
    * @param {object} data { messageId, elapsed }
    */
   function showThinkingComplete(data) {
+    if (!data || data.isExecutionMessage !== true) {
+      return;
+    }
+
     var sections = getStepSections(data.messageId);
     if (!sections) { return; }
     activateProcessPanel(data.messageId, sections);
@@ -1824,7 +1877,12 @@
   function showChangeSummary(data) {
     var sections = getStepSections(data.messageId);
     if (!sections) { return; }
-    activateProcessPanel(data.messageId, sections);
+    var keepCompletedState = sections.container.classList.contains('process-panel-complete');
+    if (keepCompletedState) {
+      ensureExecutionLayout(data.messageId, { preserveExistingContent: true, completed: true });
+    } else {
+      activateProcessPanel(data.messageId, sections);
+    }
 
     summaryFilesStore[data.summaryId] = data.files;
 
@@ -1902,6 +1960,10 @@
     bindFileNameClicks(summaryEl);
 
     sections.detailsEl.appendChild(summaryEl);
+    if (keepCompletedState) {
+      refreshProcessPanel(data.messageId);
+      setProcessPanelCollapsed(sections.container, true);
+    }
     scrollToBottom();
   }
 
@@ -2149,6 +2211,67 @@
     processCollapseTimers = {};
   }
 
+  function resetMessageState(messageId) {
+    if (!messageId) {
+      return;
+    }
+
+    clearProcessCollapseTimer(messageId);
+    delete processSummaryStore[messageId];
+
+    var messageEl = document.querySelector('[data-message-id="' + messageId + '"]');
+    if (!messageEl) {
+      return;
+    }
+
+    var contentEl = messageEl.querySelector('.message-content');
+    if (!contentEl) {
+      return;
+    }
+
+    var summaryEls = messageEl.querySelectorAll('.change-summary[data-summary-id]');
+    Array.prototype.forEach.call(summaryEls, function (summaryEl) {
+      var summaryId = summaryEl.getAttribute('data-summary-id') || '';
+      if (!summaryId) { return; }
+      delete summaryFilesStore[summaryId];
+      delete summaryUndoIntentStore[summaryId];
+    });
+
+    var resultPanelEl = contentEl.querySelector('.message-result-panel');
+    var bodyEl = contentEl.querySelector('.message-body');
+    if (!bodyEl && resultPanelEl) {
+      bodyEl = resultPanelEl.querySelector('.message-body');
+    }
+
+    if (bodyEl && bodyEl.parentNode !== contentEl) {
+      var referenceEl = contentEl.querySelector('.message-execution-hint')
+        || contentEl.querySelector('.history-process-summary')
+        || contentEl.querySelector('.steps-container')
+        || contentEl.querySelector('.stream-status')
+        || resultPanelEl;
+      if (referenceEl) {
+        contentEl.insertBefore(bodyEl, referenceEl);
+      } else {
+        contentEl.appendChild(bodyEl);
+      }
+    }
+
+    var removableSelectors = [
+      '.message-execution-hint',
+      '.message-result-panel',
+      '.steps-container',
+      '.history-process-summary'
+    ];
+    removableSelectors.forEach(function (selector) {
+      var nodes = contentEl.querySelectorAll(selector);
+      Array.prototype.forEach.call(nodes, function (node) {
+        node.remove();
+      });
+    });
+
+    messageEl.classList.remove('assistant-execution-layout');
+  }
+
   window.chatSteps = {
     addStep: addStep,
     updateStep: updateStep,
@@ -2161,6 +2284,7 @@
     showHistoryProcessSummary: showHistoryProcessSummary,
     markProcessComplete: markProcessComplete,
     getOrCreateStepsContainer: getOrCreateStepsContainer,
+    resetMessageState: resetMessageState,
     clearStore: clearStore,
   };
 

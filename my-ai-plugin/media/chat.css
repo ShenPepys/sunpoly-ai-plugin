@@ -521,6 +521,8 @@ body {
 
 .message-execution-hint.is-complete {
   color: var(--vscode-foreground);
+  border-color: rgba(115, 201, 145, 0.18);
+  background: rgba(115, 201, 145, 0.08);
 }
 
 .message-result-panel {
@@ -535,6 +537,7 @@ body {
   color: var(--vscode-descriptionForeground, #8b8f98);
   font-size: 11px;
   line-height: 1.4;
+  letter-spacing: 0.02em;
 }
 
 .assistant-execution-layout .message-result-panel .message-body {
@@ -1728,6 +1731,14 @@ body {
 
 .steps-container.process-panel-complete {
   opacity: 0.98;
+}
+
+.steps-container.process-panel-complete .process-panel-toggle-prefix {
+  color: var(--vscode-testing-iconPassed, #73c991);
+}
+
+.steps-container.process-panel-complete .process-panel-toggle-summary {
+  color: var(--vscode-foreground);
 }
 
 .steps-lines {
