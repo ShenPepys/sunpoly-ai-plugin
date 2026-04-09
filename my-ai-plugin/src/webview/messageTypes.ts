@@ -11,6 +11,30 @@
 /** 工作模式类型 */
 export type WorkMode = 'code' | 'ask' | 'plan';
 
+export interface HistoryProcessSummary {
+  thinkingElapsedMs?: number;
+  totalSteps: number;
+  readCount: number;
+  listCount: number;
+  modifyCount: number;
+  createCount: number;
+  failedCount: number;
+  changedFiles: string[];
+}
+
+export interface ChatSessionDisplayMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp?: number;
+  processSummary?: HistoryProcessSummary;
+}
+
+export interface ChatSessionHistoryMessage {
+  role: string;
+  content: unknown;
+  timestamp?: number;
+}
+
 // ==================== 会话数据结构 ====================
 
 /** 单个聊天会话的完整数据，存储到 globalState中 */
@@ -23,7 +47,9 @@ export interface ChatSession {
   createdAt: number;
   updatedAt: number;
   /** 对话历史（OpenAI 消息格式）；timestamp 为可选字段，旧存档没有也不影响加载 */
-  history: Array<{ role: string; content: unknown; timestamp?: number }>;
+  history: ChatSessionHistoryMessage[];
+  /** 历史展示层的持久化快照，用于恢复与导出；旧存档没有也可按 history 自动回填 */
+  displayHistory?: ChatSessionDisplayMessage[];
 }
 
 // ==================== Webview → Extension ====================
@@ -247,6 +273,12 @@ export interface UpdateMessageResponse {
   content: string;
 }
 
+export interface ShowHistoryProcessSummaryResponse {
+  type: 'showHistoryProcessSummary';
+  messageId: string;
+  summary: HistoryProcessSummary;
+}
+
 export interface RemoveLastAssistantMessageResponse {
   type: 'removeLastAssistantMessage';
 }
@@ -459,6 +491,7 @@ export type ExtensionMessage =
   | ClearChatResponse
   | UpdateModelsResponse
   | UpdateMessageResponse
+  | ShowHistoryProcessSummaryResponse
   | RemoveLastAssistantMessageResponse
   | ShowThinkingResponse
   | AddContextFileResponse

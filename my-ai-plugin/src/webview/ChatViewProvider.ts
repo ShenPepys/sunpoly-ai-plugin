@@ -16,7 +16,7 @@ import type { ChatMessageParam } from '../api/types';
 import { buildSystemPrompt } from '../prompts/system';
 import { getEditorContext } from '../utils/editor';
 import { getEnvContext, detectProjectType, getGitStatus, getProjectContext } from '../utils/context';
-import type { ExtensionMessage, WebviewMessage, WorkMode, ChatSession } from './messageTypes';
+import type { ExtensionMessage, WebviewMessage, WorkMode, ChatSession, HistoryProcessSummary, ChatSessionDisplayMessage, ChatSessionHistoryMessage } from './messageTypes';
 import { parseToolCalls, hasToolCalls, stripToolCalls, executeToolCalls, formatToolResults, readFile } from '../tools';
 import { resolveAndValidatePath } from '../tools/fileOps';
 import { readErrorFromClipboard, buildErrorAnalysisPrompt } from '../terminal/terminalCapture';
@@ -121,6 +121,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * 只有多轮（>= 2）才需要全量汇总，单轮多文件已有批次 summary
    */
   private turnWriteRounds: number = 0;
+
+  private activeHistoryProcessSummary: HistoryProcessSummary | null = null;
 
   private estimateTextTokenCount(text: string): number {
     return Math.max(0, Math.round(text.length / 3));
@@ -420,6 +422,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.stepSequence = 0;
         this.toolCallRound = 0;
         this.toolCallsInProgress = false;
+        this.resetActiveHistoryProcessSummary();
         if (this.abortStream) {
           info('用户主动停止生成');
           this.abortStream();
@@ -497,6 +500,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // 每轮对话开始时清空跨轮文件记录和轮次计数器
     this.turnWriteFiles = [];
     this.turnWriteRounds = 0;
+    this.resetActiveHistoryProcessSummary();
 
     // 先在界面上显示用户消息
     const userMsgId = `user-${Date.now()}`;
@@ -559,9 +563,9 @@ ${projectCtx}` : baseSystemPrompt;
 
     // 添加到对话历史并持久化（历史只存文本部分，图片不持久化以节省空间）
     // 通过类型断言写入 timestamp，供导出时标注对话时间
-    (this.chatHistory as { role: string; content: unknown; timestamp?: number }[]).push(
-      { role: 'user', content: userContent, timestamp: Date.now() }
-    );
+    const userTimestamp = Date.now();
+    (this.chatHistory as ChatSessionHistoryMessage[]).push({ role: 'user', content: userContent, timestamp: userTimestamp });
+    this.appendDisplayHistoryUserMessage(userContent, userTimestamp);
     this.saveChatHistory();
 
     // 上下文窗口管理：估算 token 数，超过阈值时截断旧消息
@@ -653,10 +657,11 @@ ${projectCtx}` : baseSystemPrompt;
         }
         this.abortStream = null;
         const thinkingElapsed = Date.now() - streamStartTime;
+        const assistantTimestamp = Date.now();
+        this.recordThinkingElapsedInActiveHistorySummary(thinkingElapsed);
 
         // 将 AI 回复加入对话历史并持久化
-        this.chatHistory.push({ role: 'assistant', content: fullContent });
-        this.saveChatHistory();
+        (this.chatHistory as ChatSessionHistoryMessage[]).push({ role: 'assistant', content: fullContent, timestamp: assistantTimestamp });
         info(`AI 回复完成，长度: ${fullContent.length}，耗时: ${thinkingElapsed}ms`);
 
         const parsedToolCalls = parseToolCalls(fullContent);
@@ -664,6 +669,8 @@ ${projectCtx}` : baseSystemPrompt;
         if (parsedToolCalls.length > 0) {
           // 剥离 tool_call 标签后更新界面显示（用户看不到原始 XML）
           const cleanContent = stripToolCalls(fullContent);
+          this.upsertAssistantDisplayHistoryMessage(cleanContent, assistantTimestamp);
+          this.saveChatHistory();
           this.postMessage({
             type: 'updateMessage',
             messageId: assistantMsgId,
@@ -680,6 +687,7 @@ ${projectCtx}` : baseSystemPrompt;
           // 不能进入工具执行流程，否则前端会残留 loading 状态。
           if (hasToolCalls(fullContent)) {
             const fallbackContent = stripToolCalls(fullContent).trim() || '⚠️ 检测到无效工具调用，未执行任何工具。';
+            this.upsertAssistantDisplayHistoryMessage(fallbackContent, assistantTimestamp);
             this.postMessage({
               type: 'updateMessage',
               messageId: assistantMsgId,
@@ -689,13 +697,17 @@ ${projectCtx}` : baseSystemPrompt;
               type: 'showError',
               message: '检测到无效的工具调用格式，已忽略本次工具执行',
             });
+          } else {
+            this.upsertAssistantDisplayHistoryMessage(fullContent, assistantTimestamp);
           }
+          this.saveChatHistory();
           this.postMessage({ type: 'streamDone', messageId: assistantMsgId });
           if (thinkingElapsed > 1000) {
             this.postMessage({ type: 'thinkingComplete', messageId: assistantMsgId, elapsed: thinkingElapsed });
           }
           this.activeRunId = null;
           this.stepSequence = 0;
+          this.resetActiveHistoryProcessSummary();
         }
       },
       // onError：出错处理
@@ -716,6 +728,7 @@ ${projectCtx}` : baseSystemPrompt;
           type: 'showError',
           message: friendlyMessage,
         });
+        this.resetActiveHistoryProcessSummary();
         error('AI API 调用失败:', errorMessage);
       },
     );
@@ -857,6 +870,7 @@ ${projectCtx}` : baseSystemPrompt;
             writeFailCount += 1;
           }
 
+          this.recordToolStepInActiveHistorySummary(tc, singleResult.result.success, singleResult.result.success ? filePath : undefined);
           this.postMessage({ type: 'updateStep', stepId, status: singleResult.result.success ? 'done' : 'error', elapsed });
           continue;
         }
@@ -866,6 +880,7 @@ ${projectCtx}` : baseSystemPrompt;
         const singleResult = result[0];
         results.push(singleResult);
         const elapsed = Date.now() - startTime;
+        this.recordToolStepInActiveHistorySummary(tc, singleResult.result.success);
         this.postMessage({ type: 'updateStep', stepId, status: singleResult.result.success ? 'done' : 'error', elapsed });
       }
 
@@ -937,8 +952,8 @@ ${projectCtx}` : baseSystemPrompt;
             return;
           }
           this.abortStream = null;
-          this.chatHistory.push({ role: 'assistant', content: fullContent });
-          this.saveChatHistory();
+          const assistantTimestamp = Date.now();
+          (this.chatHistory as ChatSessionHistoryMessage[]).push({ role: 'assistant', content: fullContent, timestamp: assistantTimestamp });
           info(`续轮回复完成，长度: ${fullContent.length}`);
 
           const parsedToolCalls = parseToolCalls(fullContent);
@@ -946,11 +961,15 @@ ${projectCtx}` : baseSystemPrompt;
           if (parsedToolCalls.length > 0) {
             this.postMessage({ type: 'streamDone', messageId: reuseMsgId });
             const cleanContent = stripToolCalls(fullContent);
+            this.upsertAssistantDisplayHistoryMessage(cleanContent, assistantTimestamp);
+            this.saveChatHistory();
             this.postMessage({ type: 'updateMessage', messageId: reuseMsgId, content: cleanContent });
             this.postMessage({ type: 'setLoading', loading: true });
             if (this.toolCallRound < 10) {
               this.handleToolCalls(fullContent, apiConfig, reuseMsgId, parsedToolCalls);
             } else {
+              this.upsertAssistantDisplayHistoryMessage(cleanContent, assistantTimestamp, this.getClonedActiveHistoryProcessSummary());
+              this.saveChatHistory();
               this.postMessage({
                 type: 'showError',
                 message: '工具调用轮次过多（已达 10 轮），已停止继续执行。请缩小任务范围后重试。',
@@ -958,21 +977,27 @@ ${projectCtx}` : baseSystemPrompt;
               this.postMessage({ type: 'setLoading', loading: false });
               this.activeRunId = null;
               this.stepSequence = 0;
+              this.resetActiveHistoryProcessSummary();
             }
           } else {
+            let finalDisplayContent = fullContent;
             if (hasToolCalls(fullContent)) {
               const fallbackContent = stripToolCalls(fullContent).trim() || '⚠️ 检测到无效工具调用，未执行任何工具。';
+              finalDisplayContent = fallbackContent;
               this.postMessage({ type: 'updateMessage', messageId: reuseMsgId, content: fallbackContent });
               this.postMessage({
                 type: 'showError',
                 message: '检测到无效的工具调用格式，已忽略本次工具执行',
               });
             }
+            this.upsertAssistantDisplayHistoryMessage(finalDisplayContent, assistantTimestamp, this.getClonedActiveHistoryProcessSummary());
+            this.saveChatHistory();
             this.postMessage({ type: 'streamDone', messageId: reuseMsgId });
             // 所有工具调用轮次结束，若本轮有 2+ 文件变更则发送全量汇总
             this.maybeSendFinalTurnSummary(reuseMsgId);
             this.activeRunId = null;
             this.stepSequence = 0;
+            this.resetActiveHistoryProcessSummary();
           }
         },
         (errorMessage) => {
@@ -982,9 +1007,12 @@ ${projectCtx}` : baseSystemPrompt;
           this.abortStream = null;
           this.activeRunId = null;
           this.stepSequence = 0;
+          this.upsertAssistantDisplayHistoryMessage('⚠️ 工具执行出错，请重试。', Date.now(), this.getClonedActiveHistoryProcessSummary());
+          this.saveChatHistory();
           this.postMessage({ type: 'streamDone', messageId: reuseMsgId });
           this.postMessage({ type: 'updateMessage', messageId: reuseMsgId, content: '⚠️ 工具执行出错，请重试。' });
           this.postMessage({ type: 'showError', message: errorMessage });
+          this.resetActiveHistoryProcessSummary();
           error('续轮 AI 调用失败:', errorMessage);
         },
       );
@@ -1634,6 +1662,7 @@ ${projectCtx}` : baseSystemPrompt;
 
     // 剔除最后一条 assistant 消息（最后一轮从用户消息开始重做）
     this.chatHistory = history.slice(0, lastAssistantIdx);
+    this.removeLastAssistantDisplayHistoryMessage();
     this.saveChatHistory();
     this.postMessage({ type: 'removeLastAssistantMessage' });
 
@@ -1650,6 +1679,7 @@ ${projectCtx}` : baseSystemPrompt;
     // 重新生成也是新的一轮，清空跨轮文件记录和轮次计数器
     this.turnWriteFiles = [];
     this.turnWriteRounds = 0;
+    this.resetActiveHistoryProcessSummary();
     this.postMessage({ type: 'setLoading', loading: true });
 
     const apiKey = await ensureApiKey();
@@ -1718,14 +1748,17 @@ ${projectCtx}` : baseSystemPrompt;
         }
         this.abortStream = null;
         const thinkingElapsed = Date.now() - streamStartTime;
-        this.chatHistory.push({ role: 'assistant', content: fullContent });
-        this.saveChatHistory();
+        const assistantTimestamp = Date.now();
+        this.recordThinkingElapsedInActiveHistorySummary(thinkingElapsed);
+        (this.chatHistory as ChatSessionHistoryMessage[]).push({ role: 'assistant', content: fullContent, timestamp: assistantTimestamp });
         info('重新生成完成，长度:', fullContent.length);
 
         const parsedToolCalls = parseToolCalls(fullContent);
 
         if (parsedToolCalls.length > 0) {
           const cleanContent = stripToolCalls(fullContent);
+          this.upsertAssistantDisplayHistoryMessage(cleanContent, assistantTimestamp);
+          this.saveChatHistory();
           this.postMessage({ type: 'updateMessage', messageId: regenMsgId, content: cleanContent });
           this.postMessage({ type: 'streamDone', messageId: regenMsgId });
           if (thinkingElapsed > 1000) {
@@ -1736,8 +1769,10 @@ ${projectCtx}` : baseSystemPrompt;
           return;
         }
 
+        let finalDisplayContent = fullContent;
         if (hasToolCalls(fullContent)) {
           const fallbackContent = stripToolCalls(fullContent).trim() || '⚠️ 检测到无效工具调用，未执行任何工具。';
+          finalDisplayContent = fallbackContent;
           this.postMessage({ type: 'updateMessage', messageId: regenMsgId, content: fallbackContent });
           this.postMessage({
             type: 'showError',
@@ -1745,12 +1780,15 @@ ${projectCtx}` : baseSystemPrompt;
           });
         }
 
+        this.upsertAssistantDisplayHistoryMessage(finalDisplayContent, assistantTimestamp, this.getClonedActiveHistoryProcessSummary());
+        this.saveChatHistory();
         this.postMessage({ type: 'streamDone', messageId: regenMsgId });
         if (thinkingElapsed > 1000) {
           this.postMessage({ type: 'thinkingComplete', messageId: regenMsgId, elapsed: thinkingElapsed });
         }
         this.activeRunId = null;
         this.stepSequence = 0;
+        this.resetActiveHistoryProcessSummary();
       },
       (err: unknown) => {
         if (this.activeRunId !== regenMsgId) {
@@ -1761,6 +1799,7 @@ ${projectCtx}` : baseSystemPrompt;
         this.stepSequence = 0;
         this.postMessage({ type: 'setLoading', loading: false });
         this.postMessage({ type: 'showError', message: String(err) });
+        this.resetActiveHistoryProcessSummary();
       }
     );
   }
@@ -2041,6 +2080,8 @@ ${projectCtx}` : baseSystemPrompt;
    */
   public clearHistory(): void {
     this.chatHistory = [];
+    this.displayHistory = [];
+    this.activeHistoryProcessSummary = null;
     this.saveChatHistory();
     info('对话历史已清空');
   }
@@ -2093,6 +2134,11 @@ ${projectCtx}` : baseSystemPrompt;
    * 每次消息变更后调用，保证重启后可恢复
    */
   private saveChatHistory(): void {
+    const activeSession = this.getActiveSession();
+    if (activeSession && !Array.isArray(activeSession.displayHistory)) {
+      activeSession.displayHistory = this.buildDisplayHistoryFromRawHistory(activeSession.history);
+    }
+
     // 历史已经包含在当前会话里，直接保存整个会话列表即可
     this.touchSession();
     this.saveSessions();
@@ -2128,6 +2174,147 @@ ${projectCtx}` : baseSystemPrompt;
 
   private getActiveSession(): ChatSession | undefined {
     return this.sessions.find(s => s.id === this.activeSessionId);
+  }
+
+  private get displayHistory(): ChatSessionDisplayMessage[] {
+    const session = this.getActiveSession();
+    if (!session) {
+      return [];
+    }
+
+    const displayHistory = Array.isArray(session.displayHistory)
+      ? session.displayHistory
+      : this.buildDisplayHistoryFromRawHistory(session.history);
+
+    session.displayHistory = displayHistory;
+    return displayHistory;
+  }
+
+  private set displayHistory(value: ChatSessionDisplayMessage[]) {
+    const session = this.getActiveSession();
+    if (session) {
+      session.displayHistory = value;
+    }
+  }
+
+  private resetActiveHistoryProcessSummary(): void {
+    this.activeHistoryProcessSummary = null;
+  }
+
+  private getClonedActiveHistoryProcessSummary(): HistoryProcessSummary | undefined {
+    if (
+      !this.activeHistoryProcessSummary
+      || (this.activeHistoryProcessSummary.totalSteps === 0 && typeof this.activeHistoryProcessSummary.thinkingElapsedMs !== 'number')
+    ) {
+      return undefined;
+    }
+
+    return this.cloneHistoryProcessSummary(this.activeHistoryProcessSummary);
+  }
+
+  private recordThinkingElapsedInActiveHistorySummary(elapsedMs: number): void {
+    if (elapsedMs <= 1000) {
+      return;
+    }
+
+    if (!this.activeHistoryProcessSummary) {
+      this.activeHistoryProcessSummary = this.createHistoryProcessSummary();
+    }
+
+    this.activeHistoryProcessSummary.thinkingElapsedMs = elapsedMs;
+  }
+
+  private appendDisplayHistoryUserMessage(content: unknown, timestamp?: number): void {
+    const displayContent = this.getUserDisplayContent(content);
+    if (!displayContent.trim()) {
+      return;
+    }
+
+    this.displayHistory.push({
+      role: 'user',
+      content: displayContent,
+      timestamp,
+    });
+  }
+
+  private upsertAssistantDisplayHistoryMessage(
+    content: unknown,
+    timestamp?: number,
+    processSummary?: HistoryProcessSummary,
+  ): void {
+    const displayContent = this.getAssistantDisplayContent(content);
+    if (!displayContent.trim()) {
+      return;
+    }
+
+    const summaryCopy = processSummary ? this.cloneHistoryProcessSummary(processSummary) : undefined;
+    const lastMessage = this.displayHistory[this.displayHistory.length - 1];
+
+    if (lastMessage && lastMessage.role === 'assistant') {
+      lastMessage.content = displayContent;
+      lastMessage.timestamp = timestamp ?? lastMessage.timestamp;
+      if (summaryCopy) {
+        lastMessage.processSummary = summaryCopy;
+      } else {
+        delete lastMessage.processSummary;
+      }
+      return;
+    }
+
+    this.displayHistory.push({
+      role: 'assistant',
+      content: displayContent,
+      timestamp,
+      processSummary: summaryCopy,
+    });
+  }
+
+  private removeLastAssistantDisplayHistoryMessage(): void {
+    for (let i = this.displayHistory.length - 1; i >= 0; i--) {
+      if (this.displayHistory[i].role === 'assistant') {
+        this.displayHistory.splice(i, 1);
+        return;
+      }
+    }
+  }
+
+  private recordToolStepInActiveHistorySummary(
+    toolCall: ParsedToolCall,
+    success: boolean,
+    changedFilePath?: string,
+  ): void {
+    if (!this.activeHistoryProcessSummary) {
+      this.activeHistoryProcessSummary = this.createHistoryProcessSummary();
+    }
+
+    const summary = this.activeHistoryProcessSummary;
+    summary.totalSteps += 1;
+
+    switch (toolCall.type) {
+      case 'read_file':
+        summary.readCount += 1;
+        break;
+      case 'list_dir':
+        summary.listCount += 1;
+        break;
+      case 'edit_file':
+        summary.modifyCount += 1;
+        break;
+      case 'write_file':
+        summary.createCount += 1;
+        break;
+      default:
+        break;
+    }
+
+    if (!success) {
+      summary.failedCount += 1;
+      return;
+    }
+
+    if (changedFilePath && (toolCall.type === 'write_file' || toolCall.type === 'edit_file')) {
+      this.addChangedFileToHistorySummary(summary, changedFilePath);
+    }
   }
 
   private touchSession(sessionId: string = this.activeSessionId): void {
@@ -2188,17 +2375,26 @@ ${projectCtx}` : baseSystemPrompt;
 
     if (savedSessions && savedSessions.length > 0) {
       this.sessions = savedSessions.map(session => {
+        const history = Array.isArray(session.history) ? session.history : [];
         const updatedAt = typeof session.updatedAt === 'number'
           ? session.updatedAt
           : (typeof session.createdAt === 'number' ? session.createdAt : Date.now());
+        const displayHistory = Array.isArray(session.displayHistory)
+          ? session.displayHistory
+          : this.buildDisplayHistoryFromRawHistory(history);
 
         if (typeof session.updatedAt !== 'number') {
+          shouldResave = true;
+        }
+        if (!Array.isArray(session.history) || !Array.isArray(session.displayHistory)) {
           shouldResave = true;
         }
 
         return {
           ...session,
+          history,
           updatedAt,
+          displayHistory,
         };
       });
       this.sortSessionsByUpdatedAt();
@@ -2212,6 +2408,7 @@ ${projectCtx}` : baseSystemPrompt;
       if (oldHistory && oldHistory.length > 0) {
         const first = this.createSessionObject(this.extractSessionTitleFromHistory(oldHistory));
         first.history = oldHistory;
+        first.displayHistory = this.buildDisplayHistoryFromRawHistory(oldHistory as ChatSessionHistoryMessage[]);
         first.updatedAt = Date.now();
         this.sessions = [first];
         this.activeSessionId = first.id;
@@ -2252,6 +2449,7 @@ ${projectCtx}` : baseSystemPrompt;
       createdAt: now,
       updatedAt: now,
       history: [],
+      displayHistory: [],
     };
   }
 
@@ -2354,9 +2552,9 @@ ${projectCtx}` : baseSystemPrompt;
         name: s.name,
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
-        // 历史消息数：过滤工具反馈中间消息，只计用户和 AI 的回合
-        messageCount: (s.history as Array<{ role: string }>)
-          .filter(m => m.role === 'user' || m.role === 'assistant').length,
+        messageCount: (Array.isArray(s.displayHistory)
+          ? s.displayHistory
+          : this.buildDisplayHistoryFromRawHistory(s.history)).length,
       })),
       activeSessionId: this.activeSessionId,
     });
@@ -2381,7 +2579,7 @@ ${projectCtx}` : baseSystemPrompt;
    * 弹出保存对话框，用户选择保存位置
    */
   private async exportChatToMarkdown(): Promise<void> {
-    if (this.chatHistory.length === 0) {
+    if (this.displayHistory.length === 0) {
       vscode.window.showInformationMessage('当前没有对话可导出');
       return;
     }
@@ -2392,32 +2590,59 @@ ${projectCtx}` : baseSystemPrompt;
     lines.push(`> 导出时间：${new Date().toLocaleString('zh-CN')}`);
     lines.push('');
 
-    // 直接遍历 session.history，该类型包含可选 timestamp 字段
     const session = this.sessions.find(s => s.id === this.activeSessionId);
-    const rawHistory = session ? session.history : [];
+    const displayHistory = session
+      ? (Array.isArray(session.displayHistory)
+        ? session.displayHistory
+        : this.buildDisplayHistoryFromRawHistory(session.history))
+      : [];
 
-    for (const msg of rawHistory) {
-      const content = typeof msg.content === 'string' ? msg.content : '';
-
-      // 跳过工具反馈消息
-      if (msg.role === 'user' && content.startsWith('以下是工具执行结果')) {
-        continue;
-      }
-
+    for (const msg of displayHistory) {
       if (msg.role === 'user') {
-        // 有时间戳时展示在标题后面，方便区分每轮对话发送时间
         const ts = msg.timestamp
           ? `  \`${new Date(msg.timestamp).toLocaleString('zh-CN', { hour12: false })}\``
           : '';
         lines.push(`## 🧑 用户${ts}`);
         lines.push('');
-        // 截断附加的上下文信息
-        const cutIndex = content.indexOf('\n\n## ');
-        lines.push(cutIndex > 0 ? content.substring(0, cutIndex) : content);
+        lines.push(msg.content);
       } else {
-        lines.push('## 🤖 AI');
+        const ts = msg.timestamp
+          ? `  \`${new Date(msg.timestamp).toLocaleString('zh-CN', { hour12: false })}\``
+          : '';
+        lines.push(`## � AI${ts}`);
         lines.push('');
-        lines.push(stripToolCalls(content));
+        lines.push(msg.content);
+
+        if (msg.processSummary) {
+          const summaryParts: string[] = [];
+          if (msg.processSummary.totalSteps > 0) {
+            summaryParts.push(`已执行 ${msg.processSummary.totalSteps} 步`);
+          }
+          if (msg.processSummary.readCount > 0) {
+            summaryParts.push(`读取 ${msg.processSummary.readCount}`);
+          }
+          if (msg.processSummary.listCount > 0) {
+            summaryParts.push(`列目录 ${msg.processSummary.listCount}`);
+          }
+          if (msg.processSummary.modifyCount > 0) {
+            summaryParts.push(`修改 ${msg.processSummary.modifyCount}`);
+          }
+          if (msg.processSummary.createCount > 0) {
+            summaryParts.push(`创建 ${msg.processSummary.createCount}`);
+          }
+          if (msg.processSummary.failedCount > 0) {
+            summaryParts.push(`失败 ${msg.processSummary.failedCount}`);
+          }
+
+          if (summaryParts.length > 0) {
+            lines.push('');
+            lines.push(`> 过程摘要：${summaryParts.join(' · ')}`);
+          }
+
+          if (msg.processSummary.changedFiles.length > 0) {
+            lines.push(`> 改动文件：${msg.processSummary.changedFiles.join('、')}`);
+          }
+        }
       }
       lines.push('');
       lines.push('---');
@@ -2443,51 +2668,219 @@ ${projectCtx}` : baseSystemPrompt;
    * 将持久化的对话历史恢复到 Webview 界面
    * 只显示用户消息和 AI 最终回复（过滤掉工具调用中间消息）
    */
+  private isToolFeedbackMessage(message: { role: string; content: unknown }): boolean {
+    return message.role === 'user'
+      && typeof message.content === 'string'
+      && message.content.startsWith('以下是工具执行结果');
+  }
+
+  private getUserDisplayContent(content: unknown): string {
+    if (typeof content !== 'string') {
+      return '';
+    }
+
+    const cutIndex = content.indexOf('\n\n## ');
+    if (cutIndex > 0) {
+      return content.substring(0, cutIndex);
+    }
+
+    return content;
+  }
+
+  private getAssistantDisplayContent(content: unknown): string {
+    if (typeof content !== 'string') {
+      return '';
+    }
+
+    if (!hasToolCalls(content)) {
+      return content;
+    }
+
+    return stripToolCalls(content);
+  }
+
+  private createHistoryProcessSummary(): HistoryProcessSummary {
+    return {
+      thinkingElapsedMs: undefined,
+      totalSteps: 0,
+      readCount: 0,
+      listCount: 0,
+      modifyCount: 0,
+      createCount: 0,
+      failedCount: 0,
+      changedFiles: [],
+    };
+  }
+
+  private cloneHistoryProcessSummary(summary: HistoryProcessSummary): HistoryProcessSummary {
+    return {
+      thinkingElapsedMs: summary.thinkingElapsedMs,
+      totalSteps: summary.totalSteps,
+      readCount: summary.readCount,
+      listCount: summary.listCount,
+      modifyCount: summary.modifyCount,
+      createCount: summary.createCount,
+      failedCount: summary.failedCount,
+      changedFiles: [...summary.changedFiles],
+    };
+  }
+
+  private addChangedFileToHistorySummary(summary: HistoryProcessSummary, filePath: string): void {
+    const displayPath = this.getDisplayPath(filePath);
+    if (!summary.changedFiles.includes(displayPath)) {
+      summary.changedFiles.push(displayPath);
+    }
+  }
+
+  private getToolResultSuccessStates(content: unknown): boolean[] {
+    if (typeof content !== 'string') {
+      return [];
+    }
+
+    return Array.from(content.matchAll(/\*\*(✅ 成功|❌ 失败)\*\*/g), match => match[1] === '✅ 成功');
+  }
+
+  private addToolRoundToHistorySummary(
+    summary: HistoryProcessSummary,
+    assistantContent: unknown,
+    toolFeedbackContent?: unknown,
+  ): void {
+    if (typeof assistantContent !== 'string') {
+      return;
+    }
+
+    const toolCalls = parseToolCalls(assistantContent);
+    if (toolCalls.length === 0) {
+      return;
+    }
+
+    summary.totalSteps += toolCalls.length;
+
+    for (const toolCall of toolCalls) {
+      switch (toolCall.type) {
+        case 'read_file':
+          summary.readCount += 1;
+          break;
+        case 'list_dir':
+          summary.listCount += 1;
+          break;
+        case 'edit_file':
+          summary.modifyCount += 1;
+          break;
+        case 'write_file':
+          summary.createCount += 1;
+          break;
+        default:
+          break;
+      }
+    }
+
+    const successStates = this.getToolResultSuccessStates(toolFeedbackContent);
+    for (let i = 0; i < toolCalls.length; i++) {
+      const toolCall = toolCalls[i];
+      const isSuccess = successStates[i];
+
+      if (isSuccess === false) {
+        summary.failedCount += 1;
+      }
+
+      if (isSuccess === true && (toolCall.type === 'write_file' || toolCall.type === 'edit_file')) {
+        this.addChangedFileToHistorySummary(summary, toolCall.path);
+      }
+    }
+  }
+
+  private buildDisplayHistoryFromRawHistory(rawHistory: ChatSessionHistoryMessage[]): ChatSessionDisplayMessage[] {
+    const displayHistory: ChatSessionDisplayMessage[] = [];
+
+    for (let i = 0; i < rawHistory.length; i++) {
+      const currentMessage = rawHistory[i];
+
+      if (this.isToolFeedbackMessage(currentMessage)) {
+        continue;
+      }
+
+      if (currentMessage.role === 'user') {
+        const userContent = this.getUserDisplayContent(currentMessage.content);
+        if (userContent.trim()) {
+          displayHistory.push({
+            role: 'user',
+            content: userContent,
+            timestamp: currentMessage.timestamp,
+          });
+        }
+        continue;
+      }
+
+      if (currentMessage.role !== 'assistant') {
+        continue;
+      }
+
+      const processSummary = this.createHistoryProcessSummary();
+      let finalAssistantMessage = currentMessage;
+      let roundAssistantMessage = currentMessage;
+      let cursor = i;
+
+      while (true) {
+        const nextMessage = rawHistory[cursor + 1];
+        const followUpAssistant = rawHistory[cursor + 2];
+
+        if (!nextMessage || !followUpAssistant || !this.isToolFeedbackMessage(nextMessage) || followUpAssistant.role !== 'assistant') {
+          this.addToolRoundToHistorySummary(processSummary, roundAssistantMessage.content);
+          break;
+        }
+
+        this.addToolRoundToHistorySummary(processSummary, roundAssistantMessage.content, nextMessage.content);
+        finalAssistantMessage = followUpAssistant;
+        roundAssistantMessage = followUpAssistant;
+        cursor += 2;
+      }
+
+      i = cursor;
+
+      const assistantContent = this.getAssistantDisplayContent(finalAssistantMessage.content);
+      if (assistantContent.trim()) {
+        displayHistory.push({
+          role: 'assistant',
+          content: assistantContent,
+          timestamp: finalAssistantMessage.timestamp,
+          processSummary: processSummary.totalSteps > 0 ? this.cloneHistoryProcessSummary(processSummary) : undefined,
+        });
+      }
+    }
+
+    return displayHistory;
+  }
+
   private restoreHistoryToWebview(): void {
     if (this.sessionLauncherVisible) {
       return;
     }
 
-    if (this.chatHistory.length === 0) {
+    if (this.displayHistory.length === 0) {
       return;
     }
 
-    info(`恢复 ${this.chatHistory.length} 条历史消息到界面`);
+    const restoredMessages = this.displayHistory;
+    info(`恢复 ${restoredMessages.length} 条历史消息到界面（原始 ${this.chatHistory.length} 条）`);
 
-    for (let i = 0; i < this.chatHistory.length; i++) {
-      const msg = this.chatHistory[i];
-
-      // 跳过工具反馈消息（包含"工具执行结果"的 user 消息是系统注入的，不应显示）
-      if (msg.role === 'user' && typeof msg.content === 'string' && msg.content.startsWith('以下是工具执行结果')) {
-        continue;
-      }
-
-      // AI 回复：剥离 tool_call 标签后显示
-      let displayContent = typeof msg.content === 'string' ? msg.content : '';
-      if (msg.role === 'assistant' && hasToolCalls(displayContent)) {
-        displayContent = stripToolCalls(displayContent);
-        // 如果剥离后为空（纯工具调用无文字），跳过
-        if (!displayContent.trim()) {
-          continue;
-        }
-      }
-
-      // 用户消息：只显示原始文本（截断附加的上下文/代码片段）
-      if (msg.role === 'user') {
-        // 截断 "## 当前选中的代码" 及之后的附加内容
-        const cutIndex = displayContent.indexOf('\n\n## ');
-        if (cutIndex > 0) {
-          displayContent = displayContent.substring(0, cutIndex);
-        }
-      }
-
+    for (let i = 0; i < restoredMessages.length; i++) {
+      const restoredMessage = restoredMessages[i];
       const msgId = `restored-${i}-${Date.now()}`;
       this.postMessage({
         type: 'addMessage',
-        role: msg.role as 'user' | 'assistant',
-        content: displayContent,
+        role: restoredMessage.role,
+        content: restoredMessage.content,
         messageId: msgId,
       });
+
+      if (restoredMessage.role === 'assistant' && restoredMessage.processSummary) {
+        this.postMessage({
+          type: 'showHistoryProcessSummary',
+          messageId: msgId,
+          summary: restoredMessage.processSummary,
+        });
+      }
     }
   }
 
@@ -2512,6 +2905,29 @@ ${projectCtx}` : baseSystemPrompt;
 
     // CSP nonce：防止 XSS 注入，只允许带有此 nonce 的脚本执行
     const nonce = getNonce();
+    const shouldShowWelcomeOnInitialRender = !this.sessionLauncherVisible && this.displayHistory.length === 0;
+    const initialMessagesHtml = shouldShowWelcomeOnInitialRender
+      ? `<div class="welcome-message">
+        <p><strong>👋 你好！我是 ${getPanelTitle()}</strong></p>
+        <div class="welcome-section">
+          <p class="welcome-subtitle">快捷键</p>
+          <div class="welcome-shortcuts">
+            <div class="shortcut-item"><kbd>Alt</kbd>+<kbd>Q</kbd><span>聚焦聊天</span></div>
+            <div class="shortcut-item"><kbd>Alt</kbd>+<kbd>E</kbd><span>解释代码</span></div>
+            <div class="shortcut-item"><kbd>Alt</kbd>+<kbd>F</kbd><span>修复代码</span></div>
+            <div class="shortcut-item"><kbd>Alt</kbd>+<kbd>M</kbd><span>切换模式</span></div>
+          </div>
+        </div>
+        <div class="welcome-section">
+          <p class="welcome-subtitle">快速操作</p>
+          <div class="welcome-shortcuts">
+            <div class="shortcut-item"><kbd>@</kbd><span>引用工作区文件</span></div>
+            <div class="shortcut-item"><kbd>/</kbd><span>Slash 快捷命令</span></div>
+          </div>
+        </div>
+        <p class="welcome-hint">选中代码后右键也可使用 AI 功能</p>
+      </div>`
+      : '';
 
     return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -2543,26 +2959,7 @@ ${projectCtx}` : baseSystemPrompt;
     </div>
     <!-- 消息列表区域 -->
     <div id="messages">
-      <div class="welcome-message">
-        <p><strong>👋 你好！我是 ${getPanelTitle()}</strong></p>
-        <div class="welcome-section">
-          <p class="welcome-subtitle">快捷键</p>
-          <div class="welcome-shortcuts">
-            <div class="shortcut-item"><kbd>Alt</kbd>+<kbd>Q</kbd><span>聚焦聊天</span></div>
-            <div class="shortcut-item"><kbd>Alt</kbd>+<kbd>E</kbd><span>解释代码</span></div>
-            <div class="shortcut-item"><kbd>Alt</kbd>+<kbd>F</kbd><span>修复代码</span></div>
-            <div class="shortcut-item"><kbd>Alt</kbd>+<kbd>M</kbd><span>切换模式</span></div>
-          </div>
-        </div>
-        <div class="welcome-section">
-          <p class="welcome-subtitle">快速操作</p>
-          <div class="welcome-shortcuts">
-            <div class="shortcut-item"><kbd>@</kbd><span>引用工作区文件</span></div>
-            <div class="shortcut-item"><kbd>/</kbd><span>Slash 快捷命令</span></div>
-          </div>
-        </div>
-        <p class="welcome-hint">选中代码后右键也可使用 AI 功能</p>
-      </div>
+      ${initialMessagesHtml}
     </div>
 
     <!-- 加载指示器 -->
@@ -2669,7 +3066,6 @@ ${projectCtx}` : baseSystemPrompt;
           </button>
           <button id="btn-new-session" class="toolbar-icon-btn session-new-btn" title="新建对话 (Ctrl+Shift+N)">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-            <span style="margin-left:3px;font-size:12px;">新建</span>
           </button>
           <button id="btn-clear" class="toolbar-icon-btn" title="清空对话">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6"/></svg>

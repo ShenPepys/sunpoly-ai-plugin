@@ -694,6 +694,14 @@
         updateMessageContent(message.messageId, message.content);
         break;
 
+      case 'showHistoryProcessSummary':
+        if (window.chatSteps && window.chatSteps.showHistoryProcessSummary) {
+          window.chatSteps.showHistoryProcessSummary(message);
+        } else {
+          showHistoryProcessSummary(message.messageId, message.summary);
+        }
+        break;
+
       case 'removeLastAssistantMessage':
         removeLastAssistantMessage();
         break;
@@ -839,6 +847,143 @@
 
     messagesContainer.appendChild(messageEl);
     scrollToBottom();
+  }
+
+  function getOrCreateHistoryProcessSummary(messageId) {
+    var messageEl = messagesContainer.querySelector('[data-message-id="' + messageId + '"]');
+    if (!messageEl) {
+      return null;
+    }
+
+    var contentEl = messageEl.querySelector('.message-content');
+    if (!contentEl) {
+      return null;
+    }
+
+    var summaryEl = contentEl.querySelector('.history-process-summary');
+    if (!summaryEl) {
+      summaryEl = document.createElement('div');
+      summaryEl.className = 'history-process-summary';
+
+      var stepsEl = contentEl.querySelector('.steps-container');
+      var statusEl = contentEl.querySelector('.stream-status');
+      if (stepsEl) {
+        contentEl.insertBefore(summaryEl, stepsEl);
+      } else if (statusEl) {
+        contentEl.insertBefore(summaryEl, statusEl);
+      } else {
+        contentEl.appendChild(summaryEl);
+      }
+    }
+
+    return summaryEl;
+  }
+
+  function buildHistoryProcessSummaryText(summary) {
+    var parts = [];
+
+    if (summary.totalSteps > 0) {
+      parts.push('已执行 ' + summary.totalSteps + ' 步');
+    }
+    if (summary.readCount > 0) {
+      parts.push('读取 ' + summary.readCount);
+    }
+    if (summary.listCount > 0) {
+      parts.push('列目录 ' + summary.listCount);
+    }
+    if (summary.modifyCount > 0) {
+      parts.push('修改 ' + summary.modifyCount);
+    }
+    if (summary.createCount > 0) {
+      parts.push('创建 ' + summary.createCount);
+    }
+    if (summary.changedFiles && summary.changedFiles.length > 0) {
+      parts.push('改动 ' + summary.changedFiles.length + ' 个文件');
+    }
+    if (summary.failedCount > 0) {
+      parts.push('失败 ' + summary.failedCount + ' 步');
+    }
+
+    return parts.join(' · ') || '查看过程摘要';
+  }
+
+  function buildHistoryProcessMetricItems(summary) {
+    var items = [];
+
+    if (summary.readCount > 0) {
+      items.push({ label: '读取', value: summary.readCount });
+    }
+    if (summary.listCount > 0) {
+      items.push({ label: '列目录', value: summary.listCount });
+    }
+    if (summary.modifyCount > 0) {
+      items.push({ label: '修改', value: summary.modifyCount });
+    }
+    if (summary.createCount > 0) {
+      items.push({ label: '创建', value: summary.createCount });
+    }
+    if (summary.failedCount > 0) {
+      items.push({ label: '失败', value: summary.failedCount, danger: true });
+    }
+
+    return items;
+  }
+
+  function showHistoryProcessSummary(messageId, summary) {
+    if (!summary || !summary.totalSteps) {
+      return;
+    }
+
+    var summaryEl = getOrCreateHistoryProcessSummary(messageId);
+    if (!summaryEl) {
+      return;
+    }
+
+    var summaryText = buildHistoryProcessSummaryText(summary);
+    var metricItems = buildHistoryProcessMetricItems(summary);
+    var metricHtml = metricItems.map(function (item) {
+      return '<span class="history-process-chip' + (item.danger ? ' danger' : '') + '">' +
+        '<span class="history-process-chip-label">' + escapeHtml(item.label) + '</span>' +
+        '<span class="history-process-chip-value">' + item.value + '</span>' +
+      '</span>';
+    }).join('');
+    var filesHtml = '';
+
+    if (summary.changedFiles && summary.changedFiles.length > 0) {
+      filesHtml =
+        '<div class="history-process-files">' +
+          '<div class="history-process-section-title">改动文件</div>' +
+          '<div class="history-process-file-list">' +
+            summary.changedFiles.map(function (filePath) {
+              return '<span class="history-process-file" title="' + escapeAttr(filePath) + '">' + escapeHtml(filePath) + '</span>';
+            }).join('') +
+          '</div>' +
+        '</div>';
+    }
+
+    summaryEl.innerHTML =
+      '<button type="button" class="history-process-toggle" aria-expanded="false" title="展开或折叠过程摘要">' +
+        '<span class="history-process-toggle-text">' + escapeHtml(summaryText) + '</span>' +
+        '<span class="history-process-toggle-icon">▶</span>' +
+      '</button>' +
+      '<div class="history-process-details collapsed">' +
+        '<div class="history-process-section">' +
+          '<div class="history-process-section-title">过程摘要</div>' +
+          '<div class="history-process-metrics">' + metricHtml + '</div>' +
+        '</div>' +
+        filesHtml +
+      '</div>';
+
+    var toggleBtn = summaryEl.querySelector('.history-process-toggle');
+    var detailsEl = summaryEl.querySelector('.history-process-details');
+    var iconEl = summaryEl.querySelector('.history-process-toggle-icon');
+    if (toggleBtn && detailsEl && iconEl) {
+      toggleBtn.addEventListener('click', function () {
+        var collapsed = detailsEl.classList.toggle('collapsed');
+        toggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        iconEl.textContent = collapsed ? '▶' : '▼';
+      });
+    }
   }
 
   /**
@@ -1439,8 +1584,27 @@
     removeAllRegenButtons();
     var doneEl = messagesContainer.querySelector('[data-message-id="' + messageId + '"]');
     if (doneEl && doneEl.classList.contains('assistant')) {
-      addRegenButton(doneEl);
+      addRegenButton(getRelatedUserMessage(doneEl));
     }
+
+    if (window.chatSteps && window.chatSteps.markProcessComplete) {
+      window.chatSteps.markProcessComplete(messageId);
+    }
+  }
+
+  function getRelatedUserMessage(messageEl) {
+    var currentEl = messageEl ? messageEl.previousElementSibling : null;
+    while (currentEl) {
+      if (
+        currentEl.classList
+        && currentEl.classList.contains('message')
+        && currentEl.classList.contains('user')
+      ) {
+        return currentEl;
+      }
+      currentEl = currentEl.previousElementSibling;
+    }
+    return null;
   }
 
   /**
@@ -1449,13 +1613,14 @@
    * @param {Element} messageEl 消息气泡 DOM 元素
    */
   function addRegenButton(messageEl) {
+    if (!messageEl) { return; }
     var actionsEl = messageEl.querySelector('.msg-actions');
     if (!actionsEl) { return; }
 
     var btn = document.createElement('button');
     btn.className = 'btn-regen btn-copy-msg';
-    btn.title = '重新生成此回复';
-    btn.textContent = '↺';
+    btn.title = '重做这句要求';
+    btn.textContent = '重做';
     btn.addEventListener('click', function () {
       vscode.postMessage({ type: 'regenerate' });
     });

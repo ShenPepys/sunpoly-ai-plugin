@@ -23,6 +23,8 @@
    */
   var summaryFilesStore = {};
   var summaryUndoIntentStore = {};
+  var processSummaryStore = {};
+  var processCollapseTimers = {};
 
   // ==================== 步骤容器管理 ====================
 
@@ -44,9 +46,11 @@
     if (!container) {
       container = document.createElement('div');
       container.className = 'steps-container';
-      // 插入到 message-body 之后、stream-status 之前
+      var resultPanelEl = contentEl.querySelector('.message-result-panel');
       var statusEl = contentEl.querySelector('.stream-status');
-      if (statusEl) {
+      if (resultPanelEl) {
+        contentEl.insertBefore(container, resultPanelEl);
+      } else if (statusEl) {
         contentEl.insertBefore(container, statusEl);
       } else {
         contentEl.appendChild(container);
@@ -57,17 +61,39 @@
   }
 
   function ensureStepSections(container) {
-    var linesEl = container.querySelector('.steps-lines');
-    var groupsEl = container.querySelector('.step-process-groups');
-    var detailsEl = container.querySelector('.steps-details');
+    var headerEl = container.querySelector('.process-panel-toggle');
+    var bodyEl = container.querySelector('.process-panel-body');
+    var linesEl = bodyEl ? bodyEl.querySelector('.steps-lines') : container.querySelector('.steps-lines');
+    var groupsEl = bodyEl ? bodyEl.querySelector('.step-process-groups') : container.querySelector('.step-process-groups');
+    var detailsEl = bodyEl ? bodyEl.querySelector('.steps-details') : container.querySelector('.steps-details');
 
-    if (linesEl && groupsEl && detailsEl) {
+    if (headerEl && bodyEl && linesEl && groupsEl && detailsEl) {
       return {
         container: container,
+        headerEl: headerEl,
+        bodyEl: bodyEl,
         linesEl: linesEl,
         groupsEl: groupsEl,
         detailsEl: detailsEl,
       };
+    }
+
+    if (!headerEl) {
+      headerEl = document.createElement('button');
+      headerEl.type = 'button';
+      headerEl.className = 'process-panel-toggle';
+      headerEl.setAttribute('aria-expanded', 'true');
+      headerEl.innerHTML =
+        '<span class="process-panel-toggle-main">' +
+          '<span class="process-panel-toggle-prefix">执行过程</span>' +
+          '<span class="process-panel-toggle-summary">处理中</span>' +
+        '</span>' +
+        '<span class="process-panel-toggle-icon">▼</span>';
+    }
+
+    if (!bodyEl) {
+      bodyEl = document.createElement('div');
+      bodyEl.className = 'process-panel-body';
     }
 
     if (!linesEl) {
@@ -85,7 +111,7 @@
 
     var existingChildren = Array.prototype.slice.call(container.children);
     Array.prototype.forEach.call(existingChildren, function (child) {
-      if (child === linesEl || child === groupsEl || child === detailsEl) { return; }
+      if (child === headerEl || child === bodyEl || child === linesEl || child === groupsEl || child === detailsEl) { return; }
       if (child.classList.contains('step-item') || child.classList.contains('step-thinking')) {
         linesEl.appendChild(child);
       } else {
@@ -93,18 +119,33 @@
       }
     });
 
-    if (linesEl.parentNode !== container) {
-      container.appendChild(linesEl);
+    if (linesEl.parentNode !== bodyEl) {
+      bodyEl.appendChild(linesEl);
     }
-    if (groupsEl.parentNode !== container) {
-      container.appendChild(groupsEl);
+    if (groupsEl.parentNode !== bodyEl) {
+      bodyEl.appendChild(groupsEl);
     }
-    if (detailsEl.parentNode !== container) {
-      container.appendChild(detailsEl);
+    if (detailsEl.parentNode !== bodyEl) {
+      bodyEl.appendChild(detailsEl);
+    }
+    if (headerEl.parentNode !== container) {
+      container.appendChild(headerEl);
+    }
+    if (bodyEl.parentNode !== container) {
+      container.appendChild(bodyEl);
+    }
+
+    if (!headerEl.getAttribute('data-bound')) {
+      headerEl.setAttribute('data-bound', 'true');
+      headerEl.addEventListener('click', function () {
+        setProcessPanelCollapsed(container, !container.classList.contains('process-panel-collapsed'));
+      });
     }
 
     return {
       container: container,
+      headerEl: headerEl,
+      bodyEl: bodyEl,
       linesEl: linesEl,
       groupsEl: groupsEl,
       detailsEl: detailsEl,
@@ -120,6 +161,139 @@
   function getMessageIdByElement(el) {
     var messageEl = el && el.closest ? el.closest('[data-message-id]') : null;
     return messageEl ? (messageEl.getAttribute('data-message-id') || '') : '';
+  }
+
+  function applyExecutionHintState(hintEl, text, state) {
+    if (!hintEl) { return; }
+
+    hintEl.className = 'message-execution-hint';
+    if (state) {
+      hintEl.classList.add('is-' + state);
+    }
+    hintEl.textContent = text || '';
+  }
+
+  function ensureExecutionLayout(messageId, options) {
+    var normalizedOptions = options || {};
+    var messageEl = document.querySelector('[data-message-id="' + messageId + '"]');
+    if (!messageEl || !messageEl.classList.contains('assistant')) {
+      return null;
+    }
+
+    var contentEl = messageEl.querySelector('.message-content');
+    var bodyEl = contentEl ? contentEl.querySelector('.message-body') : null;
+    if (!contentEl || !bodyEl) {
+      return null;
+    }
+
+    var hintEl = contentEl.querySelector('.message-execution-hint');
+    if (!hintEl) {
+      hintEl = document.createElement('div');
+      hintEl.className = 'message-execution-hint';
+    }
+
+    var resultPanelEl = contentEl.querySelector('.message-result-panel');
+    if (!resultPanelEl) {
+      resultPanelEl = document.createElement('div');
+      resultPanelEl.className = 'message-result-panel';
+      resultPanelEl.innerHTML = '<div class="message-result-title">执行结果</div>';
+    }
+
+    if (resultPanelEl.parentNode !== contentEl) {
+      var statusEl = contentEl.querySelector('.stream-status');
+      if (statusEl) {
+        contentEl.insertBefore(resultPanelEl, statusEl);
+      } else {
+        contentEl.appendChild(resultPanelEl);
+      }
+    }
+
+    if (bodyEl.parentNode !== resultPanelEl) {
+      resultPanelEl.appendChild(bodyEl);
+    }
+
+    if (hintEl.parentNode !== contentEl) {
+      var stepsContainerEl = contentEl.querySelector('.steps-container');
+      if (stepsContainerEl) {
+        contentEl.insertBefore(hintEl, stepsContainerEl);
+      } else {
+        contentEl.insertBefore(hintEl, resultPanelEl);
+      }
+    }
+
+    if (!normalizedOptions.preserveExistingContent && !String(bodyEl.textContent || '').trim()) {
+      bodyEl.innerHTML = '<p>执行中，结果整理后会显示在这里。</p>';
+    }
+
+    messageEl.classList.add('assistant-execution-layout');
+    applyExecutionHintState(
+      hintEl,
+      normalizedOptions.completed
+        ? 'AI 已完成执行，请查看下方执行结果。'
+        : 'AI 正在执行任务，执行结果会显示在底部。',
+      normalizedOptions.completed ? 'complete' : 'running'
+    );
+
+    return {
+      messageEl: messageEl,
+      contentEl: contentEl,
+      hintEl: hintEl,
+      resultPanelEl: resultPanelEl,
+      bodyEl: bodyEl,
+    };
+  }
+
+  function setExecutionHint(messageId, text, state) {
+    var messageEl = document.querySelector('[data-message-id="' + messageId + '"]');
+    if (!messageEl || !messageEl.classList.contains('assistant')) {
+      return;
+    }
+
+    var hintEl = messageEl.querySelector('.message-execution-hint');
+    if (!hintEl) {
+      return;
+    }
+
+    applyExecutionHintState(hintEl, text, state);
+  }
+
+  function clearProcessCollapseTimer(messageId) {
+    if (!processCollapseTimers[messageId]) {
+      return;
+    }
+
+    clearTimeout(processCollapseTimers[messageId]);
+    delete processCollapseTimers[messageId];
+  }
+
+  function setProcessPanelCollapsed(container, collapsed) {
+    if (!container) { return; }
+
+    var bodyEl = container.querySelector('.process-panel-body');
+    var headerEl = container.querySelector('.process-panel-toggle');
+    var iconEl = container.querySelector('.process-panel-toggle-icon');
+
+    container.classList.toggle('process-panel-collapsed', collapsed);
+    if (bodyEl) {
+      bodyEl.classList.toggle('collapsed', collapsed);
+    }
+    if (headerEl) {
+      headerEl.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    }
+    if (iconEl) {
+      iconEl.textContent = collapsed ? '▶' : '▼';
+    }
+  }
+
+  function activateProcessPanel(messageId, sections) {
+    clearProcessCollapseTimer(messageId);
+    if (!sections) { return; }
+
+    ensureExecutionLayout(messageId, { preserveExistingContent: false, completed: false });
+    setExecutionHint(messageId, 'AI 正在执行任务，执行结果会显示在底部。', 'running');
+
+    sections.container.classList.remove('process-panel-complete');
+    setProcessPanelCollapsed(sections.container, false);
   }
 
   function getProcessKindFromDescription(description) {
@@ -326,22 +500,207 @@
     return html;
   }
 
+  function buildHistoryProcessSummaryText(summary) {
+    var parts = [];
+
+    if (summary && typeof summary.thinkingElapsedMs === 'number' && summary.thinkingElapsedMs > 1000) {
+      parts.push('思考 ' + formatElapsed(summary.thinkingElapsedMs));
+    }
+    if (summary.totalSteps > 0) {
+      parts.push('已执行 ' + summary.totalSteps + ' 步');
+    }
+    if (summary.readCount > 0) {
+      parts.push('读取 ' + summary.readCount);
+    }
+    if (summary.listCount > 0) {
+      parts.push('列目录 ' + summary.listCount);
+    }
+    if (summary.modifyCount > 0) {
+      parts.push('修改 ' + summary.modifyCount);
+    }
+    if (summary.createCount > 0) {
+      parts.push('创建 ' + summary.createCount);
+    }
+    if (summary.changedFiles && summary.changedFiles.length > 0) {
+      parts.push('改动 ' + summary.changedFiles.length + ' 个文件');
+    }
+    if (summary.failedCount > 0) {
+      parts.push('失败 ' + summary.failedCount + ' 步');
+    }
+
+    return parts.join(' · ') || '查看过程摘要';
+  }
+
+  function buildHistoryProcessMetricItems(summary) {
+    var items = [];
+
+    if (summary && typeof summary.thinkingElapsedMs === 'number' && summary.thinkingElapsedMs > 1000) {
+      items.push({ label: '思考', value: formatElapsed(summary.thinkingElapsedMs) });
+    }
+    if (summary.readCount > 0) {
+      items.push({ label: '读取', value: summary.readCount });
+    }
+    if (summary.listCount > 0) {
+      items.push({ label: '列目录', value: summary.listCount });
+    }
+    if (summary.modifyCount > 0) {
+      items.push({ label: '修改', value: summary.modifyCount });
+    }
+    if (summary.createCount > 0) {
+      items.push({ label: '创建', value: summary.createCount });
+    }
+    if (summary.failedCount > 0) {
+      items.push({ label: '失败', value: summary.failedCount, danger: true });
+    }
+
+    return items;
+  }
+
+  function buildLiveProcessSummaryText(groups) {
+    var parts = [];
+
+    if (groups.thinking.items.length > 0) {
+      if (groups.thinking.items.length === 1) {
+        parts.push('思考 ' + groups.thinking.items[0].text);
+      } else {
+        parts.push('思考 ' + groups.thinking.items.length + ' 次');
+      }
+    }
+    if (groups.listing.items.length > 0) {
+      parts.push('列目录 ' + groups.listing.items.length);
+    }
+    if (groups.reading.items.length > 0) {
+      parts.push('读取 ' + groups.reading.items.length);
+    }
+    if (groups.modifying.items.length > 0) {
+      parts.push('修改 ' + groups.modifying.items.length);
+    }
+    if (groups.creating.items.length > 0) {
+      parts.push('创建 ' + groups.creating.items.length);
+    }
+    if (groups.undoing.items.length > 0) {
+      parts.push('撤销 ' + groups.undoing.items.length);
+    }
+    if (groups.failed.items.length > 0) {
+      parts.push('失败 ' + groups.failed.items.length);
+    }
+
+    return parts.join(' · ') || '执行过程';
+  }
+
+  function refreshProcessPanel(messageId, processState) {
+    var resolvedState = processState || buildProcessGroupsForMessage(messageId);
+    var sections = resolvedState ? resolvedState.sections : getStepSections(messageId);
+    if (!sections) { return; }
+
+    var storedSummary = processSummaryStore[messageId];
+    var prefixEl = sections.headerEl.querySelector('.process-panel-toggle-prefix');
+    var summaryEl = sections.headerEl.querySelector('.process-panel-toggle-summary');
+    var summaryText = storedSummary
+      ? buildHistoryProcessSummaryText(storedSummary)
+      : (resolvedState ? buildLiveProcessSummaryText(resolvedState.groups) : '执行过程');
+    var hasContent = sections.linesEl.children.length > 0
+      || sections.groupsEl.children.length > 0
+      || sections.detailsEl.children.length > 0;
+
+    if (prefixEl) {
+      prefixEl.textContent = storedSummary ? '过程摘要' : '执行过程';
+    }
+    if (summaryEl) {
+      summaryEl.textContent = summaryText;
+    }
+
+    sections.container.style.display = hasContent ? '' : 'none';
+    sections.container.classList.toggle('process-panel-history', !!storedSummary);
+  }
+
   function refreshProcessGroups(messageId) {
     var processState = buildProcessGroupsForMessage(messageId);
     if (!processState) { return; }
     processState.sections.groupsEl.innerHTML = renderProcessGroups(processState.groups);
+    refreshProcessPanel(messageId, processState);
   }
 
-  // ==================== 步骤块渲染 ====================
+  function markProcessComplete(messageId) {
+    if (!messageId) {
+      return;
+    }
 
-  /**
-   * 添加一个进度步骤
-   * 
-   * @param {object} data { messageId, stepId, icon, description, status }
-   */
+    clearProcessCollapseTimer(messageId);
+    processCollapseTimers[messageId] = setTimeout(function () {
+      delete processCollapseTimers[messageId];
+      var processState = buildProcessGroupsForMessage(messageId);
+      var sections = processState ? processState.sections : getStepSections(messageId);
+      if (!sections) { return; }
+
+      refreshProcessPanel(messageId, processState);
+      if (sections.container.style.display === 'none') {
+        return;
+      }
+
+      setExecutionHint(messageId, 'AI 已完成执行，请查看下方执行结果。', 'complete');
+      sections.container.classList.add('process-panel-complete');
+      setProcessPanelCollapsed(sections.container, true);
+    }, 140);
+  }
+
+  function showHistoryProcessSummary(data) {
+    if (!data || !data.summary) {
+      return;
+    }
+
+    var sections = getStepSections(data.messageId);
+    if (!sections) { return; }
+
+    ensureExecutionLayout(data.messageId, { preserveExistingContent: true, completed: true });
+
+    var existingSummaryEl = sections.detailsEl.querySelector('.history-process-card');
+    if (existingSummaryEl) {
+      existingSummaryEl.remove();
+    }
+
+    var metricItems = buildHistoryProcessMetricItems(data.summary);
+    var metricHtml = metricItems.map(function (item) {
+      return '<span class="history-process-chip' + (item.danger ? ' danger' : '') + '">' +
+        '<span class="history-process-chip-label">' + escapeHtml(item.label) + '</span>' +
+        '<span class="history-process-chip-value">' + escapeHtml(String(item.value)) + '</span>' +
+      '</span>';
+    }).join('');
+    var filesHtml = '';
+
+    if (data.summary.changedFiles && data.summary.changedFiles.length > 0) {
+      filesHtml =
+        '<div class="history-process-files">' +
+          '<div class="history-process-section-title">改动文件</div>' +
+          '<div class="history-process-file-list">' +
+            data.summary.changedFiles.map(function (filePath) {
+              return '<span class="history-process-file" title="' + escapeHtml(filePath) + '">' + escapeHtml(filePath) + '</span>';
+            }).join('') +
+          '</div>' +
+        '</div>';
+    }
+
+    var summaryEl = document.createElement('div');
+    summaryEl.className = 'history-process-card';
+    summaryEl.innerHTML =
+      '<div class="history-process-section">' +
+        '<div class="history-process-section-title">过程摘要</div>' +
+        '<div class="history-process-metrics">' + metricHtml + '</div>' +
+      '</div>' +
+      filesHtml;
+
+    sections.detailsEl.appendChild(summaryEl);
+    processSummaryStore[data.messageId] = data.summary;
+    refreshProcessPanel(data.messageId);
+    sections.container.classList.add('process-panel-complete');
+    setProcessPanelCollapsed(sections.container, true);
+    scrollToBottom();
+  }
+
   function addStep(data) {
     var sections = getStepSections(data.messageId);
     if (!sections) { return; }
+    activateProcessPanel(data.messageId, sections);
 
     var stepEl = document.createElement('div');
     stepEl.className = 'step-item step-' + data.status;
@@ -431,6 +790,7 @@
   function showThinkingComplete(data) {
     var sections = getStepSections(data.messageId);
     if (!sections) { return; }
+    activateProcessPanel(data.messageId, sections);
 
     // 在步骤容器最前面插入 Thinking 行
     var thinkingEl = document.createElement('div');
@@ -461,6 +821,9 @@
 
     var messageId = getMessageIdByElement(stepEl);
     var sections = messageId ? getStepSections(messageId) : null;
+    if (messageId && sections) {
+      activateProcessPanel(messageId, sections);
+    }
 
     var existingDiffEl = document.querySelector('.diff-block[data-step-id="' + data.stepId + '"]');
     if (existingDiffEl) {
@@ -1389,6 +1752,7 @@
    */
   function cancelAllRunningSteps() {
     var runningSteps = document.querySelectorAll('.step-item.step-running');
+    var completedMessageMap = {};
     Array.prototype.forEach.call(runningSteps, function (stepEl) {
       stepEl.className = 'step-item step-error';
       var iconEl = stepEl.querySelector('.step-icon');
@@ -1406,7 +1770,12 @@
       var messageId = getMessageIdByElement(stepEl);
       if (messageId) {
         refreshProcessGroups(messageId);
+        completedMessageMap[messageId] = true;
       }
+    });
+
+    Object.keys(completedMessageMap).forEach(function (messageId) {
+      markProcessComplete(messageId);
     });
   }
 
@@ -1455,6 +1824,7 @@
   function showChangeSummary(data) {
     var sections = getStepSections(data.messageId);
     if (!sections) { return; }
+    activateProcessPanel(data.messageId, sections);
 
     summaryFilesStore[data.summaryId] = data.files;
 
@@ -1772,6 +2142,11 @@
   function clearStore() {
     summaryFilesStore = {};
     summaryUndoIntentStore = {};
+    processSummaryStore = {};
+    Object.keys(processCollapseTimers).forEach(function (messageId) {
+      clearTimeout(processCollapseTimers[messageId]);
+    });
+    processCollapseTimers = {};
   }
 
   window.chatSteps = {
@@ -1783,6 +2158,8 @@
     updateChangeSummary: updateChangeSummary,
     cancelPendingChangeSummaries: cancelPendingChangeSummaries,
     cancelAllRunningSteps: cancelAllRunningSteps,
+    showHistoryProcessSummary: showHistoryProcessSummary,
+    markProcessComplete: markProcessComplete,
     getOrCreateStepsContainer: getOrCreateStepsContainer,
     clearStore: clearStore,
   };
