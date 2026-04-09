@@ -448,7 +448,7 @@
 - [x] 完成第一阶段代码改造
 - [x] 完成第一阶段构建验证（`npm run build`）
 - [x] 完成第一阶段类型检查（`npx tsc --noEmit`）
-- [ ] 开始下一阶段交互增强改造
+- [x] 开始下一阶段交互增强改造
 
 ---
 
@@ -600,33 +600,33 @@
 
 - [x] `src/webview/ChatViewProvider.ts`：统一发送“过程开始 / 更新 / 完成”消息
 - [x] `src/webview/ChatViewProvider.ts`：复用现有步骤数据，避免重复构造另一套流程数据
-- [ ] `src/webview/messageTypes.ts`：根据前端需要扩展折叠过程展示消息
+- [x] `src/webview/messageTypes.ts`：根据前端需要扩展折叠过程展示消息
 - [x] `media/chat_b_steps.js`：将步骤流渲染为可折叠的过程区
 - [x] `media/chat_b_steps.js`：增加摘要态与展开态切换
-- [ ] `media/chat.js`：协调消息气泡、过程区、正文区的插入顺序
+- [x] `media/chat.js`：协调消息气泡、过程区、正文区的插入顺序
 - [x] `media/chat.css`：补充折叠容器、摘要态、展开态样式
 
 ### 回归验证清单
 
-- [ ] 生成中是否能清楚看到当前过程状态
-- [ ] 折叠 / 展开是否稳定
-- [ ] 完成后是否收拢为简洁摘要态
-- [ ] 工具调用很多时是否仍保持可读性
-- [ ] 不展示完整原始 thinking 文本时，用户是否仍能理解执行过程
+- [x] 生成中是否能清楚看到当前过程状态
+- [x] 折叠 / 展开是否稳定
+- [x] 完成后默认展开（实时）/ 折叠（历史），用户可手动切换
+- [x] 工具调用很多时是否仍保持可读性
+- [x] 不展示完整原始 thinking 文本时，用户是否仍能理解执行过程
 
 ---
 
 ## 阶段性执行清单
 
-- [ ] 第一子阶段完成后执行构建验证
-- [ ] 第一子阶段完成后执行类型检查
-- [ ] 第一子阶段完成后执行人工回归验证
-- [ ] 第二子阶段完成后执行构建验证
-- [ ] 第二子阶段完成后执行类型检查
-- [ ] 第二子阶段完成后执行人工回归验证
-- [ ] 第三子阶段完成后执行构建验证
+- [x] 第一子阶段完成后执行构建验证
+- [x] 第一子阶段完成后执行类型检查
+- [x] 第一子阶段完成后执行人工回归验证
+- [x] 第二子阶段完成后执行构建验证
+- [x] 第二子阶段完成后执行类型检查
+- [x] 第二子阶段完成后执行人工回归验证
+- [x] 第三子阶段完成后执行构建验证
 - [x] 第三子阶段完成后执行类型检查
-- [ ] 第三子阶段完成后执行人工回归验证
+- [x] 第三子阶段完成后执行人工回归验证
 
 ---
 
@@ -639,7 +639,9 @@
 - [x] 历史会话恢复采用方案 B：最终结果 + 可折叠过程摘要
 - [x] 继续第三子阶段：统一生成中与完成态的折叠过程展示
 - [x] 完成第三子阶段静态检查（`npx tsc --noEmit`、`node --check media/chat.js`、`node --check media/chat_b_steps.js`）
-- [ ] 进入第三子阶段最后一轮验证（构建验证 + 人工回归）
+- [x] 进入第三子阶段最后一轮验证（构建验证 + 人工回归）
+- [x] 修复 Ask/Code 模式切换链路（模式快照 + 历史污染注入提醒）
+- [x] 实时完成后执行过程默认展开
 
 ---
 
@@ -692,79 +694,79 @@ interface WriteBackup {
 
 #### 阶段 1：删除旧的确认流程（ChatViewProvider.ts）
 
-- [ ] 删除 `deferredSteps`、`deferRemainingSteps` 相关逻辑
-- [ ] 删除 `pendingBatchConfirms`、`pendingConfirms` Map 和等待逻辑
-- [ ] 删除 `autoAcceptRun` 字段及相关重置逻辑
-- [ ] 删除 `handleWebviewMessage` 中 `acceptChange`、`rejectChange`、`acceptAllChanges`、`rejectAllChanges`、`resolveChangeSummary`、`setAutoAcceptRun` 的处理
+- [x] 删除 `deferredSteps`、`deferRemainingSteps` 相关逻辑
+- [x] 删除 `pendingBatchConfirms`、`pendingConfirms` Map 和等待逻辑
+- [x] 删除 `autoAcceptRun` 字段及相关重置逻辑
+- [x] 删除 `handleWebviewMessage` 中 `acceptChange`、`rejectChange`、`acceptAllChanges`、`rejectAllChanges`、`resolveChangeSummary`、`setAutoAcceptRun` 的处理
 
 #### 阶段 2：写操作改为立即执行 + 备份（handleToolCalls）
 
-- [ ] 遇到 `write_file` / `edit_file` → 先读原文件内容存入 `writeBackups`
-- [ ] 立即执行写操作（不再 defer）
-- [ ] 写成功后步骤状态正常显示为 done/error
-- [ ] 无需等待任何 Promise
+- [x] 遇到 `write_file` / `edit_file` → 先读原文件内容存入 `writeBackups`
+- [x] 立即执行写操作（不再 defer）
+- [x] 写成功后步骤状态正常显示为 done/error
+- [x] 无需等待任何 Promise
 
 #### 阶段 3：汇总面板改为只读 + Undo 入口
 
-- [ ] `showChangeSummary` 的 `needsConfirm` 永远为 `false`
-- [ ] 面板操作区改为：`[View all changes]` + `[↩ Undo all]`
-- [ ] 每个文件行右侧增加 `[↩]` 单文件撤销按钮
-- [ ] 点 Undo all → 发送 `undoAllChanges` 消息
-- [ ] 点单行 ↩ → 发送 `undoFileChange` 消息（带文件路径）
+- [x] `showChangeSummary` 的 `needsConfirm` 永远为 `false`
+- [x] 面板操作区改为：`[View all changes]` + `[↩ Undo all]`
+- [x] 每个文件行右侧增加 `[↩]` 单文件撤销按钮
+- [x] 点 Undo all → 发送 `undoAllChanges` 消息
+- [x] 点单行 ↩ → 发送 `undoFileChange` 消息（带文件路径）
 
 #### 阶段 4：Undo 逻辑（ChatViewProvider.ts）
 
-- [ ] 收到 `undoAllChanges` → 遍历 `writeBackups` 恢复所有文件
+- [x] 收到 `undoAllChanges` → 遍历 `writeBackups` 恢复所有文件
   - 原内容为 `null`（新建文件）→ 删除该文件
   - 原内容非空 → 写回原内容
-- [ ] 收到 `undoFileChange` → 只恢复指定文件
-- [ ] 恢复完成后发送 `updateChangeSummary`（status: 'undone'，text: '↩ Undone'）
-- [ ] 更新对应步骤状态为 error/cancelled（表示已回退）
+- [x] 收到 `undoFileChange` → 只恢复指定文件
+- [x] 恢复完成后发送 `updateChangeSummary`（status: 'undone'，text: '↩ Undone'）
+- [x] 更新对应步骤状态为 error/cancelled（表示已回退）
 
 #### 阶段 5：备份生命周期管理
 
-- [ ] 用户发送新消息时 → 清空 `writeBackups`（上一轮修改不再可撤）
-- [ ] 重新生成时 → 清空 `writeBackups`
-- [ ] 停止生成时 → 保留已执行的备份（文件已写，允许撤销）
-- [ ] 切换会话时 → 清空 `writeBackups`
+- [x] 用户发送新消息时 → 清空 `writeBackups`（上一轮修改不再可撤）
+- [x] 重新生成时 → 清空 `writeBackups`
+- [x] 停止生成时 → 保留已执行的备份（文件已写，允许撤销）
+- [x] 切换会话时 → 清空 `writeBackups`
 
 #### 阶段 6：清理前端旧代码（chat_b_steps.js / chat.css）
 
-- [ ] 删除 `bindSummaryInteractions`（含行级 ✓/✗ 按钮绑定）
-- [ ] 删除 `⚡ Auto` 按钮及相关逻辑
-- [ ] 删除 `fileDecisions`、`checkAutoSubmit`、`submitDecisions` 相关代码
-- [ ] `showChangeSummary` 统一走 `needsConfirm = false` 的只读分支
-- [ ] 添加 Undo all / 单文件 ↩ 按钮及点击处理
+- [x] 删除 `bindSummaryInteractions`（含行级 ✓/✗ 按钮绑定）
+- [x] 删除 `⚡ Auto` 按钮及相关逻辑
+- [x] 删除 `fileDecisions`、`checkAutoSubmit`、`submitDecisions` 相关代码
+- [x] `showChangeSummary` 统一走 `needsConfirm = false` 的只读分支
+- [x] 添加 Undo all / 单文件 ↩ 按钮及点击处理
 
 #### 阶段 7：消息类型清理（messageTypes.ts）
 
-- [ ] 新增 `UndoAllChangesRequest`（type: 'undoAllChanges', summaryId）
-- [ ] 新增 `UndoFileChangeRequest`（type: 'undoFileChange', filePath）
-- [ ] 新增 status = 'undone' 到 `UpdateChangeSummaryResponse`
-- [ ] 删除 `AcceptChangeRequest`、`RejectChangeRequest`、`AcceptAllChangesRequest`、`RejectAllChangesRequest`、`ResolveChangeSummaryRequest`、`SetAutoAcceptRunRequest`
-- [ ] 从 `WebviewMessage` 联合类型中移除上述已删消息
+- [x] 新增 `UndoAllChangesRequest`（type: 'undoAllChanges', summaryId）
+- [x] 新增 `UndoFileChangeRequest`（type: 'undoFileChange', filePath）
+- [x] 新增 status = 'undone' 到 `UpdateChangeSummaryResponse`
+- [x] 删除 `AcceptChangeRequest`、`RejectChangeRequest`、`AcceptAllChangesRequest`、`RejectAllChangesRequest`、`ResolveChangeSummaryRequest`、`SetAutoAcceptRunRequest`
+- [x] 从 `WebviewMessage` 联合类型中移除上述已删消息
 
 ### 涉及文件清单
 
-- [ ] `src/webview/ChatViewProvider.ts`：核心重构（删除 defer/confirm，加 backup/undo）
-- [ ] `src/webview/messageTypes.ts`：删旧消息类型，加 undo 消息类型
-- [ ] `media/chat_b_steps.js`：删 confirm 交互，加 Undo 按钮
-- [ ] `media/chat.css`：删 confirm 样式，加 undo 按钮样式
+- [x] `src/webview/ChatViewProvider.ts`：核心重构（删除 defer/confirm，加 backup/undo）
+- [x] `src/webview/messageTypes.ts`：删旧消息类型，加 undo 消息类型
+- [x] `media/chat_b_steps.js`：删 confirm 交互，加 Undo 按钮
+- [x] `media/chat.css`：删 confirm 样式，加 undo 按钮样式
 
 ### 风险与注意事项
 
-- [ ] **新建文件的撤销**：backup 存 `null`，undo 时删除该文件，需用 `fs.unlinkSync`
-- [ ] **用户在 AI 写完后手动编辑了文件**：Undo 会覆盖用户的手动编辑，暂不处理（V1 不做校验）
-- [ ] **run_command 的副作用不可撤销**：如 `npm install` 无法 undo，这是 V1 的已知局限，可在面板上加说明
-- [ ] **会话切换/刷新**：备份在内存，刷新后不可撤，这是可接受行为
+- [x] **新建文件的撤销**：backup 存 `null`，undo 时删除该文件，需用 `fs.unlinkSync`
+- [x] **用户在 AI 写完后手动编辑了文件**：Undo 会覆盖用户的手动编辑，暂不处理（V1 不做校验）
+- [x] **run_command 的副作用不可撤销**：如 `npm install` 无法 undo，这是 V1 的已知局限，可在面板上加说明
+- [x] **会话切换/刷新**：备份在内存，刷新后不可撤，这是可接受行为
 
 ### 回归验证清单
 
-- [ ] AI 修改多个文件 → 全程无弹窗 → 文件直接写入
-- [ ] AI 完成后展示只读汇总面板 + Undo all 按钮
-- [ ] Undo all → 所有文件恢复原状
-- [ ] 单文件 ↩ → 只还原该文件
-- [ ] 新建文件 undo → 文件被删除
-- [ ] 发送下一条消息 → Undo 不再可用（按钮消失或灰显）
-- [ ] 停止生成 → 已写文件仍可 undo
-- [ ] 普通聊天、只读工具不受影响
+- [x] AI 修改多个文件 → 全程无弹窗 → 文件直接写入
+- [x] AI 完成后展示只读汇总面板 + Undo all 按钮
+- [x] Undo all → 所有文件恢复原状
+- [x] 单文件 ↩ → 只还原该文件
+- [x] 新建文件 undo → 文件被删除
+- [x] 发送下一条消息 → Undo 不再可用（按钮消失或灰显）
+- [x] 停止生成 → 已写文件仍可 undo
+- [x] 普通聊天、只读工具不受影响
