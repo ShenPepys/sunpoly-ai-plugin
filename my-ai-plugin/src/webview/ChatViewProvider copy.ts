@@ -14,9 +14,13 @@ import { sendStreamRequest } from '../api/client';
 import type { ApiClientConfig, AbortStreamFn } from '../api/client';
 import type { ChatMessageParam } from '../api/types';
 import { buildSystemPrompt } from '../prompts/system';
-import { getEditorContext } from '../utils/editor';
-import { buildCommandRequest } from '../commands/handler';
-import type { CommandExecutionRequest, CommandType } from '../commands/handler';
+import { getEditorContext, getDiagnostics, getCursorContext } from '../utils/editor';
+import { buildExplainPrompt } from '../prompts/explain';
+import { buildFixPrompt } from '../prompts/fix';
+import { buildOptimizePrompt } from '../prompts/optimize';
+import { buildCompletePrompt } from '../prompts/complete';
+import { buildTestPrompt } from '../prompts/test';
+import type { CommandType } from '../commands/handler';
 import { getEnvContext, detectProjectType, getGitStatus, getProjectContext } from '../utils/context';
 import type { ExtensionMessage, WebviewMessage, WorkMode, ChatSession, HistoryProcessSummary, ChatSessionDisplayMessage, ChatSessionHistoryMessage } from './messageTypes';
 import { parseToolCalls, hasToolCalls, stripToolCalls, executeToolCalls, formatToolResults, readFile } from '../tools';
@@ -340,181 +344,171 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  public async runCommandRequest(commandRequest: CommandExecutionRequest): Promise<void> {
-    if (this.hasRunningTask()) {
-      const message = '当前仍在生成，请先停止当前任务后再执行新的命令。';
-      this.postMessage({ type: 'showError', message });
-      vscode.window.showWarningMessage(message);
-      return;
-    }
-
-    await vscode.commands.executeCommand('my-ai-plugin.chatView.focus');
-    this.reveal();
-    await this.handleUserMessage(commandRequest.displayText, undefined, {
-      userContentOverride: commandRequest.userMessage,
-      requestMode: commandRequest.requestMode,
-    });
-  }
-
   /**
    * 处理 Webview 发来的消息
    * 根据 message.type 分发到不同的处理逻辑
    */
   private async handleWebviewMessage(message: WebviewMessage): Promise<void> {
-    try {
-      switch (message.type) {
-        case 'sendMessage':
-          info('收到用户消息:', message.text);
-          info('收到 sendMessage 模式快照', { uiMode: message.mode, currentMode: this.currentMode });
-          await this.handleUserMessage(message.text, message.images, { requestMode: message.mode });
-          break;
+    switch (message.type) {
+      case 'sendMessage':
+        info('收到用户消息:', message.text);
+        // 同时传递图片附件（如果有），由 handleUserMessage 检测视觉能力后决定是否注入
+        info('收到 sendMessage 模式快照', { uiMode: message.mode, currentMode: this.currentMode });
+        this.handleUserMessage(message.text, message.images, { requestMode: message.mode });
+        break;
 
-        case 'copyCode':
-          vscode.env.clipboard.writeText(message.code);
-          vscode.window.showInformationMessage('代码已复制到剪贴板');
-          break;
+      case 'copyCode':
+        // 将代码复制到剪贴板
+        vscode.env.clipboard.writeText(message.code);
+        vscode.window.showInformationMessage('代码已复制到剪贴板');
+        break;
 
-        case 'insertCode':
-          this.insertCodeToEditor(message.code);
-          break;
+      case 'insertCode':
+        // 将代码插入到当前编辑器
+        this.insertCodeToEditor(message.code);
+        break;
 
-        case 'clearChat':
-          info('用户清空对话');
-          this.clearCurrentSession();
-          break;
+      case 'clearChat':
+        info('用户清空对话');
+        this.clearCurrentSession();
+        break;
 
-        case 'requestModels':
-          this.sendModelList();
-          break;
+      case 'requestModels':
+        // Webview 请求模型列表（下拉框展开时触发）
+        this.sendModelList();
+        break;
 
-        case 'switchModel': {
-          info(`用户切换模型到索引: ${message.index}`);
-          await setActiveModelIndex(message.index);
-          this.sendModelList();
-          this.pushTokenCount();
-          const models = getAllModels();
-          if (this.onModelSwitch && models[message.index]) {
-            this.onModelSwitch(models[message.index].name);
-          }
-          break;
+      case 'switchModel':
+        // 用户切换模型
+        info(`用户切换模型到索引: ${message.index}`);
+        await setActiveModelIndex(message.index);
+        this.sendModelList();
+        this.pushTokenCount();
+        // 通知外部更新状态栏
+        const models = getAllModels();
+        if (this.onModelSwitch && models[message.index]) {
+          this.onModelSwitch(models[message.index].name);
         }
+        break;
 
-        case 'switchMode':
-          info(`用户切换工作模式: ${message.mode}`);
-          this.currentMode = message.mode;
-          this.postMessage({ type: 'updateMode', mode: this.currentMode });
-          break;
+      case 'switchMode':
+        // 用户切换工作模式
+        info(`用户切换工作模式: ${message.mode}`);
+        this.currentMode = message.mode;
+        this.postMessage({ type: 'updateMode', mode: this.currentMode });
+        break;
 
-        case 'contextAction':
-          await this.handleContextAction(message.action);
-          break;
+      case 'contextAction':
+        // 上下文面板选项点击
+        this.handleContextAction(message.action);
+        break;
 
-        case 'removeContextFile':
-          this.contextFiles = this.contextFiles.filter(f => f !== message.filePath);
-          info(`移除上下文文件: ${message.filePath}，剩余 ${this.contextFiles.length} 个`);
-          break;
+      case 'removeContextFile':
+        // 移除已添加的上下文文件
+        this.contextFiles = this.contextFiles.filter(f => f !== message.filePath);
+        info(`移除上下文文件: ${message.filePath}，剩余 ${this.contextFiles.length} 个`);
+        break;
 
-        case 'searchWorkspaceFiles':
-          await this.searchWorkspaceFiles(message.keyword);
-          break;
+      case 'searchWorkspaceFiles':
+        // 搜索工作区文件并返回结果
+        this.searchWorkspaceFiles(message.keyword);
+        break;
 
-        case 'addContextFile':
-          if (!this.contextFiles.includes(message.filePath)) {
-            this.contextFiles.push(message.filePath);
-            info(`@ mention 添加上下文文件: ${message.filePath}`);
-          }
-          break;
-
-        case 'exportChat':
-          await this.exportChatToMarkdown();
-          break;
-
-        case 'createSession':
-          this.openSessionLauncher();
-          break;
-
-        case 'switchSession':
-          this.switchSession(message.sessionId);
-          break;
-
-        case 'deleteSession':
-          this.deleteSession(message.sessionId);
-          break;
-
-        case 'renameSession':
-          this.renameSession(message.sessionId, message.name);
-          break;
-
-        case 'analyzeTerminalError':
-          await this.handleAnalyzeTerminalError();
-          break;
-
-        case 'regenerate':
-          await this.handleRegenerate(message.assistantMessageId);
-          break;
-
-        case 'retryRequest':
-          await this.handleRetryRequest(message.requestId);
-          break;
-
-        case 'openFilesInIde':
-          await this.openFilesInIde(message.files);
-          break;
-
-        case 'openSettings':
-          await vscode.commands.executeCommand('my-ai-plugin.editModels');
-          break;
-
-        case 'stopGeneration': {
-          const stoppedRunId = this.activeRunId;
-          this.activeRunId = null;
-          this.stepSequence = 0;
-          this.toolCallRound = 0;
-          this.toolCallsInProgress = false;
-          this.resetActiveHistoryProcessSummary();
-          if (this.abortStream) {
-            info('用户主动停止生成');
-            this.abortStream();
-            this.abortStream = null;
-          }
-          if (stoppedRunId) {
-            this.rollbackPendingRegenerateState(stoppedRunId);
-          }
-          this.postMessage({ type: 'generationStopped' });
-          this.postMessage({ type: 'setLoading', loading: false });
-          break;
+      case 'addContextFile':
+        // @ mention 选中文件后添加到上下文列表
+        if (!this.contextFiles.includes(message.filePath)) {
+          this.contextFiles.push(message.filePath);
+          info(`@ mention 添加上下文文件: ${message.filePath}`);
         }
+        break;
 
-        case 'executeCommand': {
-          const cmdType = this.resolveCommandType(message.command);
-          if (cmdType) {
-            info(`Slash 命令执行（走消息流）: ${cmdType}`);
-            await this.handleSlashCommand(cmdType);
-          } else {
-            info(`Slash 命令执行（直接调用）: ${message.command}`);
-            await vscode.commands.executeCommand(message.command);
-          }
-          break;
+      case 'exportChat':
+        this.exportChatToMarkdown();
+        break;
+
+      case 'createSession':
+        this.openSessionLauncher();
+        break;
+
+      case 'switchSession':
+        this.switchSession(message.sessionId);
+        break;
+
+      case 'deleteSession':
+        this.deleteSession(message.sessionId);
+        break;
+
+      case 'renameSession':
+        this.renameSession(message.sessionId, message.name);
+        break;
+
+      case 'analyzeTerminalError':
+        this.handleAnalyzeTerminalError();
+        break;
+
+      case 'regenerate':
+        this.handleRegenerate(message.assistantMessageId);
+        break;
+
+      case 'retryRequest':
+        this.handleRetryRequest(message.requestId);
+        break;
+
+      case 'openFilesInIde':
+        // 在 IDE 中打开文件：新建文件直接打开，编辑文件使用 Diff 编辑器
+        this.openFilesInIde(message.files);
+        break;
+
+      case 'openSettings':
+        // 打开 settings.json 直接编辑模型配置（含 API Key）
+        vscode.commands.executeCommand('my-ai-plugin.editModels');
+        break;
+
+      case 'stopGeneration': {
+        const stoppedRunId = this.activeRunId;
+        this.activeRunId = null;
+        this.stepSequence = 0;
+        this.toolCallRound = 0;
+        this.toolCallsInProgress = false;
+        this.resetActiveHistoryProcessSummary();
+        if (this.abortStream) {
+          info('用户主动停止生成');
+          this.abortStream();
+          this.abortStream = null;
         }
-
-        case 'undoAllChanges': {
-          await this.undoAllWriteBackups(message.summaryId);
-          break;
+        if (stoppedRunId) {
+          this.rollbackPendingRegenerateState(stoppedRunId);
         }
-
-        case 'undoFileChange': {
-          await this.undoSingleWriteBackup(message.filePath, message.summaryId);
-          break;
-        }
-
-        default:
-          error('未知的 Webview 消息类型:', message);
+        this.postMessage({ type: 'generationStopped' });
+        this.postMessage({ type: 'setLoading', loading: false });
+        break;
       }
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      error('处理 Webview 消息失败:', { type: message.type, error: errMsg });
-      this.postMessage({ type: 'setLoading', loading: false });
-      this.postMessage({ type: 'showError', message: `操作失败：${errMsg}` });
+
+      case 'executeCommand': {
+        // Slash 命令通过正常消息流处理，支持工具链执行
+        const cmdType = this.resolveCommandType(message.command);
+        if (cmdType) {
+          info(`Slash 命令执行（走消息流）: ${cmdType}`);
+          this.handleSlashCommand(cmdType);
+        } else {
+          info(`Slash 命令执行（直接调用）: ${message.command}`);
+          vscode.commands.executeCommand(message.command);
+        }
+        break;
+      }
+
+      case 'undoAllChanges': {
+        await this.undoAllWriteBackups(message.summaryId);
+        break;
+      }
+
+      case 'undoFileChange': {
+        await this.undoSingleWriteBackup(message.filePath, message.summaryId);
+        break;
+      }
+
+      default:
+        error('未知的 Webview 消息类型:', message);
     }
   }
 
@@ -538,13 +532,77 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * 构建命令专用 Prompt，然后走 handleUserMessage 的正常消息流，
    * 这样 AI 回复中的 tool_call 会被正确解析和执行。
    */
-  private async handleSlashCommand(type: CommandType): Promise<void> {
-    const commandRequest = buildCommandRequest(type);
-    if (!commandRequest) {
+  private handleSlashCommand(type: CommandType): void {
+    const editorCtx = getEditorContext();
+    if (!editorCtx || !editorCtx.selectedCode) {
+      vscode.window.showWarningMessage('请先选中代码，再使用此功能');
       return;
     }
 
-    await this.runCommandRequest(commandRequest);
+    const modelConfig = getModelConfig();
+    const envContext = getEnvContext();
+
+    // 根据命令类型构建专用的用户消息
+    let userMessage: string;
+    let commandLabel: string;
+
+    switch (type) {
+      case 'explain': {
+        const result = buildExplainPrompt(editorCtx, envContext, modelConfig);
+        userMessage = result.userMessage;
+        commandLabel = '解释代码';
+        break;
+      }
+      case 'fix': {
+        const diagnostics = getDiagnostics();
+        const result = buildFixPrompt(editorCtx, envContext, modelConfig, diagnostics);
+        userMessage = result.userMessage;
+        commandLabel = '修复代码';
+        break;
+      }
+      case 'optimize': {
+        const result = buildOptimizePrompt(editorCtx, envContext, modelConfig);
+        userMessage = result.userMessage;
+        commandLabel = '优化代码';
+        break;
+      }
+      case 'complete': {
+        const cursorCtx = getCursorContext(30);
+        if (!cursorCtx) {
+          vscode.window.showWarningMessage('无法获取光标上下文');
+          return;
+        }
+        const result = buildCompletePrompt(
+          envContext, modelConfig,
+          editorCtx.fileName, editorCtx.fileLanguage,
+          cursorCtx.before, cursorCtx.after, cursorCtx.cursorLine,
+        );
+        userMessage = result.userMessage;
+        commandLabel = '续写代码';
+        break;
+      }
+      case 'test': {
+        const result = buildTestPrompt(editorCtx, envContext, modelConfig);
+        userMessage = result.userMessage;
+        commandLabel = '生成单测';
+        break;
+      }
+    }
+
+    // 显示给用户看的文字（简短描述）
+    const displayText = `**/${type}** — ${commandLabel}\n\n选中代码：\`${editorCtx.fileName}\` 第 ${editorCtx.startLine}~${editorCtx.endLine} 行`;
+
+    info(`Slash 命令 /${type} 构建完成，userMessage 长度: ${userMessage.length}`);
+
+    // 强制切到 Code 模式（/fix, /optimize 等需要工具执行权限）
+    const needCodeMode = type !== 'explain';
+    const requestMode: WorkMode = needCodeMode ? 'code' : this.currentMode;
+
+    // 走正常消息流，AI 回复中的 tool_call 会被 handleToolCalls 正确处理
+    this.handleUserMessage(displayText, [], {
+      userContentOverride: userMessage,
+      requestMode,
+    });
   }
 
   /** 获取当前工作模式（供外部模块使用） */
@@ -634,9 +692,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (contextContent) {
         userContent += `\n\n${contextContent}`;
       }
-    }
 
-    this.rememberRetryableRequest(retryRequestId, text, userContent, clonedImages, requestMode);
+      this.rememberRetryableRequest(retryRequestId, text, userContent, clonedImages, requestMode);
+    }
 
     // 确保 API Key 已配置
     const apiKey = await ensureApiKey();
@@ -673,15 +731,11 @@ ${projectCtx}` : baseSystemPrompt;
       this.postMessage({ type: 'clearContextFiles' });
     }
 
-    const userDisplayContent = this.getUserDisplayContent(userContent, text || userContent);
+    // 添加到对话历史并持久化（历史只存文本部分，图片不持久化以节省空间）
+    // 通过类型断言写入 timestamp，供导出时标注对话时间
     const userTimestamp = Date.now();
-    (this.chatHistory as ChatSessionHistoryMessage[]).push({
-      role: 'user',
-      content: userContent,
-      timestamp: userTimestamp,
-      displayContent: userDisplayContent || undefined,
-    });
-    this.appendDisplayHistoryUserMessage(userContent, userTimestamp, userDisplayContent);
+    (this.chatHistory as ChatSessionHistoryMessage[]).push({ role: 'user', content: userContent, timestamp: userTimestamp });
+    this.appendDisplayHistoryUserMessage(userContent, userTimestamp);
     this.saveChatHistory();
 
     // 上下文窗口管理：估算 token 数，超过阈值时截断旧消息
@@ -2602,8 +2656,8 @@ ${projectCtx}` : baseSystemPrompt;
     this.activeHistoryProcessSummary.thinkingElapsedMs = elapsedMs;
   }
 
-  private appendDisplayHistoryUserMessage(content: unknown, timestamp?: number, explicitDisplayContent?: unknown): void {
-    const displayContent = this.getUserDisplayContent(content, explicitDisplayContent);
+  private appendDisplayHistoryUserMessage(content: unknown, timestamp?: number): void {
+    const displayContent = this.getUserDisplayContent(content);
     if (!displayContent.trim()) {
       return;
     }
@@ -2721,17 +2775,13 @@ ${projectCtx}` : baseSystemPrompt;
     return `${normalized.slice(0, 24)}...`;
   }
 
-  private extractSessionTitleFromHistory(history: Array<{ role: string; content: unknown; displayContent?: string }>): string {
-    const firstUserMessage = history.find(msg => msg.role === 'user' && !this.isToolFeedbackMessage(msg));
-    if (!firstUserMessage) {
+  private extractSessionTitleFromHistory(history: Array<{ role: string; content: unknown }>): string {
+    const firstUserMessage = history.find(msg => msg.role === 'user' && typeof msg.content === 'string');
+    if (!firstUserMessage || typeof firstUserMessage.content !== 'string') {
       return '历史会话';
     }
 
-    const displayText = this.getUserDisplayContent(firstUserMessage.content, firstUserMessage.displayContent);
-    if (!displayText.trim()) {
-      return '历史会话';
-    }
-
+    const displayText = firstUserMessage.content.split('\n\n## ')[0];
     return this.buildSessionTitle(displayText);
   }
 
@@ -2757,7 +2807,7 @@ ${projectCtx}` : baseSystemPrompt;
 
     if (savedSessions && savedSessions.length > 0) {
       this.sessions = savedSessions.map(session => {
-        const history = this.normalizeHistoryMessages(Array.isArray(session.history) ? session.history : []);
+        const history = Array.isArray(session.history) ? session.history : [];
         const updatedAt = typeof session.updatedAt === 'number'
           ? session.updatedAt
           : (typeof session.createdAt === 'number' ? session.createdAt : Date.now());
@@ -2769,9 +2819,6 @@ ${projectCtx}` : baseSystemPrompt;
           shouldResave = true;
         }
         if (!Array.isArray(session.history) || !Array.isArray(session.displayHistory)) {
-          shouldResave = true;
-        }
-        if (Array.isArray(session.history) && history !== session.history) {
           shouldResave = true;
         }
         if (Array.isArray(session.displayHistory) && displayHistory !== session.displayHistory) {
@@ -2794,10 +2841,9 @@ ${projectCtx}` : baseSystemPrompt;
       // 新安装或迁移旧数据：用旧 chatHistory 创建第一个会话
       const oldHistory = this.context.globalState.get<Array<{ role: string; content: unknown }>>('chatHistory');
       if (oldHistory && oldHistory.length > 0) {
-        const normalizedOldHistory = this.normalizeHistoryMessages(oldHistory as ChatSessionHistoryMessage[]);
-        const first = this.createSessionObject(this.extractSessionTitleFromHistory(normalizedOldHistory));
-        first.history = normalizedOldHistory;
-        first.displayHistory = this.buildDisplayHistoryFromRawHistory(normalizedOldHistory);
+        const first = this.createSessionObject(this.extractSessionTitleFromHistory(oldHistory));
+        first.history = oldHistory;
+        first.displayHistory = this.buildDisplayHistoryFromRawHistory(oldHistory as ChatSessionHistoryMessage[]);
         first.updatedAt = Date.now();
         this.sessions = [first];
         this.activeSessionId = first.id;
@@ -3063,18 +3109,9 @@ ${projectCtx}` : baseSystemPrompt;
       && message.content.startsWith('以下是工具执行结果');
   }
 
-  private getUserDisplayContent(content: unknown, explicitDisplayContent?: unknown): string {
-    if (typeof explicitDisplayContent === 'string' && explicitDisplayContent.trim()) {
-      return explicitDisplayContent;
-    }
-
+  private getUserDisplayContent(content: unknown): string {
     if (typeof content !== 'string') {
       return '';
-    }
-
-    const legacyCommandDisplayContent = this.inferLegacyCommandDisplayContent(content);
-    if (legacyCommandDisplayContent) {
-      return legacyCommandDisplayContent;
     }
 
     const cutIndex = content.indexOf('\n\n## ');
@@ -3083,63 +3120,6 @@ ${projectCtx}` : baseSystemPrompt;
     }
 
     return content;
-  }
-
-  private inferLegacyCommandDisplayContent(content: string): string | null {
-    const normalizedContent = content.trim();
-    const fileMatch = normalizedContent.match(/- 文件：([^\n\r]+)/);
-    const rangeMatch = normalizedContent.match(/- 行号：第\s*(\d+)\s*行\s*~\s*第\s*(\d+)\s*行/);
-    const cursorMatch = normalizedContent.match(/- 光标位置：第\s*(\d+)\s*行/);
-    const fileName = fileMatch?.[1]?.trim();
-
-    const commandConfigs: Array<{ prefix: string; type: CommandType; label: string }> = [
-      { prefix: '请解释以下代码的功能和逻辑。', type: 'explain', label: '解释代码' },
-      { prefix: '请分析以下代码中的问题并提供修复方案。', type: 'fix', label: '修复代码' },
-      { prefix: '请从以下三个维度审查代码，并给出优化建议。', type: 'optimize', label: '优化代码' },
-      { prefix: '请根据上下文续写代码。', type: 'complete', label: '续写代码' },
-      { prefix: '请为以下代码生成单元测试。', type: 'test', label: '生成单测' },
-    ];
-
-    const matchedConfig = commandConfigs.find(config => normalizedContent.startsWith(config.prefix));
-    if (!matchedConfig || !normalizedContent.includes('## 代码信息')) {
-      return null;
-    }
-
-    if (fileName && rangeMatch) {
-      return `/${matchedConfig.type} — ${matchedConfig.label}\n\n选中代码：\`${fileName}\` 第 ${rangeMatch[1]}~${rangeMatch[2]} 行`;
-    }
-
-    if (fileName && cursorMatch) {
-      return `/${matchedConfig.type} — ${matchedConfig.label}\n\n光标位置：\`${fileName}\` 第 ${cursorMatch[1]} 行`;
-    }
-
-    if (fileName) {
-      return `/${matchedConfig.type} — ${matchedConfig.label}\n\n文件：\`${fileName}\``;
-    }
-
-    return `/${matchedConfig.type} — ${matchedConfig.label}`;
-  }
-
-  private normalizeHistoryMessages(history: ChatSessionHistoryMessage[]): ChatSessionHistoryMessage[] {
-    let hasChanges = false;
-    const normalizedHistory = history.map(message => {
-      if (message.role !== 'user' || this.isToolFeedbackMessage(message)) {
-        return message;
-      }
-
-      const displayContent = this.getUserDisplayContent(message.content, message.displayContent);
-      if (!displayContent || message.displayContent === displayContent) {
-        return message;
-      }
-
-      hasChanges = true;
-      return {
-        ...message,
-        displayContent,
-      };
-    });
-
-    return hasChanges ? normalizedHistory : history;
   }
 
   private getAssistantDisplayContent(content: unknown): string {
@@ -3256,7 +3236,7 @@ ${projectCtx}` : baseSystemPrompt;
       }
 
       if (currentMessage.role === 'user') {
-        const userContent = this.getUserDisplayContent(currentMessage.content, currentMessage.displayContent);
+        const userContent = this.getUserDisplayContent(currentMessage.content);
         if (userContent.trim()) {
           displayHistory.push({
             role: 'user',

@@ -3,7 +3,7 @@
  * 负责插件的激活、命令注册和生命周期管理
  */
 import * as vscode from 'vscode';
-import { initLogger, disposeLogger, info, error } from './logger';
+import { initLogger, disposeLogger, info } from './logger';
 import { setExtensionPath, getAllModels, getActiveModelIndex } from './config';
 import { ChatViewProvider } from './webview/ChatViewProvider';
 import { executeCommand } from './commands/handler';
@@ -48,14 +48,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const commandTypes: CommandType[] = ['explain', 'fix', 'optimize', 'complete', 'test'];
   for (const type of commandTypes) {
     context.subscriptions.push(
-      vscode.commands.registerCommand(`my-ai-plugin.${type}`, async () => {
-        try {
-          await executeCommand(type, chatProvider);
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          error(`执行命令 ${type} 失败:`, err);
-          vscode.window.showErrorMessage(`AI 命令执行失败：${errMsg}`);
-        }
+      vscode.commands.registerCommand(`my-ai-plugin.${type}`, () => {
+        executeCommand(type, chatProvider);
       })
     );
   }

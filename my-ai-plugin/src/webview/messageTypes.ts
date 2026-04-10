@@ -33,6 +33,7 @@ export interface ChatSessionHistoryMessage {
   role: string;
   content: unknown;
   timestamp?: number;
+  displayContent?: string;
 }
 
 // ==================== 会话数据结构 ====================
