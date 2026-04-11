@@ -772,3 +772,269 @@ interface WriteBackup {
 - [x] 发送下一条消息 → Undo 不再可用（按钮消失或灰显）
 - [x] 停止生成 → 已写文件仍可 undo
 - [x] 普通聊天、只读工具不受影响
+
+---
+
+# 缺陷与 BUG
+
+## 背景
+
+在对插件核心代码进行系统性审查后，发现以下缺陷与 BUG。按严重程度分为三类：确定性 BUG（会导致错误行为）、中等问题（可能导致异常或数据不一致）、架构与工程问题。
+
+---
+
+## 确定性 BUG（会导致错误行为）
+
+### BUG-1：🔴 图片错误检测的运算符优先级错误
+
+文件：`src/webview/ChatViewProvider.ts`（约第 837 行）
+
+```typescript
+const isImageError = errorMessage.includes('image_url') || errorMessage.includes('image') && errorMessage.includes('unknown');
+```
+
+由于 `&&` 优先级高于 `||`，实际等价于：
+
+```typescript
+errorMessage.includes('image_url') || (errorMessage.includes('image') && errorMessage.includes('unknown'))
+```
+
+问题：任何包含 `image_url` 字样的错误（如限流错误提到该端点）都会被误判为"模型不支持图片"，吞掉真实错误信息。应补充括号明确意图。
+
+- [x] 修复运算符优先级，补充括号
+
+### BUG-2：🔴 `ensureApiKey` 会将 `.env` 模型污染到 settings
+
+文件：`src/config.ts`（约第 296-303 行）
+
+`getAllModels()` 在有 `.env` 时会在数组前插入 `.env` 模型。`ensureApiKey` 中将合并后的数组直接写回 `settings.json`，会导致 `.env` 模型被持久化到用户设置中。之后即使删除 `.env`，该模型也会重复出现。
+
+- [x] 修复 `ensureApiKey`，写回 settings 时排除 `.env` 来源的模型
+
+### BUG-3：🟡 `handleRegenerate` 忽略传入的 `targetAssistantMessageId`
+
+文件：`src/webview/ChatViewProvider.ts`（约第 1861-1867 行）
+
+无论前端传来哪个 `targetAssistantMessageId`，后端始终查找最后一条 assistant 消息进行重新生成。如果用户要重新生成非末尾的 AI 回复，行为与预期不一致。
+
+- [x] 修复为根据 `targetAssistantMessageId` 定位目标消息
+
+### BUG-4：🟡 `editFile` 只替换首个匹配
+
+文件：`src/tools/fileOps.ts`（约第 150 行）
+
+```typescript
+const updatedContent = fileContent.replace(oldContent, newContent);
+```
+
+JavaScript `String.replace(string, string)` 只替换第一个匹配。如果文件中有多处相同代码片段，AI 指定的 `oldContent` 只有第一处被替换，可能导致修改不完整。
+
+- [x] 改为“多处命中时报错，不再静默只替换首个”，并在提示词中要求 `old` 内容唯一命中
+
+### BUG-5：🟡 `regenerateResponse` 使用闭包累积内容而非回调参数
+
+文件：`src/webview/ChatViewProvider.ts`（约第 1983-2001 行）
+
+`regenerateResponse` 在闭包中自行累积 `fullContent`，忽略了 `sendStreamRequest` 的 `onDone` 回调传入的参数。而 `handleUserMessage` 使用的是回调参数。在中断等场景下，两份 `fullContent` 可能不一致。
+
+- [x] 统一为使用 `onDone` 回调参数
+
+### BUG-6：🔴 `handleToolCalls` 多个提前 return 路径未清理 loading 状态
+
+文件：`src/webview/ChatViewProvider.ts`（约第 880-882、906-908、1007-1009 行）
+
+如果用户在工具执行过程中停止生成（`stopGeneration` 修改了 `activeRunId`），`handleToolCalls` 循环中的 guard 会触发提前返回，但不会调用 `postMessage({ type: 'setLoading', loading: false })`，导致前端一直显示加载状态。
+
+- [x] 在所有提前 return 路径中补充 `setLoading(false)`
+
+### BUG-7：🟡 `writeBackups` 在会话切换时未清空
+
+文件：`src/webview/ChatViewProvider.ts`（约第 2861-2883 行）
+
+`switchSession` 方法中未清空 `this.writeBackups`。切换到其他会话后，如果用户点击 Undo，实际恢复的是前一个会话产生的文件变更，可能造成误操作。
+
+- [x] 在 `switchSession` 中清空 `writeBackups`
+
+### BUG-8：🟡 同一文件多次 edit 的 diff 基准错误
+
+文件：`src/webview/ChatViewProvider.ts`（约第 940-941 行）
+
+对于 `edit_file`，diff 的 `oldContent` 始终是最初的原始备份。如果同一批次内 AI 对同一个文件执行了两次 `edit_file`，第二次展示的 diff 仍以原始文件为基准，而不是第一次编辑后的状态，导致 diff 展示不准确。
+
+- [x] 评估是否为每次 edit 记录中间态，或改为以实际磁盘文件为 diff 基准
+
+---
+
+## 中等问题（可能导致异常或数据不一致）
+
+### 问题-1：🟡 `context.ts` 存在废弃的 `getModelConfig()` 函数
+
+文件：`src/utils/context.ts`（约第 38-51 行）
+
+此函数读取 `myAiPlugin.modelId`、`myAiPlugin.modelName` 等不存在的单独配置项（实际配置使用 `myAiPlugin.models` 数组），与 `config.ts` 中的同名函数冲突。虽然当前代码未调用此处版本，但导出会造成混淆，被其他模块误引用时会返回错误数据。
+
+- [x] 删除 `context.ts` 中废弃的 `getModelConfig()` 函数
+
+### 问题-2：🟠 `turnWriteFiles` 去重但不更新统计值
+
+文件：`src/webview/ChatViewProvider.ts`（约第 986-988 行）
+
+同一文件在多轮工具调用中被修改时，只保留首次的 `additions`/`deletions` 统计。最终汇总显示的行数变化可能与实际不符。
+
+- [x] 修复去重逻辑，更新为最终累计统计值
+
+### 问题-3：🟠 `retryableRequests` 在会话切换/删除时未清理
+
+文件：`src/webview/ChatViewProvider.ts`（约第 1197-1213 行）
+
+虽有 20 条上限，但切换/删除会话后，旧会话的 retry 快照仍留在 map 中。过期对象持续占用内存。
+
+- [x] 在会话切换/删除时清理已失效的 retry 快照
+
+### 问题-4：🟠 `readContextFilePreview` 未处理文件不存在
+
+文件：`src/webview/ChatViewProvider.ts`（约第 2224 行）
+
+```typescript
+const stat = fs.statSync(filePath);
+```
+
+如果文件在添加上下文后被删除，`statSync` 会抛异常。虽然外层 `buildContextContent` 有 `try-catch`，但 `readContextFilePreview` 本身异常信息不够精确。
+
+- [x] 在 `readContextFilePreview` 内部增加文件存在性检查或更精确的异常处理
+
+---
+
+## 架构与工程问题
+
+### 架构-1：🔴 `ChatViewProvider.ts` 严重超长 — 3557 行（已完成收敛）
+
+按项目规则（单文件不超 1200 行），此文件曾严重超标。主要承载了：
+
+- 会话管理逻辑
+- 消息处理与流式通信
+- 工具调用执行与 diff 计算
+- Undo/Redo 备份系统
+- 文件搜索与上下文构建
+- Workflow 发现与执行
+- History 恢复与导出
+- 完整 HTML 模板
+
+- [x] 按功能拆分 `ChatViewProvider.ts` 为多个模块，当前主文件已收敛到 `1181` 行，并通过 `tsc -p . --noEmit`
+
+### 架构-2：🟠 备份文件残留在源码目录中
+
+以下 copy 文件不应长期留在代码库中，影响搜索和误导开发：
+
+- `src/extension copy.ts`
+- `src/commands/handler copy.ts`
+- `src/webview/ChatViewProvider copy.ts`
+- `src/webview/ChatViewProvider latest copy.ts`
+
+- [x] 已在人工确认后删除所有 copy 备份文件，源码目录中已无残留
+
+### 架构-3：🟡 运行时状态未做会话级隔离
+
+`activeRunId`、`abortStream`、`toolCallsInProgress`、`toolCallRound`、`writeBackups`、`turnWriteFiles` 等全部是 `ChatViewProvider` 的实例属性。切换会话时只切换了 `activeSessionId`，这些运行时状态未重置，导致跨会话状态残留。
+
+- [x] 会话切换时统一重置所有运行时状态（第二阶段多会话并发执行时进一步做会话级隔离）
+
+### 架构-4：🟡 `getEditorContext()` 未选中代码时返回整个文件
+
+文件：`src/utils/editor.ts`（约第 22-25 行）
+
+当用户未选中任何代码时，`selectedCode` 返回整个文件内容。对于大文件（数万行），会在命令调用链路中注入大量 token，可能超出模型上下文窗口。
+
+- [x] 增加未选中代码时的大小限制或截断提示
+
+---
+
+## 缺陷汇总表
+
+| 编号 | 严重度 | 类别 | 简述 | 状态 |
+|------|--------|------|------|------|
+| BUG-1 | 🔴 高 | 逻辑错误 | 图片错误检测运算符优先级问题 | [x] |
+| BUG-2 | 🔴 高 | 数据污染 | ensureApiKey 将 .env 模型写入 settings | [x] |
+| BUG-3 | 🟡 中 | 逻辑错误 | handleRegenerate 忽略目标消息 ID | [x] |
+| BUG-4 | 🟡 中 | 功能缺陷 | editFile 只替换首个匹配 | [x] |
+| BUG-5 | 🟡 中 | 一致性 | regenerateResponse 双份 fullContent 可能不一致 | [x] |
+| BUG-6 | 🔴 高 | UI 状态 | handleToolCalls 提前 return 未清理 loading | [x] |
+| BUG-7 | 🟡 中 | 状态泄漏 | writeBackups 在会话切换时未清空 | [x] |
+| BUG-8 | 🟡 中 | 展示错误 | 同文件多次 edit 的 diff 基准错误 | [x] |
+| 问题-1 | 🟡 中 | 死代码 | context.ts 废弃 getModelConfig 导出 | [x] |
+| 问题-2 | 🟠 低 | 数据不准 | turnWriteFiles 去重不更新统计 | [x] |
+| 问题-3 | 🟠 低 | 内存 | retryableRequests 未随会话清理 | [x] |
+| 问题-4 | 🟠 低 | 健壮性 | readContextFilePreview 未处理文件不存在 | [x] |
+| 架构-1 | 🔴 高 | 工程规范 | ChatViewProvider 3557 行远超 1200 行限制 | [x] |
+| 架构-2 | 🟠 低 | 代码卫生 | copy 备份文件清理完成 | [x] |
+| 架构-3 | 🟡 中 | 状态隔离 | 运行时状态未做会话级隔离 | [x] |
+| 架构-4 | 🟡 中 | 性能 | 未选中代码时注入整个文件内容 | [x] |
+
+---
+
+## 建议修复顺序
+
+### 第一批：高优先级 BUG（🔴）
+
+1. BUG-6：`handleToolCalls` 提前 return 未清理 loading
+2. BUG-1：图片错误检测运算符优先级
+3. BUG-2：`ensureApiKey` 污染 settings
+
+### 第二批：中优先级 BUG（🟡）
+
+4. BUG-7：`writeBackups` 会话切换未清空
+5. BUG-5：`regenerateResponse` 双份 fullContent
+6. BUG-3：`handleRegenerate` 忽略目标消息 ID
+7. BUG-4：`editFile` 只替换首个匹配
+8. BUG-8：同文件多次 edit diff 基准错误
+9. 问题-1：删除 `context.ts` 废弃函数
+10. 架构-3：会话切换时统一重置运行时状态
+
+### 第三批：工程优化
+
+11. 架构-1：拆分 `ChatViewProvider.ts`
+12. 架构-4：大文件截断
+13. 问题-2 ~ 问题-4：低优先级修复
+14. 架构-2：清理 copy 备份文件
+
+---
+
+## 当前执行状态
+
+- [x] 完成缺陷与 BUG 系统性分析
+- [x] 输出缺陷清单到 workplan
+- [x] 第一批高优先级 BUG 修复
+- [x] 第二批中优先级 BUG 修复
+- [x] 完成 `ChatViewProvider.ts` 第 20 阶段两轮收尾，主文件降到 `1181` 行并通过 `tsc -p . --noEmit`
+- [x] 第三批工程优化完成（含 `架构-2`：copy 备份文件清理）
+
+---
+
+## 架构-1 分阶段执行计划
+
+说明：以下阶段属于 `架构-1：拆分 ChatViewProvider.ts` 的内部执行计划，用于按低耦合、低风险方式分批推进，不替代上方总任务项。
+
+- [x] 第一阶段：创建最新备份并抽离低耦合模块（`context usage`、Webview HTML）
+- [x] 第二阶段：抽离会话恢复 / 展示层辅助逻辑，继续缩小 `ChatViewProvider.ts`
+- [x] 第三阶段：抽离工具预览 / diff / 文件变更汇总相关逻辑
+- [x] 第四阶段：抽离工作区文件搜索 / workflow 扫描 / 上下文文件预览 / Markdown 导出等边缘辅助逻辑
+- [x] 第五阶段：抽离会话辅助逻辑与重新生成前置校验 / 快照构建
+- [x] 第六阶段：抽离命令分发辅助逻辑与 `retryableRequests` 管理逻辑
+- [x] 第七阶段：抽离 IDE / 编辑器交互相关低耦合逻辑（终端错误分析 Prompt、文件打开、工作流选择、代码插入）
+- [x] 第八阶段：抽离运行时状态辅助逻辑（运行中判断、重做回滚状态消费、过程摘要状态读写）
+- [x] 第九阶段：抽离 Webview 消息分发路由（轻量分支分发与剩余分支 router）
+- [x] 第十阶段：抽离模型列表响应构建、模式提醒与会话保存前整理逻辑
+- [x] 第十一阶段：抽离活跃会话访问 / displayHistory 解析，以及 token / sessions 响应构建逻辑
+- [x] 第十二阶段：归并 session 领域 helper，并下沉上下文窗口裁剪包装逻辑
+- [x] 第十三阶段：收口 displayHistory / regenerate / sessions 相关纯 helper 包装
+- [x] 第十四阶段：下沉 session 领域 Webview 响应构建，并收口会话切换 / 历史恢复编排
+- [x] 第十五阶段：继续清理纯转手 helper 包装与无用 preview 桥接代码
+- [x] 第十六阶段：继续收口 Undo / 文件备份恢复逻辑到 `fileChanges` 领域 helper
+- [x] 第十七阶段：继续评估上下文操作 / 导出 / 其他低耦合编排逻辑
+- [x] 第十八阶段：继续评估模型 / 模式 / 其他低耦合编排逻辑
+- [x] 第十九阶段：继续评估停止生成 / 运行时状态编排的下沉空间
+- [x] 第二十阶段：继续评估 displayHistory / 会话访问 / 运行时与会话交界处的残余桥接
+- [x] 收尾阶段：继续缩小 `ChatViewProvider.ts`，直到低于 1200 行，并完成编译验证
+- [x] `架构-2` 收尾：已在用户确认后处理 `copy` 备份文件
+
+当前进度：`ChatViewProvider.ts` 已由 `3557` 行缩减到 `1181` 行，已低于项目规定的 `1200` 行上限，并通过 `tsc -p . --noEmit`。

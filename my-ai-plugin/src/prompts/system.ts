@@ -27,7 +27,9 @@ const MODE_CODE_SECTION = `# 工作模式：Code
 - 读取文件：<tool_call><read_file path="文件路径" /></tool_call>
 - 写入文件：<tool_call><write_file path="文件路径">文件内容</write_file></tool_call>
 - 编辑文件：<tool_call><edit_file path="文件路径"><old>原始内容</old><new>新内容</new></edit_file></tool_call>
-- 列出目录：<tool_call><list_dir path="目录路径" /></tool_call>`;
+- 列出目录：<tool_call><list_dir path="目录路径" /></tool_call>
+
+使用 edit_file 时，old 内容必须足够精确并且在目标文件中唯一命中；如果同一片段会匹配多处，请补充更多上下文后再执行。`;
 
 /** Ask 模式：只读对话，不修改文件 */
 const MODE_ASK_SECTION = `# 工作模式：Ask

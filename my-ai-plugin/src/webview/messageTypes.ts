@@ -26,6 +26,7 @@ export interface ChatSessionDisplayMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp?: number;
+  messageId?: string;
   processSummary?: HistoryProcessSummary;
 }
 

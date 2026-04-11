@@ -147,6 +147,24 @@ const DEFAULT_MODEL: ModelProfile = {
 
 const DEFAULT_CONTEXT_WINDOW = 32000;
 
+function getStoredModels(): ModelProfile[] {
+  const models = vscode.workspace
+    .getConfiguration(CONFIG_PREFIX)
+    .get<ModelProfile[]>('models');
+
+  return Array.isArray(models) ? models : [];
+}
+
+function buildEnvModel(env: Record<string, string>): ModelProfile {
+  return normalizeModelProfile({
+    name: env.MODEL_NAME ?? 'DeepSeek Chat',
+    modelId: env.MODEL_ID ?? 'deepseek-chat',
+    baseUrl: env.BASE_URL ?? 'https://api.deepseek.com',
+    apiKey: env.API_KEY ?? '',
+    contextWindow: env.CONTEXT_WINDOW ? Number(env.CONTEXT_WINDOW) : undefined,
+  });
+}
+
 const CONTEXT_WINDOW_MAP: Record<string, number> = {
   'deepseek-chat': 64000,
   'deepseek-coder': 64000,
@@ -171,30 +189,15 @@ const CUTOFF_MAP: Record<string, string> = {
  * 优先从 .env 读取（开发调试），否则从 VS Code 设置读取
  */
 export function getAllModels(): ModelProfile[] {
-  // .env 中的配置作为第一个模型（开发调试用）
   const env = loadEnvFile();
+  const settingsModels = getStoredModels().map(normalizeModelProfile);
+
   if (env.API_KEY) {
-    const envModel = normalizeModelProfile({
-      name: env.MODEL_NAME ?? 'DeepSeek Chat',
-      modelId: env.MODEL_ID ?? 'deepseek-chat',
-      baseUrl: env.BASE_URL ?? 'https://api.deepseek.com',
-      apiKey: env.API_KEY,
-      contextWindow: env.CONTEXT_WINDOW ? Number(env.CONTEXT_WINDOW) : undefined,
-    });
-    // .env 配置与 VS Code 设置中的合并，.env 排第一
-    const settingsModels = vscode.workspace
-      .getConfiguration(CONFIG_PREFIX)
-      .get<ModelProfile[]>('models', [DEFAULT_MODEL]);
-    return [envModel, ...settingsModels.filter(m => m.apiKey).map(normalizeModelProfile)];
+    const envModel = buildEnvModel(env);
+    return settingsModels.length > 0 ? [envModel, ...settingsModels] : [envModel];
   }
 
-  // 仅从 VS Code 设置读取
-  const models = vscode.workspace
-    .getConfiguration(CONFIG_PREFIX)
-    .get<ModelProfile[]>('models', [DEFAULT_MODEL]);
-
-  const normalizedModels = models.map(normalizeModelProfile);
-  return normalizedModels.length > 0 ? normalizedModels : [normalizeModelProfile(DEFAULT_MODEL)];
+  return settingsModels.length > 0 ? settingsModels : [normalizeModelProfile(DEFAULT_MODEL)];
 }
 
 function normalizeContextWindow(value: number | undefined): number | undefined {
@@ -293,14 +296,22 @@ export async function ensureApiKey(): Promise<string | undefined> {
   });
 
   if (input) {
-    // 将 key 写入当前活跃模型的配置中
-    const models = getAllModels();
-    const activeIndex = Math.min(getActiveModelIndex(), models.length - 1);
-    if (models[activeIndex]) {
-      models[activeIndex].apiKey = input;
+    const allModels = getAllModels();
+    const activeIndex = Math.min(getActiveModelIndex(), allModels.length - 1);
+    const settingsModels = getStoredModels();
+    const modelsToSave = settingsModels.length > 0
+      ? settingsModels.map(model => ({ ...model }))
+      : [{ ...DEFAULT_MODEL }];
+    const settingsIndex = loadEnvFile().API_KEY ? activeIndex - 1 : activeIndex;
+
+    if (settingsIndex >= 0 && modelsToSave[settingsIndex]) {
+      modelsToSave[settingsIndex] = {
+        ...modelsToSave[settingsIndex],
+        apiKey: input,
+      };
       await vscode.workspace
         .getConfiguration(CONFIG_PREFIX)
-        .update('models', models, true);
+        .update('models', modelsToSave, true);
     }
     return input;
   }

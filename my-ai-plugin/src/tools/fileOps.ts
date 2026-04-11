@@ -28,15 +28,15 @@ function getWorkspaceRoot(): string | undefined {
  * @param targetPath 待校验的文件/目录路径
  * @returns 规范化后的绝对路径，如果不安全则返回 undefined
  */
-export function resolveAndValidatePath(targetPath: string): string | undefined {
-  const workspaceRoot = getWorkspaceRoot();
-  if (!workspaceRoot) {
-    return undefined;
+export function resolveAndValidatePath(targetPath: string): string | null {
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  if (!workspaceFolder) {
+    return null;
   }
 
   // 将相对路径转为绝对路径（基于工作区根目录）
-  const absolutePath = path.resolve(workspaceRoot, targetPath);
-  const normalizedWorkspaceRoot = path.resolve(workspaceRoot);
+  const absolutePath = path.resolve(workspaceFolder.uri.fsPath, targetPath);
+  const normalizedWorkspaceRoot = path.resolve(workspaceFolder.uri.fsPath);
   const compareAbsolutePath = process.platform === 'win32'
     ? absolutePath.toLowerCase()
     : absolutePath;
@@ -51,8 +51,8 @@ export function resolveAndValidatePath(targetPath: string): string | undefined {
   const isSameDirectory = compareAbsolutePath === compareWorkspaceRoot;
   const isChildDirectory = compareAbsolutePath.startsWith(workspacePrefix);
   if (!isSameDirectory && !isChildDirectory) {
-    error(`文件路径越权: ${absolutePath} 不在工作区 ${workspaceRoot} 内`);
-    return undefined;
+    error(`文件路径越权: ${absolutePath} 不在工作区 ${workspaceFolder.uri.fsPath} 内`);
+    return null;
   }
 
   return absolutePath;
@@ -64,6 +64,24 @@ export interface FileOpResult {
   success: boolean;
   /** 操作结果内容（文件内容、目录列表等） */
   content: string;
+}
+
+function countExactOccurrences(source: string, search: string): number {
+  if (!search) {
+    return 0;
+  }
+
+  let count = 0;
+  let startIndex = 0;
+  while (true) {
+    const matchIndex = source.indexOf(search, startIndex);
+    if (matchIndex === -1) {
+      return count;
+    }
+
+    count += 1;
+    startIndex = matchIndex + search.length;
+  }
 }
 
 /**
@@ -145,6 +163,14 @@ export async function editFile(filePath: string, oldContent: string, newContent:
 
     if (!fileContent.includes(oldContent)) {
       return { success: false, content: `未找到要替换的内容，文件未修改: ${safePath}` };
+    }
+
+    const matchCount = countExactOccurrences(fileContent, oldContent);
+    if (matchCount > 1) {
+      return {
+        success: false,
+        content: `要替换的内容在文件中出现了 ${matchCount} 次，请提供更精确的 old 内容以唯一定位: ${safePath}`,
+      };
     }
 
     const updatedContent = fileContent.replace(oldContent, newContent);

@@ -6,7 +6,7 @@ import * as vscode from 'vscode';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
-import type { EnvContext, ModelConfig } from '../prompts/types';
+import type { EnvContext } from '../prompts/types';
 
 /**
  * 获取当前开发环境上下文
@@ -29,42 +29,6 @@ export function getEnvContext(): EnvContext {
     shell: vscode.env.shell,
     osVersion: `${os.type()} ${os.release()}`,
   };
-}
-
-/**
- * 从 VS Code 用户设置中读取模型配置
- * 设置项前缀为 myAiPlugin.*
- */
-export function getModelConfig(): ModelConfig {
-  const config = vscode.workspace.getConfiguration('myAiPlugin');
-
-  const modelId = config.get<string>('modelId', 'deepseek-chat');
-
-  return {
-    modelName: config.get<string>('modelName', 'DeepSeek Chat'),
-    modelId,
-    baseUrl: config.get<string>('baseUrl', 'https://api.deepseek.com'),
-    apiKey: config.get<string>('apiKey', ''),
-    knowledgeCutoff: getKnowledgeCutoff(modelId),
-    contextWindow: config.get<number>('contextWindow', 32000),
-  };
-}
-
-/**
- * 根据模型 ID 返回知识截止日期
- * 新增模型时在此表中添加对应条目即可
- */
-function getKnowledgeCutoff(modelId: string): string {
-  const cutoffMap: Record<string, string> = {
-    'deepseek-chat': '2025年3月',
-    'deepseek-coder': '2025年3月',
-    'gpt-4o': '2024年10月',
-    'gpt-4o-mini': '2024年10月',
-    'gpt-4-turbo': '2024年4月',
-    'doubao-pro-32k': '2025年1月',
-    'doubao-lite-32k': '2025年1月',
-  };
-  return cutoffMap[modelId] ?? '未知';
 }
 
 /**
