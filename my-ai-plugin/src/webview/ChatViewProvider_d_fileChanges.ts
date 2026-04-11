@@ -55,7 +55,7 @@ export type UndoAllWriteBackupsFeedback = {
 
 export type UndoSingleWriteBackupResult =
   | { status: 'missing' }
-  | { status: 'failed' }
+  | { status: 'failed'; errorMessage: string }
   | { status: 'success'; remainingCount: number };
 
 export type UndoExecutionNotification = {
@@ -80,14 +80,17 @@ export type UndoSingleWriteBackupExecution =
   | {
     status: 'missing';
     logMessages: string[];
+    notification: UndoExecutionNotification;
   }
   | {
     status: 'failed';
     logMessages: string[];
+    notification: UndoExecutionNotification;
   }
   | {
     status: 'success';
     logMessages: string[];
+    notification?: UndoExecutionNotification;
     summaryResponse: UpdateChangeSummaryResponse;
   };
 
@@ -597,13 +600,21 @@ export function executeUndoSingleWriteBackupWithFeedback(options: {
     return {
       status: 'missing',
       logMessages: [`单文件 Undo：未找到 ${options.filePath} 的备份，可能已撤销或未被修改`],
+      notification: {
+        kind: 'warning',
+        message: '未找到该文件的可撤销备份，可能已经撤销，或该文件不是本轮写入产生的改动',
+      },
     };
   }
 
   if (undoResult.status === 'failed') {
     return {
       status: 'failed',
-      logMessages: [],
+      logMessages: [`单文件 Undo：恢复 ${options.filePath} 失败 -> ${undoResult.errorMessage}`],
+      notification: {
+        kind: 'error',
+        message: '单文件 Undo 失败，请查看 Output 面板日志',
+      },
     };
   }
 
@@ -655,6 +666,16 @@ export function executeUndoSingleWriteBackupFlow(options: {
 
   for (const logMessage of undoExecution.logMessages) {
     info(logMessage);
+  }
+
+  if (undoExecution.notification) {
+    if (undoExecution.notification.kind === 'info') {
+      vscode.window.showInformationMessage(undoExecution.notification.message);
+    } else if (undoExecution.notification.kind === 'warning') {
+      vscode.window.showWarningMessage(undoExecution.notification.message);
+    } else {
+      vscode.window.showErrorMessage(undoExecution.notification.message);
+    }
   }
 
   if (undoExecution.status !== 'success') {
@@ -735,8 +756,12 @@ export function undoSingleWriteBackup(
       remainingCount: writeBackups.size,
     };
   } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
     error(`单文件 Undo 失败 ${filePath}:`, err);
-    return { status: 'failed' };
+    return {
+      status: 'failed',
+      errorMessage: errMsg,
+    };
   }
 }
 

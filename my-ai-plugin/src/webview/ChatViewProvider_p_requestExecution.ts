@@ -196,28 +196,9 @@ export async function executeToolCallBatchRound(
     upsertChangeSummaryFile(options.turnWriteFiles, changeSummaryEntry);
   }
 
-  if (batchExecution.status === 'interrupted') {
-    return {
-      kind: 'halted',
-      nextStepSequence: batchExecution.nextStepSequence,
-      nextTurnWriteRounds: options.turnWriteRounds,
-      nextActiveHistoryProcessSummary,
-      shouldFinalizeStoppedRun: options.getActiveRunId() === null,
-    };
-  }
-
-  if (options.getActiveRunId() !== options.messageId) {
-    return {
-      kind: 'halted',
-      nextStepSequence: batchExecution.nextStepSequence,
-      nextTurnWriteRounds: options.turnWriteRounds,
-      nextActiveHistoryProcessSummary,
-      shouldFinalizeStoppedRun: options.getActiveRunId() === null,
-    };
-  }
-
+  const hasBatchWriteSummary = batchExecution.batchWriteFiles.length > 0 || batchExecution.writeFailCount > 0;
   let nextTurnWriteRounds = options.turnWriteRounds;
-  if (batchExecution.batchWriteFiles.length > 0 || batchExecution.writeFailCount > 0) {
+  if (hasBatchWriteSummary) {
     nextTurnWriteRounds += 1;
     for (const message of buildAppliedChangeSummaryResponses({
       messageId: options.messageId,
@@ -228,6 +209,26 @@ export async function executeToolCallBatchRound(
     })) {
       options.postMessage(message);
     }
+  }
+
+  if (batchExecution.status === 'interrupted') {
+    return {
+      kind: 'halted',
+      nextStepSequence: batchExecution.nextStepSequence,
+      nextTurnWriteRounds,
+      nextActiveHistoryProcessSummary,
+      shouldFinalizeStoppedRun: options.getActiveRunId() === null,
+    };
+  }
+
+  if (options.getActiveRunId() !== options.messageId) {
+    return {
+      kind: 'halted',
+      nextStepSequence: batchExecution.nextStepSequence,
+      nextTurnWriteRounds,
+      nextActiveHistoryProcessSummary,
+      shouldFinalizeStoppedRun: options.getActiveRunId() === null,
+    };
   }
 
   const resultText = formatToolResults(batchExecution.toolResults);

@@ -1007,6 +1007,7 @@ const stat = fs.statSync(filePath);
 - [x] 第二批中优先级 BUG 修复
 - [x] 完成 `ChatViewProvider.ts` 第 20 阶段两轮收尾，主文件降到 `1181` 行并通过 `tsc -p . --noEmit`
 - [x] 第三批工程优化完成（含 `架构-2`：copy 备份文件清理）
+- [x] 已补修停止生成中断后已写文件缺少 change summary / Undo 入口，以及单文件 Undo 失败静默无反馈的问题，并再次通过 `tsc -p . --noEmit`
 
 ---
 
