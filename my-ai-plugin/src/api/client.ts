@@ -119,13 +119,24 @@ export function sendStreamRequest(
 
   let fullContent = '';
   let aborted = false;
-  let done = false;
+  /**
+   * 终态互斥标志：onDone 和 onError 只有第一个调用生效
+   * 避免 req.destroy() 触发的 error 事件导致双重回调
+   */
+  let settled = false;
 
-  /** 确保 onDone 只被调用一次 */
+  /** 确保 onDone 只被调用一次，且不与 onError 并发 */
   function callOnDone(): void {
-    if (done) { return; }
-    done = true;
+    if (settled) { return; }
+    settled = true;
     onDone(fullContent);
+  }
+
+  /** 确保 onError 只被调用一次，且不与 onDone 并发 */
+  function callOnError(message: string): void {
+    if (settled) { return; }
+    settled = true;
+    onError(message);
   }
 
   /**
@@ -157,7 +168,7 @@ export function sendStreamRequest(
           errMsg = parseApiError(errorBody, statusCode);
         }
         logError(`API 请求失败 (${statusCode}): ${errMsg}`);
-        onError(errMsg);
+        callOnError(errMsg);
       });
       return;
     }
@@ -176,7 +187,7 @@ export function sendStreamRequest(
           if (fullContent) {
             callOnDone();
           } else {
-            onError('AI 响应超时（60 秒无数据），请重试');
+            callOnError('AI 响应超时（60 秒无数据），请重试');
           }
         }
       }, 60000);
@@ -257,19 +268,19 @@ export function sendStreamRequest(
 
     res.on('error', (err) => {
       logError('流式响应读取出错:', err.message);
-      onError(`流式响应读取出错: ${err.message}`);
+      callOnError(`流式响应读取出错: ${err.message}`);
     });
   });
 
   req.on('error', (err) => {
     logError('API 请求出错:', err.message);
-    onError(`连接 AI 服务失败: ${err.message}`);
+    callOnError(`连接 AI 服务失败: ${err.message}`);
   });
 
   // 设置超时（30 秒连接超时）
   req.setTimeout(30000, () => {
     req.destroy();
-    onError('连接 AI 服务超时（30 秒），请检查网络或 API 地址');
+    callOnError('连接 AI 服务超时（30 秒），请检查网络或 API 地址');
   });
 
   req.write(bodyStr);

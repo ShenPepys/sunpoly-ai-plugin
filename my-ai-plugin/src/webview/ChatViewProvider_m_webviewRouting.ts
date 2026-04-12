@@ -1,9 +1,11 @@
 import * as vscode from 'vscode';
 import type { AbortStreamFn } from '../api/client';
 import {
+  buildFinalTurnChangeSummaryResponse,
   executeUndoAllWriteBackupsFlow,
   executeUndoSingleWriteBackupFlow,
 } from './ChatViewProvider_d_fileChanges';
+import type { ChangeSummaryFile } from './ChatViewProvider_d_fileChanges';
 import type { WriteBackupEntry } from './ChatViewProvider_d_fileChanges';
 import {
   discoverWorkflows,
@@ -178,6 +180,8 @@ export type HandleRemainingWebviewMessageOptions = {
   setToolCallRound: (toolCallRound: number) => void;
   setActiveHistoryProcessSummary: (summary: HistoryProcessSummary | null) => void;
   rollbackPendingRegenerateState: (runId: string) => boolean;
+  getTurnWriteRounds: () => number;
+  getTurnWriteFiles: () => ChangeSummaryFile[];
   postMessage: (message: ExtensionMessage) => void;
   logInfo: (message: string, payload?: unknown) => void;
 };
@@ -302,6 +306,11 @@ export async function handleRemainingWebviewMessage(
         (stopResult.abortStreamToStop as AbortStreamFn)();
       }
       if (stopResult.stoppedRunId) {
+        // 停止前检查是否有多轮写入需要发送全量变更汇总
+        const turnWriteRounds = options.getTurnWriteRounds();
+        if (turnWriteRounds >= 2) {
+          options.postMessage(buildFinalTurnChangeSummaryResponse(stopResult.stoppedRunId, options.getTurnWriteFiles()));
+        }
         options.rollbackPendingRegenerateState(stopResult.stoppedRunId);
       }
       options.postMessage({ type: 'generationStopped' });

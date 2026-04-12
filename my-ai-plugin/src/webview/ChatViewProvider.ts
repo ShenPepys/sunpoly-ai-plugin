@@ -404,6 +404,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this.activeHistoryProcessSummary = summary;
         },
         rollbackPendingRegenerateState: runId => this.rollbackPendingRegenerateState(runId),
+        getTurnWriteRounds: () => this.turnWriteRounds,
+        getTurnWriteFiles: () => this.turnWriteFiles,
         postMessage: messageToPost => this.postMessage(messageToPost),
         logInfo: (logMessage, payload) => {
           if (payload === undefined) {
@@ -636,7 +638,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       createHistoryProcessSummary,
       retryRequestId,
       onToolCalls: ({ fullContent, parsedToolCalls }) => {
-        this.handleToolCalls(fullContent, apiConfig, assistantMsgId, requestMode, parsedToolCalls, retryRequestId);
+        this.handleToolCalls(fullContent, apiConfig, assistantMsgId, requestMode, parsedToolCalls, retryRequestId)
+          .catch(err => error('工具调用处理异常:', err instanceof Error ? err.message : String(err)));
       },
       onDoneLog: (fullContent, thinkingElapsed) => {
         info(`AI 回复完成，长度: ${fullContent.length}，耗时: ${thinkingElapsed}ms`);
@@ -796,7 +799,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         ),
         onToolCalls: ({ fullContent, parsedToolCalls, displayContent, assistantTimestamp }) => {
           if (this.toolCallRound < 10) {
-            this.handleToolCalls(fullContent, apiConfig, reuseMsgId, requestMode, parsedToolCalls, retryRequestId);
+            this.handleToolCalls(fullContent, apiConfig, reuseMsgId, requestMode, parsedToolCalls, retryRequestId)
+              .catch(err => error('续轮工具调用处理异常:', err instanceof Error ? err.message : String(err)));
             return;
           }
 
@@ -925,12 +929,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.postMessage({ type: 'setLoading', loading: true });
 
     const regenMsgId = reuseMessageId || `ai-regen-${Date.now()}`;
+    const retryRequestId = createRetryRequestIdHelper();
 
     const apiKey = await ensureApiKey();
     if (!apiKey) {
       this.postMessage({ type: 'setLoading', loading: false });
       this.rollbackPendingRegenerateState(regenMsgId);
-      this.postMessage({ type: 'showError', message: '未配置 API Key，请在设置中配置 myAiPlugin.apiKey' });
+      this.postMessage({ type: 'showError', message: '未配置 API Key，请在设置中配置 myAiPlugin.apiKey', retryRequestId });
       return;
     }
 
@@ -1011,8 +1016,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       saveChatHistory: () => this.saveChatHistory(),
       createDisplayMessageId: createDisplayMessageIdHelper,
       createHistoryProcessSummary,
+      retryRequestId,
       onToolCalls: ({ fullContent, parsedToolCalls }) => {
-        this.handleToolCalls(fullContent, apiConfig, regenMsgId, requestMode, parsedToolCalls);
+        this.handleToolCalls(fullContent, apiConfig, regenMsgId, requestMode, parsedToolCalls, retryRequestId)
+          .catch(err => error('重生成工具调用处理异常:', err instanceof Error ? err.message : String(err)));
       },
       onPlainCompleted: () => {
         this.pendingRegenerateState = clearPendingRegenerateStateHelper(this.pendingRegenerateState, regenMsgId);

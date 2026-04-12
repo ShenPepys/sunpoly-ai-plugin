@@ -173,7 +173,9 @@ export async function editFile(filePath: string, oldContent: string, newContent:
       };
     }
 
-    const updatedContent = fileContent.replace(oldContent, newContent);
+    // 用 indexOf + slice 拼接而非 .replace()，避免 newContent 含 $& 等特殊替换模式导致意外结果
+    const matchIndex = fileContent.indexOf(oldContent);
+    const updatedContent = fileContent.slice(0, matchIndex) + newContent + fileContent.slice(matchIndex + oldContent.length);
     fs.writeFileSync(safePath, updatedContent, 'utf-8');
     info(`编辑文件: ${safePath} (替换 ${oldContent.length} → ${newContent.length} 字符)`);
     return { success: true, content: `文件已编辑: ${safePath}` };

@@ -254,7 +254,7 @@ export function getModelConfig(): ModelConfig {
     modelId: model.modelId,
     baseUrl: model.baseUrl,
     apiKey: model.apiKey,
-    knowledgeCutoff: CUTOFF_MAP[model.modelId] ?? '未知',
+    knowledgeCutoff: CUTOFF_MAP[(model.modelId || '').toLowerCase()] ?? '未知',
     contextWindow: resolveContextWindow(model.modelId, model.contextWindow),
     // 用户在 settings 中显式声明优先，否则按 modelId 自动判断
     supportsVision: model.supportsVision ?? detectVisionSupport(model.modelId),
@@ -302,9 +302,15 @@ export async function ensureApiKey(): Promise<string | undefined> {
     const modelsToSave = settingsModels.length > 0
       ? settingsModels.map(model => ({ ...model }))
       : [{ ...DEFAULT_MODEL }];
-    const settingsIndex = loadEnvFile().API_KEY ? activeIndex - 1 : activeIndex;
+    const isEnvModelSelected = !!loadEnvFile().API_KEY && activeIndex === 0;
+    const settingsIndex = isEnvModelSelected ? -1 : (loadEnvFile().API_KEY ? activeIndex - 1 : activeIndex);
 
-    if (settingsIndex >= 0 && modelsToSave[settingsIndex]) {
+    if (isEnvModelSelected) {
+      // 选中的是 .env 来源的模型，API Key 应写入 .env 文件而非 settings
+      vscode.window.showInformationMessage(
+        '当前模型来自 .env 文件，请在 .env 中设置 API_KEY 以持久保存（本次输入仅当次生效）'
+      );
+    } else if (settingsIndex >= 0 && modelsToSave[settingsIndex]) {
       modelsToSave[settingsIndex] = {
         ...modelsToSave[settingsIndex],
         apiKey: input,
