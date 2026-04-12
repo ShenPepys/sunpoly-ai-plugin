@@ -231,6 +231,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       enableScripts: true,
       localResourceRoots: [
         vscode.Uri.joinPath(this.extensionUri, 'media'),
+        vscode.Uri.joinPath(this.extensionUri, 'dist', 'media'),
       ],
     };
 
@@ -798,7 +799,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           cloneHistoryProcessSummary,
         ),
         onToolCalls: ({ fullContent, parsedToolCalls, displayContent, assistantTimestamp }) => {
-          if (this.toolCallRound < 10) {
+          if (this.toolCallRound < 200) {
             this.handleToolCalls(fullContent, apiConfig, reuseMsgId, requestMode, parsedToolCalls, retryRequestId)
               .catch(err => error('续轮工具调用处理异常:', err instanceof Error ? err.message : String(err)));
             return;
@@ -829,7 +830,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
           this.postMessage({
             type: 'showError',
-            message: '工具调用轮次过多（已达 10 轮），已停止继续执行。请缩小任务范围后重试。',
+            message: '工具调用轮次已达上限（200 轮），已自动停止。请缩小任务范围后重试。',
             retryRequestId,
           });
           this.postMessage({ type: 'setLoading', loading: false });
