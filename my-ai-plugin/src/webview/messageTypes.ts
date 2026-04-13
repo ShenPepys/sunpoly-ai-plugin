@@ -194,6 +194,18 @@ export interface OpenSettingsRequest {
   type: 'openSettings';
 }
 
+/** 关闭内部子标签（前端 Tab bar 中的单个标签） */
+export interface CloseInternalTabRequest {
+  type: 'closeInternalTab';
+  tabId: string;
+}
+
+/** 切换内部子标签 */
+export interface SwitchInternalTabRequest {
+  type: 'switchInternalTab';
+  tabId: string;
+}
+
 /** Webview 发送给 Extension 的所有消息类型 */
 export type WebviewMessage =
   | SendMessageRequest
@@ -219,6 +231,8 @@ export type WebviewMessage =
   | RetryRequestRequest
   | OpenFilesInIdeRequest
   | OpenSettingsRequest
+  | CloseInternalTabRequest
+  | SwitchInternalTabRequest
   | UndoAllChangesRequest
   | UndoFileChangeRequest;
 
@@ -428,6 +442,11 @@ export interface UpdateChangeSummaryResponse {
   text: string;
 }
 
+/** Extension 通知 Webview 创建一个新的内部子标签（Alt+T 触发） */
+export interface CreateInternalTabResponse {
+  type: 'createInternalTab';
+}
+
 /** 流式阶段完成后显示 Thinking 耗时（替代之前的 Thinking 动画） */
 export interface ThinkingCompleteResponse {
   type: 'thinkingComplete';
@@ -528,4 +547,5 @@ export type ExtensionMessage =
   | ThinkingCompleteResponse
   | VisionNotSupportedResponse
   | ClearImageAttachmentsResponse
-  | UpdateSessionsResponse;
+  | UpdateSessionsResponse
+  | CreateInternalTabResponse;

@@ -33,7 +33,9 @@ const MODE_CODE_SECTION = `# 工作模式：Code
 - 路径必须是相对于工作区根目录的完整相对路径，如 \`miniprogram/pages/index/index.vue\`，不要只写文件名
 - 你可以在一次回复中输出**多个**工具调用，它们会被并行执行。需要批量读取时，一次输出所有 read_file 调用
 - 使用 edit_file 时，old 内容必须足够精确并且在目标文件中唯一命中
-- 当用户要求查看某个目录下的所有代码时，先用 list_dir 递归探索目录结构，然后批量读取所有文件`;
+- 当用户要求查看某个目录下的所有代码时，先用 list_dir 递归探索目录结构，然后批量读取所有文件
+- **跳过无用文件**：不要读取 package-lock.json、yarn.lock、node_modules 目录、.min.js、.map、图片/字体等二进制文件。这些对理解代码没有帮助
+- **优先读源码**：只读取 .js/.ts/.vue/.jsx/.tsx/.css/.scss/.json/.html 等源码文件，跳过编译产物和配置锁定文件`;
 
 /** Ask 模式：只读对话，不修改文件 */
 const MODE_ASK_SECTION = `# 工作模式：Ask
@@ -51,6 +53,8 @@ const MODE_ASK_SECTION = `# 工作模式：Ask
 - 路径必须是相对于工作区根目录的完整相对路径，如 \`miniprogram/pages/index/index.vue\`
 - 你可以在一次回复中输出**多个**工具调用，它们会被并行执行
 - 当用户要求查看某个目录下的所有代码时，先用 list_dir 递归探索目录结构，然后批量读取所有文件
+- **跳过无用文件**：不要读取 package-lock.json、yarn.lock、node_modules 目录、.min.js、.map、图片/字体等二进制文件
+- **优先读源码**：只读取 .js/.ts/.vue/.jsx/.tsx/.css/.scss/.json/.html 等源码文件
 
 如果用户要求修改文件，告知用户当前处于 Ask 模式，建议切换到 Code 模式。`;
 
@@ -75,7 +79,9 @@ const MODE_PLAN_SECTION = `# 工作模式：Plan
 ## 重要规则
 - 路径必须是相对于工作区根目录的完整相对路径，如 \`miniprogram/pages/index/index.vue\`
 - 你可以在一次回复中输出**多个**工具调用，它们会被并行执行
-- 当用户要求查看某个目录下的所有代码时，先用 list_dir 递归探索目录结构，然后批量读取所有文件`;
+- 当用户要求查看某个目录下的所有代码时，先用 list_dir 递归探索目录结构，然后批量读取所有文件
+- **跳过无用文件**：不要读取 package-lock.json、yarn.lock、node_modules 目录、.min.js、.map、图片/字体等二进制文件
+- **优先读源码**：只读取 .js/.ts/.vue/.jsx/.tsx/.css/.scss/.json/.html 等源码文件，跳过编译产物和配置锁定文件`;
 
 /** 身份介绍：所有模式共用的基础身份 */
 const IDENTITY_SECTION = `你是一个 AI 助理，运行在用户的 VS Code 编辑器中。

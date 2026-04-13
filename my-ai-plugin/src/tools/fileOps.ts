@@ -10,6 +10,38 @@ import * as path from 'path';
 import { info, error } from '../logger';
 
 /**
+ * 应跳过的文件名（精确匹配）
+ * 这些文件对理解代码逻辑没有帮助，读取它们只会浪费模型上下文
+ */
+const SKIP_FILE_NAMES = new Set([
+  'package-lock.json',
+  'yarn.lock',
+  'pnpm-lock.yaml',
+  'composer.lock',
+  'Gemfile.lock',
+  'Cargo.lock',
+  'poetry.lock',
+  '.DS_Store',
+  'Thumbs.db',
+]);
+
+/**
+ * 应跳过的文件扩展名（二进制或无意义文件）
+ */
+const SKIP_EXTENSIONS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.svg',
+  '.woff', '.woff2', '.ttf', '.eot', '.otf',
+  '.mp3', '.mp4', '.wav', '.avi', '.mov',
+  '.zip', '.tar', '.gz', '.rar', '.7z',
+  '.exe', '.dll', '.so', '.dylib',
+  '.map', '.min.js', '.min.css',
+  '.pyc', '.class', '.o', '.obj',
+]);
+
+/** 单个文件返回给模型的最大字符数，超出部分截断 */
+const MAX_CONTENT_CHARS = 8192;
+
+/**
  * 获取工作区根目录路径
  * 如果没有打开工作区则返回 undefined
  */
@@ -106,7 +138,31 @@ export async function readFile(filePath: string): Promise<FileOpResult> {
       return { success: false, content: `文件过大 (${(stat.size / 1024).toFixed(0)}KB)，超过 512KB 限制: ${safePath}` };
     }
 
+    // 根据文件名和扩展名判断是否应跳过
+    const fileName = path.basename(safePath);
+    const fileExt = path.extname(safePath).toLowerCase();
+
+    if (SKIP_FILE_NAMES.has(fileName)) {
+      info(`跳过无意义文件: ${safePath}`);
+      return { success: true, content: `[已跳过] ${fileName} 是依赖锁定/系统文件，不含有用代码信息` };
+    }
+    if (SKIP_EXTENSIONS.has(fileExt)) {
+      info(`跳过二进制/无意义扩展名文件: ${safePath}`);
+      return { success: true, content: `[已跳过] ${fileName} 是二进制或编译产物文件` };
+    }
+
     const content = fs.readFileSync(safePath, 'utf-8');
+
+    // 超长文件截断，避免单个文件占用过多模型上下文
+    if (content.length > MAX_CONTENT_CHARS) {
+      const truncated = content.slice(0, MAX_CONTENT_CHARS);
+      info(`读取文件(截断): ${safePath} (原 ${content.length} 字符 → ${MAX_CONTENT_CHARS} 字符)`);
+      return {
+        success: true,
+        content: truncated + `\n\n[文件已截断，仅显示前 ${MAX_CONTENT_CHARS} 字符，原始长度 ${content.length} 字符]`,
+      };
+    }
+
     info(`读取文件: ${safePath} (${content.length} 字符)`);
     return { success: true, content };
   } catch (err) {

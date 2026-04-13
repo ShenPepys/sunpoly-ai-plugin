@@ -43,6 +43,9 @@
   const btnNewSession = document.getElementById('btn-new-session');
   const btnSettings = document.getElementById('btn-settings');
   const btnTerminalError = document.getElementById('btn-terminal-error');
+  const internalTabsBar = document.getElementById('internal-tabs-bar');
+  const internalTabsList = document.getElementById('internal-tabs-list');
+  const btnInternalTabAdd = document.getElementById('internal-tab-add');
   var sessionLauncherRequestTimer = 0;
 
   /**
@@ -260,6 +263,178 @@
   var sessionLauncherVisible = false;
   var pendingDeleteSessionId = '';
 
+  // ==================== 内部子标签状态 ====================
+  /** 内部子标签列表，每项 { id, sessionId, title } */
+  var internalTabs = [];
+  /** 当前活跃的内部标签 ID */
+  var activeInternalTabId = '';
+  /** 内部标签 ID 计数器 */
+  var internalTabCounter = 0;
+
+  /**
+   * 生成内部标签唯一 ID
+   */
+  function generateInternalTabId() {
+    internalTabCounter += 1;
+    return 'itab-' + Date.now() + '-' + internalTabCounter;
+  }
+
+  /**
+   * 创建一个新的内部子标签
+   * 新标签关联当前活跃会话，然后触发后端创建新会话
+   */
+  function createInternalTab() {
+    // 先保存当前标签的会话 ID，避免切回时丢失关联
+    var currentTab = internalTabs.find(function (t) { return t.id === activeInternalTabId; });
+    if (currentTab && activeSessionId) {
+      currentTab.sessionId = activeSessionId;
+      // 同步更新标题
+      var matchSession = sessionList.find(function (s) { return s.id === activeSessionId; });
+      if (matchSession && matchSession.name) {
+        currentTab.title = matchSession.name;
+      }
+    }
+
+    var newTab = {
+      id: generateInternalTabId(),
+      sessionId: '',
+      title: '新对话',
+    };
+    internalTabs.push(newTab);
+    activeInternalTabId = newTab.id;
+    renderInternalTabBar();
+
+    // 通知后端打开会话启动器（用户输入后会自动创建新会话）
+    vscode.postMessage({ type: 'createSession' });
+  }
+
+  /**
+   * 切换到指定内部标签
+   */
+  function switchInternalTab(tabId) {
+    var targetTab = internalTabs.find(function (t) { return t.id === tabId; });
+    if (!targetTab || tabId === activeInternalTabId) {
+      return;
+    }
+
+    // 先更新当前标签的会话 ID（可能在使用过程中被后端分配了）
+    var currentTab = internalTabs.find(function (t) { return t.id === activeInternalTabId; });
+    if (currentTab && activeSessionId) {
+      currentTab.sessionId = activeSessionId;
+    }
+
+    activeInternalTabId = tabId;
+    renderInternalTabBar();
+
+    // 如果目标标签已关联会话，切换到该会话
+    if (targetTab.sessionId) {
+      vscode.postMessage({ type: 'switchSession', sessionId: targetTab.sessionId });
+    } else {
+      // 新标签无会话，显示启动器
+      vscode.postMessage({ type: 'createSession' });
+    }
+  }
+
+  /**
+   * 关闭指定内部标签
+   * 至少保留一个标签
+   */
+  function closeInternalTab(tabId) {
+    if (internalTabs.length <= 1) {
+      return;
+    }
+
+    var closingIndex = -1;
+    for (var i = 0; i < internalTabs.length; i++) {
+      if (internalTabs[i].id === tabId) {
+        closingIndex = i;
+        break;
+      }
+    }
+    if (closingIndex === -1) {
+      return;
+    }
+
+    internalTabs.splice(closingIndex, 1);
+
+    // 如果关闭的是当前活跃标签，切换到相邻标签
+    if (tabId === activeInternalTabId) {
+      var nextIndex = Math.min(closingIndex, internalTabs.length - 1);
+      switchInternalTab(internalTabs[nextIndex].id);
+    } else {
+      renderInternalTabBar();
+    }
+  }
+
+  /**
+   * 渲染内部标签栏
+   * 只有多于 1 个标签时才显示标签栏
+   */
+  function renderInternalTabBar() {
+    internalTabsList.innerHTML = '';
+
+    // 只有 1 个标签时隐藏标签栏，减少视觉干扰
+    if (internalTabs.length <= 1) {
+      internalTabsBar.classList.remove('visible');
+      return;
+    }
+
+    internalTabsBar.classList.add('visible');
+
+    internalTabs.forEach(function (tab, index) {
+      var tabEl = document.createElement('div');
+      tabEl.className = 'internal-tab' + (tab.id === activeInternalTabId ? ' active' : '');
+
+      var labelEl = document.createElement('span');
+      labelEl.textContent = tab.title || ('对话 ' + (index + 1));
+      tabEl.appendChild(labelEl);
+
+      // 多于 1 个标签时显示关闭按钮
+      var closeBtn = document.createElement('button');
+      closeBtn.className = 'internal-tab-close';
+      closeBtn.textContent = '\u00d7';
+      closeBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        closeInternalTab(tab.id);
+      });
+      tabEl.appendChild(closeBtn);
+
+      tabEl.addEventListener('click', function () {
+        switchInternalTab(tab.id);
+      });
+
+      internalTabsList.appendChild(tabEl);
+    });
+  }
+
+  /**
+   * 后端推送 updateSessions 时，同步更新当前活跃标签的 sessionId 和 title
+   */
+  function syncActiveInternalTab() {
+    if (!activeInternalTabId) {
+      return;
+    }
+    var activeTab = internalTabs.find(function (t) { return t.id === activeInternalTabId; });
+    if (!activeTab) {
+      return;
+    }
+
+    // 更新 sessionId
+    if (activeSessionId && !activeTab.sessionId) {
+      activeTab.sessionId = activeSessionId;
+    }
+
+    // 从 sessionList 中获取最新标题
+    if (activeTab.sessionId) {
+      var matchSession = sessionList.find(function (s) { return s.id === activeTab.sessionId; });
+      if (matchSession && matchSession.name) {
+        activeTab.title = matchSession.name;
+      }
+    }
+
+    renderInternalTabBar();
+  }
+
   function getWelcomeMessageHtml() {
     return '<div class="welcome-message">' +
       '<p><strong>👋 你好！我是 AI 助理</strong></p>' +
@@ -394,6 +569,13 @@
     e.preventDefault();
     e.stopPropagation();
     requestSessionLauncherOpen();
+  });
+
+  /** 内部标签栏 "+" 按钮：创建新的内部子标签 */
+  btnInternalTabAdd.addEventListener('click', function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    createInternalTab();
   });
 
   /**
@@ -686,7 +868,12 @@
       case 'updateSessions':
         sessionList = message.sessions;
         activeSessionId = message.activeSessionId;
+        syncActiveInternalTab();
         renderSessionTabs();
+        break;
+
+      case 'createInternalTab':
+        createInternalTab();
         break;
 
       case 'setSessionLauncher':
@@ -2403,5 +2590,18 @@
     placeholderIndex = (placeholderIndex + 1) % placeholderTexts.length;
     userInput.placeholder = placeholderTexts[placeholderIndex];
   }, 6000);
+
+  // ==================== 初始化第一个内部标签 ====================
+  // 面板启动时自动创建一个默认标签，关联当前活跃会话
+  if (internalTabs.length === 0) {
+    var firstTab = {
+      id: generateInternalTabId(),
+      sessionId: activeSessionId || '',
+      title: '新对话',
+    };
+    internalTabs.push(firstTab);
+    activeInternalTabId = firstTab.id;
+    // 只有 1 个标签时不显示标签栏，无需调用 renderInternalTabBar
+  }
 
 })();

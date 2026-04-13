@@ -76,6 +76,10 @@ export function buildChatViewHtml(options: {
       <button id="search-next" class="search-nav-btn" title="下一个">▼</button>
       <button id="search-close" class="search-nav-btn" title="关闭搜索">✕</button>
     </div>
+    <div id="internal-tabs-bar" class="internal-tabs-bar">
+      <div id="internal-tabs-list" class="internal-tabs-list"></div>
+      <button id="internal-tab-add" class="internal-tab-add" title="新建标签 (Alt+T)">+</button>
+    </div>
     <div id="session-tabs-bar" class="session-tabs-bar hidden">
       <div id="session-tabs" class="session-tabs"></div>
     </div>

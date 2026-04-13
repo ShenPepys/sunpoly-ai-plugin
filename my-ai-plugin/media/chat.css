@@ -34,7 +34,106 @@ body {
 }
 
 
-/* ==================== 会话 Tab 标签条 ==================== */
+/* ==================== 内部子标签栏 ==================== */
+
+.internal-tabs-bar {
+  display: none;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.08));
+  background: var(--vscode-editor-background, #1e1e1e);
+  padding: 0 4px;
+  align-items: center;
+  min-height: 32px;
+}
+
+.internal-tabs-bar.visible {
+  display: flex;
+}
+
+.internal-tabs-list {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  overflow-x: auto;
+  flex: 1;
+  min-width: 0;
+}
+
+.internal-tabs-list::-webkit-scrollbar {
+  height: 0;
+}
+
+.internal-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  border-radius: 4px 4px 0 0;
+  cursor: pointer;
+  white-space: nowrap;
+  color: var(--vscode-tab-inactiveForeground, rgba(255,255,255,0.5));
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+  user-select: none;
+}
+
+.internal-tab:hover {
+  color: var(--vscode-tab-activeForeground, #fff);
+}
+
+.internal-tab.active {
+  color: var(--vscode-tab-activeForeground, #fff);
+  border-bottom-color: var(--vscode-focusBorder, #007acc);
+}
+
+.internal-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 11px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.internal-tab:hover .internal-tab-close,
+.internal-tab.active .internal-tab-close {
+  opacity: 0.6;
+}
+
+.internal-tab-close:hover {
+  opacity: 1 !important;
+  background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.1));
+}
+
+.internal-tab-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  font-size: 16px;
+  border: none;
+  background: transparent;
+  color: var(--vscode-tab-inactiveForeground, rgba(255,255,255,0.5));
+  cursor: pointer;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.internal-tab-add:hover {
+  color: var(--vscode-tab-activeForeground, #fff);
+  background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.1));
+}
+
+/* ==================== 会话启动器（历史会话列表） ==================== */
 
 .session-tabs-bar {
   display: none;
