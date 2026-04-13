@@ -307,6 +307,8 @@
   function setSessionLauncherVisible(visible) {
     sessionLauncherVisible = visible;
     pendingDeleteSessionId = '';
+    // 每次打开启动器时重置分页计数，从最近的会话开始显示
+    sessionDisplayCount = SESSION_PAGE_SIZE;
     sessionTabsBar.classList.add('hidden');
     syncSessionToolbarState();
 
@@ -1195,6 +1197,93 @@
    * 每个 Tab 显示：会话名称 + 对话轮数徽章 + × 删除按钮（仅在多会话时显示）
    * 支持单击切换、双击重命名（内联 input）
    */
+  /** 历史会话列表每次显示的条数上限 */
+  var SESSION_PAGE_SIZE = 20;
+  /** 当前历史列表已展示的数量 */
+  var sessionDisplayCount = SESSION_PAGE_SIZE;
+
+  /**
+   * 构建单个会话项 DOM
+   * @param {Object} session 会话摘要
+   * @param {HTMLElement} listEl 列表容器
+   */
+  function buildSessionItem(session, listEl) {
+    var isActive = session.id === activeSessionId;
+    var isPendingDelete = pendingDeleteSessionId === session.id;
+    var sessionItem = document.createElement('div');
+    sessionItem.className = 'session-launcher-item' + (isActive ? ' active' : '');
+    sessionItem.setAttribute('data-session-id', session.id);
+
+    if (isPendingDelete) {
+      var confirmRow = document.createElement('div');
+      confirmRow.className = 'session-launcher-confirm';
+      confirmRow.innerHTML =
+        '<span class="session-launcher-confirm-text">确认删除这个会话？</span>' +
+        '<div class="session-launcher-confirm-actions">' +
+          '<button class="session-launcher-btn danger">删除</button>' +
+          '<button class="session-launcher-btn ghost">取消</button>' +
+        '</div>';
+
+      confirmRow.querySelector('.session-launcher-btn.danger').addEventListener('click', function (e) {
+        e.stopPropagation();
+        pendingDeleteSessionId = '';
+        vscode.postMessage({ type: 'deleteSession', sessionId: session.id });
+      });
+
+      confirmRow.querySelector('.session-launcher-btn.ghost').addEventListener('click', function (e) {
+        e.stopPropagation();
+        pendingDeleteSessionId = '';
+        renderSessionTabs();
+      });
+
+      sessionItem.appendChild(confirmRow);
+      listEl.appendChild(sessionItem);
+      return;
+    }
+
+    var infoWrap = document.createElement('div');
+    infoWrap.className = 'session-launcher-info';
+    infoWrap.innerHTML =
+      '<div class="session-launcher-title" title="' + escapeAttr(session.name) + '">' + escapeHtml(session.name) + '</div>' +
+      '<div class="session-launcher-meta">' + (session.messageCount > 0 ? (Math.ceil(session.messageCount / 2) + ' 轮对话') : '暂无消息') + '</div>';
+
+    var rightWrap = document.createElement('div');
+    rightWrap.className = 'session-launcher-right';
+    rightWrap.innerHTML =
+      '<span class="session-launcher-time">' + formatRelativeTime(session.updatedAt) + '</span>' +
+      '<div class="session-launcher-actions">' +
+        '<button class="session-launcher-btn">继续</button>' +
+        '<button class="session-launcher-btn danger">删除</button>' +
+      '</div>';
+
+    var continueBtn = rightWrap.querySelector('.session-launcher-btn');
+    var deleteBtn = rightWrap.querySelector('.session-launcher-btn.danger');
+
+    function continueSession() {
+      pendingDeleteSessionId = '';
+      vscode.postMessage({ type: 'switchSession', sessionId: session.id });
+    }
+
+    sessionItem.addEventListener('click', function () {
+      continueSession();
+    });
+
+    continueBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      continueSession();
+    });
+
+    deleteBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      pendingDeleteSessionId = session.id;
+      renderSessionTabs();
+    });
+
+    sessionItem.appendChild(infoWrap);
+    sessionItem.appendChild(rightWrap);
+    listEl.appendChild(sessionItem);
+  }
+
   function renderSessionTabs() {
     sessionTabsEl.innerHTML = '';
 
@@ -1229,82 +1318,26 @@
 
     launcherPanel.appendChild(headerEl);
 
-    sessionList.forEach(function (session) {
-      var isActive = session.id === activeSessionId;
-      var isPendingDelete = pendingDeleteSessionId === session.id;
-      var sessionItem = document.createElement('div');
-      sessionItem.className = 'session-launcher-item' + (isActive ? ' active' : '');
-      sessionItem.setAttribute('data-session-id', session.id);
+    // 只渲染前 sessionDisplayCount 条会话
+    var visibleSessions = sessionList.slice(0, sessionDisplayCount);
+    var hasMore = sessionList.length > sessionDisplayCount;
 
-      if (isPendingDelete) {
-        var confirmRow = document.createElement('div');
-        confirmRow.className = 'session-launcher-confirm';
-        confirmRow.innerHTML =
-          '<span class="session-launcher-confirm-text">确认删除这个会话？</span>' +
-          '<div class="session-launcher-confirm-actions">' +
-            '<button class="session-launcher-btn danger">删除</button>' +
-            '<button class="session-launcher-btn ghost">取消</button>' +
-          '</div>';
+    visibleSessions.forEach(function (session) {
+      buildSessionItem(session, listEl);
+    });
 
-        confirmRow.querySelector('.session-launcher-btn.danger').addEventListener('click', function (e) {
-          e.stopPropagation();
-          pendingDeleteSessionId = '';
-          vscode.postMessage({ type: 'deleteSession', sessionId: session.id });
-        });
-
-        confirmRow.querySelector('.session-launcher-btn.ghost').addEventListener('click', function (e) {
-          e.stopPropagation();
-          pendingDeleteSessionId = '';
-          renderSessionTabs();
-        });
-
-        sessionItem.appendChild(confirmRow);
-        listEl.appendChild(sessionItem);
-        return;
-      }
-
-      var infoWrap = document.createElement('div');
-      infoWrap.className = 'session-launcher-info';
-      infoWrap.innerHTML =
-        '<div class="session-launcher-title" title="' + escapeAttr(session.name) + '">' + escapeHtml(session.name) + '</div>' +
-        '<div class="session-launcher-meta">' + (session.messageCount > 0 ? (Math.ceil(session.messageCount / 2) + ' 轮对话') : '暂无消息') + '</div>';
-
-      var rightWrap = document.createElement('div');
-      rightWrap.className = 'session-launcher-right';
-      rightWrap.innerHTML =
-        '<span class="session-launcher-time">' + formatRelativeTime(session.updatedAt) + '</span>' +
-        '<div class="session-launcher-actions">' +
-          '<button class="session-launcher-btn">继续</button>' +
-          '<button class="session-launcher-btn danger">删除</button>' +
-        '</div>';
-
-      var continueBtn = rightWrap.querySelector('.session-launcher-btn');
-      var deleteBtn = rightWrap.querySelector('.session-launcher-btn.danger');
-
-      function continueSession() {
-        pendingDeleteSessionId = '';
-        vscode.postMessage({ type: 'switchSession', sessionId: session.id });
-      }
-
-      sessionItem.addEventListener('click', function () {
-        continueSession();
-      });
-
-      continueBtn.addEventListener('click', function (e) {
-        e.stopPropagation();
-        continueSession();
-      });
-
-      deleteBtn.addEventListener('click', function (e) {
-        e.stopPropagation();
-        pendingDeleteSessionId = session.id;
+    // 超出上限时显示"显示更多"按钮
+    if (hasMore) {
+      var remainingCount = sessionList.length - sessionDisplayCount;
+      var showMoreBtn = document.createElement('button');
+      showMoreBtn.className = 'session-launcher-show-more';
+      showMoreBtn.textContent = '显示更多（剩余 ' + remainingCount + ' 条）';
+      showMoreBtn.addEventListener('click', function () {
+        sessionDisplayCount += SESSION_PAGE_SIZE;
         renderSessionTabs();
       });
-
-      sessionItem.appendChild(infoWrap);
-      sessionItem.appendChild(rightWrap);
-      listEl.appendChild(sessionItem);
-    });
+      listEl.appendChild(showMoreBtn);
+    }
 
     launcherPanel.appendChild(listEl);
     messagesContainer.appendChild(launcherPanel);

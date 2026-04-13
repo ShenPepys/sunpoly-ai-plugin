@@ -201,6 +201,26 @@ body {
   font-size: 13px;
 }
 
+/* 历史会话列表分页"显示更多"按钮 */
+.session-launcher-show-more {
+  display: block;
+  width: 100%;
+  padding: 10px 0;
+  border: 1px dashed var(--vscode-panel-border, #454545);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--vscode-textLink-foreground, #3794ff);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: center;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.session-launcher-show-more:hover {
+  background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.06));
+  border-color: var(--vscode-focusBorder, #007acc);
+}
+
 .session-new-btn {
   min-width: auto;
   padding: 0 10px;

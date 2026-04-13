@@ -1039,3 +1039,228 @@ const stat = fs.statSync(filePath);
 - [x] `架构-2` 收尾：已在用户确认后处理 `copy` 备份文件
 
 当前进度：`ChatViewProvider.ts` 已由 `3557` 行缩减到 `1181` 行，已低于项目规定的 `1200` 行上限，并通过 `tsc -p . --noEmit`。
+
+---
+
+## v0.2.0 Bug 修复批次
+
+### 已完成修复
+
+- [x] BUG-3：流式请求 onDone/onError 双触发互斥 → `client.ts` 添加 `settled` 互斥标志
+- [x] BUG-5：regenerateResponse 缺少 retryRequestId → 生成并传递 retryRequestId
+- [x] BUG-1：ensureApiKey 中 .env model 的 settingsIndex=-1 不保存 → 检测 .env 模型时提示用户
+- [x] DEFECT-8：editFile 的 .replace() 特殊字符问题 → 改用 indexOf + slice 拼接
+- [x] DEFECT-11：handleToolCalls 递归调用缺少 await → 添加 .catch() 错误处理
+- [x] BUG-4：onStopGeneration 不发送多轮全量变更汇总 → 停止时检查 turnWriteRounds 并发送
+- [x] BUG-2：CUTOFF_MAP 查表缺少 toLowerCase → 查表前统一 .toLowerCase()
+
+### 已完成的运行时修复
+
+- [x] Webview localResourceRoots 未包含 `dist/media/` → 添加 `dist/media` 到允许列表
+- [x] 工具调用轮次上限从 10 提升到 200（兜底保护，正常不触发）
+- [x] 工具执行改为读操作并行、写操作串行 → `toolExecutor.ts` 中 `Promise.all` 并行只读批次
+
+---
+
+## 多 Tab 聊天功能（v0.2.0 新功能）
+
+### 目标
+
+支持在 VS Code 编辑器中打开多个独立的 AI 聊天 Tab，每个 Tab 拥有独立的会话状态和对话流程，与侧边栏聊天面板并存。
+
+### 依赖关系
+
+```
+阶段 0（准备） → 阶段 1（引擎抽离） → 阶段 2（Tab 新增） → 阶段 3（隔离与共享） → 阶段 4（前端适配）
+```
+
+### 阶段 0：准备工作
+
+> 低风险，为后续重构建立安全网和接口契约
+
+- [x] **0-1 备份源文件**
+  - 操作：创建 `src/webview/ChatViewProvider latest copy.ts`
+  - 验证：文件存在且内容与源文件一致
+
+- [x] **0-2 定义 IChatHost 接口**
+  - 新建文件：`src/webview/IChatHost.ts`
+  - 定义 Webview 容器必须提供的能力：
+    - `postMessage(message: ExtensionMessage): void` — 向前端发送消息
+    - `getWebview(): vscode.Webview | undefined` — 获取 Webview 实例
+    - `getExtensionUri(): vscode.Uri` — 获取插件根目录 URI
+    - `getGlobalState(): vscode.Memento` — 获取持久化存储
+    - `reveal(): void` — 使面板可见
+  - 验证：`tsc -p . --noEmit` 通过
+
+### 阶段 1：抽离聊天引擎 ChatEngine
+
+> 核心阶段，最大改动量。将 ChatViewProvider 的业务逻辑全部迁移到独立引擎类。
+> 完成后侧边栏功能必须与改动前完全一致。
+
+- [x] **1-1 新建 ChatEngine.ts 骨架**
+  - 新建文件：`src/webview/ChatEngine.ts`
+  - 迁移所有实例状态字段（约 20 个）：
+    - `sessions`, `activeSessionId`, `currentMode`, `contextFiles`
+    - `abortStream`, `activeRunId`, `toolCallsInProgress`, `stepSequence`, `toolCallRound`
+    - `writeBackups`, `sessionLauncherVisible`, `turnWriteFiles`, `turnWriteRounds`
+    - `activeHistoryProcessSummary`, `pendingRegenerateState`, `retryableRequests`
+    - `sessionDisplayHistoryAccessors`
+    - `displayHistory` getter/setter, `chatHistory` getter/setter
+  - 构造函数接收 `IChatHost` 实例而非 `vscode.ExtensionContext`
+  - 验证：tsc 通过（此时 ChatEngine 只有字段，无方法）
+
+- [x] **1-2 迁移业务方法到 ChatEngine**
+  - 迁移以下 private 方法：
+    - `handleUserMessage` — 用户消息处理主流程
+    - `handleToolCalls` — 工具调用执行与续轮
+    - `handleRegenerate` — 重新生成入口
+    - `regenerateResponse` — 重新生成请求发起
+    - `handleWebviewMessage` — Webview 消息分发
+    - `resetSessionScopedRuntimeState` — 会话级运行时重置
+    - `rollbackPendingRegenerateState` — 重做回滚
+    - `hasRunningTask` — 运行中判断
+  - 迁移以下 public/private 会话管理方法：
+    - `clearCurrentSession`, `openSessionLauncher`, `switchSession`, `deleteSession`
+    - `loadSessions`, `saveSessions`, `saveChatHistory`
+  - 迁移以下辅助方法：
+    - `sendModelList`, `pushTokenCount`, `exportChatToMarkdown`
+  - 所有方法中 `this.postMessage(...)` 改为 `this.host.postMessage(...)`
+  - 所有方法中 `this.context.globalState` 改为 `this.host.getGlobalState()`
+  - 验证：tsc 通过
+
+- [x] **1-3 ChatViewProvider 改为薄壳**
+  - `ChatViewProvider` 内部持有 `private engine: ChatEngine`
+  - 构造函数中创建 `ChatEngine` 实例，传入自身作为 `IChatHost`
+  - `ChatViewProvider` 实现 `IChatHost` 接口
+  - `resolveWebviewView` 保留在 Provider 中（VS Code API 要求）
+  - 所有公开方法委托到 `this.engine.xxx()`：
+    - `runCommandRequest` → `this.engine.runCommandRequest()`
+    - `clearCurrentSession` → `this.engine.clearCurrentSession()`
+    - `getMode` → `this.engine.getMode()`
+    - `switchMode` → `this.engine.switchMode()`
+    - `openSessionLauncher` → `this.engine.openSessionLauncher()`
+    - `postMessage` → 保留在 Provider（直接调 webviewView.webview.postMessage）
+  - `onModelSwitch` 回调保留在 Provider，通过 engine 事件桥接
+  - 验证：tsc 通过 + 打包安装测试侧边栏功能完全正常
+
+- [x] **1-4 外部调用者适配**
+  - `extension.ts`：无需改动（ChatViewProvider 公开 API 不变）
+  - `commands/handler.ts`：无需改动（依赖 ChatViewProvider 类型不变）
+  - 验证：tsc 通过 + 所有右键命令可用
+
+### 阶段 2：新增 Tab 面板能力
+
+> 增量新增，不修改已有侧边栏逻辑。
+
+- [x] **2-1 新建 ChatTabPanel.ts**
+  - 新建文件：`src/webview/ChatTabPanel.ts`
+  - 类实现 `IChatHost` 接口
+  - 内部持有：
+    - `vscode.WebviewPanel` 实例
+    - 独立的 `ChatEngine` 实例
+  - 构造函数：
+    - 创建 `vscode.window.createWebviewPanel(...)` 
+    - 配置 `localResourceRoots`（复用 Provider 逻辑）
+    - 设置 HTML（复用 `buildChatViewHtml`）
+    - 绑定消息监听到 `this.engine.handleWebviewMessage`
+    - 监听 `onDidDispose` 清理资源
+  - 实现 `IChatHost` 方法
+  - 验证：tsc 通过
+
+- [x] **2-2 新建 ChatTabManager.ts**
+  - 新建文件：`src/webview/ChatTabManager.ts`
+  - 管理所有打开的 Tab：
+    - `private tabs: Map<string, ChatTabPanel>`
+    - `createTab(context: vscode.ExtensionContext): ChatTabPanel`
+    - `closeTab(tabId: string): void`
+    - `getActiveTab(): ChatTabPanel | undefined`
+    - `dispose(): void` — 关闭所有 Tab
+  - 监听 Tab 关闭事件，自动从 Map 中移除
+  - 验证：tsc 通过
+
+- [x] **2-3 注册命令与快捷键**
+  - 修改文件：`src/extension.ts`
+  - 新增操作：
+    - 创建 `ChatTabManager` 实例
+    - 注册命令 `myAiPlugin.newChatTab`，调用 `tabManager.createTab(context)`
+  - 修改文件：`package.json`
+  - 新增操作：
+    - `contributes.commands` 添加 `myAiPlugin.newChatTab`（标题："AI 助理：新建聊天 Tab"）
+    - `contributes.keybindings` 添加快捷键绑定（`Ctrl+Shift+T`）
+  - 验证：tsc 通过 + 打包后按快捷键能弹出新 Tab 并正常对话
+
+### 阶段 3：会话隔离与共享资源
+
+> 确保多个 ChatEngine 实例并发运行时数据安全。
+
+- [ ] **3-1 新建 SessionStore 单例**
+  - 新建文件：`src/webview/SessionStore.ts`
+  - 统一管理 sessions 的读写和 globalState 持久化
+  - 所有 ChatEngine 实例通过 SessionStore 读写会话数据
+  - 防止并发 saveSessions 导致数据覆盖
+  - 验证：tsc 通过
+
+- [ ] **3-2 ChatEngine 改用 SessionStore**
+  - 修改 `ChatEngine.ts` 中 `loadSessions`/`saveSessions` 改为调用 `SessionStore`
+  - 每个引擎实例维护自己的 `activeSessionId`，sessions 池由 Store 统一管理
+  - 验证：tsc 通过 + 多 Tab 各自独立对话、切换会话不互相干扰
+
+- [ ] **3-3 状态栏同步**
+  - 修改 `extension.ts` 中状态栏更新逻辑
+  - 活跃 Tab 或侧边栏 focus 时更新状态栏模型名称
+  - ChatTabPanel 添加 `onDidChangeViewState` 监听
+  - 验证：切换 Tab / 侧边栏时状态栏模型名跟随变化
+
+### 阶段 4：前端适配与体验优化
+
+> 细节打磨，提升多 Tab 使用体验。
+
+- [ ] **4-1 Tab 标题动态显示**
+  - ChatTabPanel 创建时标题设为 "AI 聊天"
+  - 用户发第一条消息后，根据会话标题更新 `panel.title`
+  - 验证：可视验证 Tab 标题
+
+- [ ] **4-2 右键命令路由**
+  - 修改 `extension.ts` 和 `handler.ts`
+  - 右键 AI 命令优先发送到当前焦点的 Tab（如果有焦点 Tab），否则发送到侧边栏
+  - 验证：选中代码 → 右键 → 对应面板收到请求
+
+- [ ] **4-3 Tab 间切换体验**
+  - Tab 保持各自的对话历史和滚动位置
+  - Tab 关闭时 engine 自动 dispose（中止流式请求、清理定时器）
+  - 验证：关闭 Tab 不影响其他 Tab 和侧边栏
+
+---
+
+### 里程碑检查点
+
+| 检查点 | 触发条件 | 操作 |
+|--------|---------|------|
+| **M1** | 阶段 1 完成 | 打包安装，验证侧边栏所有功能与改前一致 |
+| **M2** | 阶段 2 完成 | 打包安装，验证新 Tab 能独立对话 |
+| **M3** | 阶段 3 完成 | 多 Tab + 侧边栏同时使用，会话不串扰 |
+| **M4** | 阶段 4 完成 | 完整体验测试，发布 v0.2.0 |
+
+---
+
+## 右侧 Tab 主入口改造（Windsurf / Cursor 风格）
+
+### 背景
+
+Windsurf 和 Cursor 的 AI 聊天面板始终固定在编辑器右侧区域，而非左侧侧边栏。本次改造将插件主入口从侧边栏 `WebviewViewProvider` 切换为右侧编辑器 Tab（`ViewColumn.Two`），多个对话在同一右侧编辑器分组内以 Tab 形式切换。
+
+### 已完成改动
+
+- [x] `ChatTabPanel.ts`：`ViewColumn.One` → `ViewColumn.Two`（固定右侧）；补齐 `runCommandRequest`/`clearCurrentSession`/`getMode`/`switchMode`/`openSessionLauncher` 公开 API
+- [x] `ChatTabManager.ts`：新增 `getOrCreateTab()` 作为统一命令路由入口
+- [x] `handler.ts`：`executeCommand` 参数类型从 `ChatViewProvider` 改为通用接口 `CommandTarget`
+- [x] `extension.ts`：移除 `ChatViewProvider` 侧边栏注册；`Alt+Q`/`Alt+N`/AI 命令/清空/切换模式全部路由到 `tabManager`
+- [x] `package.json`：移除 `viewsContainers` 和 `views` 配置；添加 `onStartupFinished` 激活事件
+- [x] TypeScript 编译验证通过（`tsc -p . --noEmit`）
+
+### 待清理文件
+
+以下文件已不再被导入，但暂时保留供参考，待人工确认功能正常后可手动删除：
+
+- `src/webview/ChatViewProvider.ts` — 原侧边栏薄壳，已被 `ChatTabPanel` + `ChatTabManager` 完全替代
+- `src/webview/ChatViewProvider latest copy.ts` — 历史备份

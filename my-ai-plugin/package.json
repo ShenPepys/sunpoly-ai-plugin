@@ -2,7 +2,7 @@
   "name": "my-ai-plugin",
   "displayName": "AI 助理",
   "description": "VS Code AI 助理插件，支持代码解释、Bug 修复、代码优化、续写和单测生成",
-  "version": "0.1.5",
+  "version": "0.1.7",
   "publisher": "my-ai-plugin",
   "license": "MIT",
   "repository": {
@@ -18,27 +18,9 @@
     "Other"
   ],
   "icon": "resources/icon.png",
-  "activationEvents": [],
+  "activationEvents": ["onStartupFinished"],
   "main": "./dist/extension.js",
   "contributes": {
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "my-ai-plugin-sidebar",
-          "title": "AI 助理",
-          "icon": "resources/icon.svg"
-        }
-      ]
-    },
-    "views": {
-      "my-ai-plugin-sidebar": [
-        {
-          "type": "webview",
-          "id": "my-ai-plugin.chatView",
-          "name": "AI 助理"
-        }
-      ]
-    },
     "commands": [
       {
         "command": "my-ai-plugin.explain",
@@ -83,6 +65,10 @@
       {
         "command": "my-ai-plugin.editModels",
         "title": "AI: 编辑模型配置 (JSON)"
+      },
+      {
+        "command": "my-ai-plugin.newChatTab",
+        "title": "AI: 新建聊天 Tab"
       }
     ],
     "menus": {
@@ -131,6 +117,10 @@
       {
         "command": "my-ai-plugin.newChat",
         "key": "alt+n"
+      },
+      {
+        "command": "my-ai-plugin.newChatTab",
+        "key": "alt+t"
       }
     ],
     "configuration": {

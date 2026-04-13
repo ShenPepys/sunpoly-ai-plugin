@@ -15,7 +15,11 @@ import { buildOptimizePrompt } from '../prompts/optimize';
 import { buildCompletePrompt } from '../prompts/complete';
 import { buildTestPrompt } from '../prompts/test';
 import type { WorkMode } from '../webview/messageTypes';
-import type { ChatViewProvider } from '../webview/ChatViewProvider';
+
+/** 命令执行目标：任何实现了 runCommandRequest 的聊天宿主 */
+export interface CommandTarget {
+  runCommandRequest(request: CommandExecutionRequest): Promise<void>;
+}
 
 /**
  * 命令类型枚举
@@ -108,12 +112,12 @@ export function buildCommandRequest(type: CommandType): CommandExecutionRequest 
  */
 export async function executeCommand(
   type: CommandType,
-  chatProvider: ChatViewProvider,
+  target: CommandTarget,
 ): Promise<void> {
   const commandRequest = buildCommandRequest(type);
   if (!commandRequest) {
     return;
   }
 
-  await chatProvider.runCommandRequest(commandRequest);
+  await target.runCommandRequest(commandRequest);
 }
