@@ -48,14 +48,12 @@ import {
   buildUpdateSessionsResponse,
   buildSessionTitle as buildSessionTitleHelper,
   planClearCurrentSession,
-  loadSessionsState,
   planCreateSession,
   planDeleteSession,
   planOpenSessionLauncher,
   planRenameSession,
   planSwitchSession,
   prepareActiveSessionForSave,
-  sortSessionsByUpdatedAt as sortSessionsByUpdatedAtHelper,
 } from './ChatViewProvider_f_sessions';
 import {
   createSessionDisplayHistoryAccessors,
@@ -104,6 +102,7 @@ import {
   startBasicAssistantStreamRequest,
 } from './ChatViewProvider_p_requestExecution';
 import type { IChatHost } from './IChatHost';
+import type { SessionStore } from './SessionStore';
 
 type DeferredToolStep = {
   stepId: string;
@@ -125,10 +124,18 @@ export class ChatEngine {
   /** 宿主容器（侧边栏或 Tab），通过它与前端通信和获取 VS Code 资源 */
   private host: IChatHost;
 
+  /** 共享会话存储，多 Tab 共用同一个 sessions 池 */
+  private store: SessionStore;
+
   // ==================== 会话状态 ====================
 
-  /** 所有会话列表，持久化到 globalState */
-  private sessions: ChatSession[] = [];
+  /** 所有会话列表（委托到 SessionStore，多引擎共享同一引用） */
+  private get sessions(): ChatSession[] {
+    return this.store.sessions;
+  }
+  private set sessions(value: ChatSession[]) {
+    this.store.sessions = value;
+  }
 
   /** 当前活跃会话的 ID */
   private activeSessionId: string = '';
@@ -209,9 +216,10 @@ export class ChatEngine {
 
   // ==================== 构造与初始化 ====================
 
-  constructor(host: IChatHost) {
+  constructor(host: IChatHost, store: SessionStore) {
     this.host = host;
-    // 从 globalState 加载会话数据（与旧单会话数据兼容）
+    this.store = store;
+    // 从共享存储加载会话数据（首个引擎实际读取 globalState，后续引擎复用缓存）
     this.loadSessions();
   }
 
@@ -251,6 +259,13 @@ export class ChatEngine {
     this.postMessage({ type: 'updateMode', mode });
   }
 
+  /** 获取当前活跃模型名称（用于状态栏同步） */
+  public getActiveModelName(): string {
+    const models = getAllModels();
+    const activeIndex = getActiveModelIndex();
+    return models[activeIndex]?.name || 'AI';
+  }
+
   /** 推送模型列表到前端 */
   public sendModelList(): void {
     const models = getAllModels();
@@ -287,6 +302,9 @@ export class ChatEngine {
     for (const message of initialSessionBootstrapPlan.renderMessages) {
       this.postMessage(message);
     }
+
+    // 初始化完成后同步宿主标题（Tab 标签文字显示当前会话名）
+    this.syncHostTitle();
   }
 
   /** 获取面板 HTML（供宿主设置到 Webview） */
@@ -336,6 +354,7 @@ export class ChatEngine {
     clearSessionConversation(getActiveSessionHelper(this.sessions, this.activeSessionId));
     const sessionListResponse = this.saveSessions();
     this.postMessage(sessionListResponse);
+    this.syncHostTitle();
     info('对话历史已清空');
 
     clearRetryableRequestsForSessionHelper(this.retryableRequests, clearPlan.clearRetryableSessionId);
@@ -428,6 +447,7 @@ export class ChatEngine {
           this.sessions = renamePlan.nextSessions;
           const sessionListResponse = this.saveSessions();
           this.postMessage(sessionListResponse);
+          this.syncHostTitle();
         },
         handleRegenerate: async assistantMessageId => {
           await this.handleRegenerate(assistantMessageId);
@@ -497,6 +517,7 @@ export class ChatEngine {
         this.postMessage(message);
       }
       this.postMessage(sessionListResponse);
+      this.syncHostTitle();
     }
 
     // 每轮对话开始时清空跨轮文件记录和轮次计数器
@@ -1108,20 +1129,15 @@ export class ChatEngine {
   // ==================== 会话管理 ====================
 
   private loadSessions(): void {
-    const globalState = this.host.getGlobalState();
-    const state = loadSessionsState({
-      savedSessions: globalState.get<ChatSession[]>('chatSessions'),
-      savedActiveId: globalState.get<string>('activeSessionId'),
-      oldHistory: globalState.get<Array<{ role: string; content: unknown }>>('chatHistory'),
+    const loadResult = this.store.load({
       normalizeHistoryMessages,
       sanitizeDisplayHistory: this.sessionDisplayHistoryAccessors.sanitizeDisplayHistory,
       buildDisplayHistoryFromRawHistory: this.sessionDisplayHistoryAccessors.buildDisplayHistoryFromRawHistory,
     });
 
-    this.sessions = state.sessions;
-    this.activeSessionId = state.activeSessionId;
+    this.activeSessionId = loadResult.activeSessionId;
 
-    if (state.shouldResave) {
+    if (loadResult.shouldResave) {
       this.saveSessions();
     }
 
@@ -1129,12 +1145,8 @@ export class ChatEngine {
   }
 
   private saveSessions(): ReturnType<typeof buildUpdateSessionsResponse> {
-    this.sessions = sortSessionsByUpdatedAtHelper(this.sessions);
-    const globalState = this.host.getGlobalState();
-    globalState.update('chatSessions', this.sessions);
-    globalState.update('activeSessionId', this.activeSessionId);
     this.pushTokenCount();
-    return buildUpdateSessionsResponse(this.sessions, this.activeSessionId);
+    return this.store.persist(this.activeSessionId);
   }
 
   private saveChatHistory(): void {
@@ -1183,6 +1195,7 @@ export class ChatEngine {
       this.postMessage(message);
     }
     this.postMessage(sessionListResponse);
+    this.syncHostTitle();
     info(`切换会话到: ${switchPlan.sessionName}`);
   }
 
@@ -1220,10 +1233,18 @@ export class ChatEngine {
       this.postMessage(message);
     }
     this.postMessage(sessionListResponse);
+    this.syncHostTitle();
     info(`删除会话: ${deletePlan.deletedSessionId}`);
   }
 
   // ==================== 辅助方法 ====================
+
+  /** 将当前活跃会话名称同步到宿主标题（Tab 标签文字） */
+  private syncHostTitle(): void {
+    const activeSession = getActiveSessionHelper(this.sessions, this.activeSessionId);
+    const title = activeSession?.name || 'AI 聊天';
+    this.host.setTitle?.(title);
+  }
 
   private pushTokenCount(): void {
     const modelConfig = getModelConfig();

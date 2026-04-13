@@ -7,20 +7,28 @@
 import * as vscode from 'vscode';
 import { info } from '../logger';
 import { ChatTabPanel } from './ChatTabPanel';
+import { SessionStore } from './SessionStore';
 
 export class ChatTabManager {
 
   /** 所有打开的 Tab 实例，key 为 tabId */
   private readonly tabs = new Map<string, ChatTabPanel>();
 
+  /** 各 Tab 关联的事件监听（Tab 关闭时需一并清理） */
+  private readonly disposables = new Map<string, vscode.Disposable>();
+
   /** 插件上下文引用 */
   private readonly context: vscode.ExtensionContext;
+
+  /** 共享会话存储（所有 Tab 共用同一个 sessions 池） */
+  private readonly sessionStore: SessionStore;
 
   /** 模型切换回调，新建的 Tab 会继承此回调 */
   public onModelSwitch?: (modelName: string) => void;
 
   constructor(context: vscode.ExtensionContext) {
     this.context = context;
+    this.sessionStore = new SessionStore(context.globalState);
   }
 
   /**
@@ -28,10 +36,12 @@ export class ChatTabManager {
    * @returns 新创建的 ChatTabPanel 实例
    */
   public createTab(): ChatTabPanel {
-    const tab = new ChatTabPanel(this.context);
+    const tab = new ChatTabPanel(this.context, this.sessionStore);
 
     // Tab 关闭时自动从管理器中移除
     tab.onDispose = () => {
+      this.disposables.get(tab.tabId)?.dispose();
+      this.disposables.delete(tab.tabId);
       this.tabs.delete(tab.tabId);
       info(`Tab 管理器：移除已关闭的 Tab ${tab.tabId}，剩余 ${this.tabs.size} 个`);
     };
@@ -40,6 +50,15 @@ export class ChatTabManager {
     if (this.onModelSwitch) {
       tab.onModelSwitch = this.onModelSwitch;
     }
+
+    // 监听 Tab 获得焦点时同步状态栏模型名
+    const viewStateDisposable = tab.onDidChangeViewState(active => {
+      if (active && this.onModelSwitch) {
+        this.onModelSwitch(tab.getActiveModelName());
+      }
+    });
+    // Tab 关闭时自动清理事件监听
+    this.disposables.set(tab.tabId, viewStateDisposable);
 
     this.tabs.set(tab.tabId, tab);
     info(`Tab 管理器：新建 Tab ${tab.tabId}，当前共 ${this.tabs.size} 个`);

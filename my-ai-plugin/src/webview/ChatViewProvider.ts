@@ -14,6 +14,7 @@ import type { CommandExecutionRequest } from '../commands/handler';
 import type { ExtensionMessage, WebviewMessage, WorkMode } from './messageTypes';
 import type { IChatHost } from './IChatHost';
 import { ChatEngine } from './ChatEngine';
+import { SessionStore } from './SessionStore';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider, IChatHost {
   /** Provider 的注册 ID，必须与 package.json 中 views.id 一致 */
@@ -37,7 +38,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, IChatHost {
   constructor(context: vscode.ExtensionContext) {
     this.context = context;
     this.extensionUri = context.extensionUri;
-    this.engine = new ChatEngine(this);
+    // 廈代路径：侧边栏已移除，此处仅保留编译兼容
+    const store = new SessionStore(context.globalState);
+    this.engine = new ChatEngine(this, store);
 
     // 将 onModelSwitch 桥接到引擎
     // 引擎内部设置回调时会通过此代理触发外部回调

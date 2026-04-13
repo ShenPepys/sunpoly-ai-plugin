@@ -11,6 +11,7 @@ import type { CommandExecutionRequest } from '../commands/handler';
 import type { ExtensionMessage, WebviewMessage, WorkMode } from './messageTypes';
 import type { IChatHost } from './IChatHost';
 import { ChatEngine } from './ChatEngine';
+import type { SessionStore } from './SessionStore';
 
 export class ChatTabPanel implements IChatHost {
 
@@ -35,7 +36,7 @@ export class ChatTabPanel implements IChatHost {
   /** 模型切换回调，外部设置后在切换模型时触发 */
   public onModelSwitch?: (modelName: string) => void;
 
-  constructor(context: vscode.ExtensionContext) {
+  constructor(context: vscode.ExtensionContext, store: SessionStore) {
     this.tabId = `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     this.extensionUri = context.extensionUri;
     this.globalState = context.globalState;
@@ -58,8 +59,8 @@ export class ChatTabPanel implements IChatHost {
     // 设置 Tab 图标（复用侧边栏图标）
     this.panel.iconPath = vscode.Uri.joinPath(this.extensionUri, 'media', 'icon.svg');
 
-    // 创建引擎实例
-    this.engine = new ChatEngine(this);
+    // 创建引擎实例（共享同一个 SessionStore）
+    this.engine = new ChatEngine(this, store);
 
     // 桥接 onModelSwitch 到引擎
     Object.defineProperty(this.engine, 'onModelSwitch', {
@@ -161,6 +162,11 @@ export class ChatTabPanel implements IChatHost {
   /** 打开会话启动器（新建对话入口） */
   public openSessionLauncher(): void {
     this.engine.openSessionLauncher();
+  }
+
+  /** 获取当前活跃模型名称（用于状态栏同步） */
+  public getActiveModelName(): string {
+    return this.engine.getActiveModelName();
   }
 
   /** 关闭此 Tab */

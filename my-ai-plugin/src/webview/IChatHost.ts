@@ -37,4 +37,10 @@ export interface IChatHost {
    * 使面板可见（侧边栏展开 / Tab 聚焦）
    */
   reveal(): void;
+
+  /**
+   * 更新宿主标题（可选）
+   * Tab 宿主可用此更新编辑器 Tab 标签文字，侧边栏宿主可忽略
+   */
+  setTitle?(title: string): void;
 }
