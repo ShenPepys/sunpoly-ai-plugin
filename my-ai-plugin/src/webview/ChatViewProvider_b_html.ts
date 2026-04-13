@@ -10,6 +10,15 @@ function getNonce(): string {
   return text;
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 export function buildChatViewHtml(options: {
   webview: vscode.Webview;
   extensionUri: vscode.Uri;
@@ -30,9 +39,10 @@ export function buildChatViewHtml(options: {
   );
 
   const nonce = getNonce();
+  const safePanelTitle = escapeHtml(options.panelTitle);
   const initialMessagesHtml = options.shouldShowWelcomeOnInitialRender
     ? `<div class="welcome-message">
-        <p><strong>👋 你好！我是 ${options.panelTitle}</strong></p>
+        <p><strong>👋 你好！我是 ${safePanelTitle}</strong></p>
         <div class="welcome-section">
           <p class="welcome-subtitle">快捷键</p>
           <div class="welcome-shortcuts">
@@ -65,9 +75,9 @@ export function buildChatViewHtml(options: {
       img-src ${options.webview.cspSource} data:;
       font-src ${options.webview.cspSource};">
   <link rel="stylesheet" href="${cssUri}">
-  <title>AI 聊天</title>
+  <title>${safePanelTitle}</title>
 </head>
-<body>
+<body data-panel-title="${safePanelTitle}">
   <div id="chat-container">
     <div id="search-bar" class="search-bar hidden">
       <input id="search-input" type="text" placeholder="搜索对话内容..." />

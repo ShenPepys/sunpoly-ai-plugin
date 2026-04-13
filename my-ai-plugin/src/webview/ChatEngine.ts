@@ -1248,7 +1248,7 @@ export class ChatEngine {
   /** 将当前活跃会话名称同步到宿主标题（Tab 标签文字） */
   private syncHostTitle(): void {
     const activeSession = getActiveSessionHelper(this.sessions, this.activeSessionId);
-    const title = activeSession?.name || 'AI 聊天';
+    const title = activeSession?.name || getPanelTitle();
     this.host.setTitle?.(title);
   }
 

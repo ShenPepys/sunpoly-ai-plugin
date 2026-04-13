@@ -40,37 +40,39 @@ body {
   display: none;
   flex-shrink: 0;
   border-bottom: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.08));
-  background: var(--vscode-editorGroupHeader-tabsBackground, #252526);
-  padding: 0 8px;
+  background: var(--vscode-editor-background, #1e1e1e);
+  padding: 0 6px;
   align-items: center;
   justify-content: flex-end;
-  min-height: 36px;
+  min-height: 30px;
 }
 
 .internal-tabs-bar.visible {
-  display: none;
+  display: flex;
 }
 
 .internal-tabs-list {
-  display: none;
+  display: flex;
   align-items: stretch;
   gap: 0;
   overflow-x: auto;
   flex: 1;
   min-width: 0;
   height: 100%;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 
 .internal-tabs-list::-webkit-scrollbar {
-  height: 0;
+  display: none;
 }
 
 .internal-tab {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0 10px;
-  font-size: 12px;
+  padding: 0 8px;
+  font-size: 11px;
   border-radius: 0;
   cursor: pointer;
   white-space: nowrap;
@@ -79,7 +81,7 @@ body {
   border-bottom: 2px solid transparent;
   background: transparent;
   height: 100%;
-  min-width: 72px;
+  min-width: 64px;
   max-width: 180px;
   transition: color 0.15s, border-color 0.15s, background 0.15s;
   user-select: none;
@@ -134,10 +136,10 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
-  margin-left: 6px;
-  font-size: 18px;
+  width: 26px;
+  height: 26px;
+  margin-left: 4px;
+  font-size: 16px;
   border: 1px solid transparent;
   background: transparent;
   color: var(--vscode-tab-inactiveForeground, rgba(255,255,255,0.75));

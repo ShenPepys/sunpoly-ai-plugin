@@ -7,6 +7,7 @@
  */
 import * as vscode from 'vscode';
 import { info } from '../logger';
+import { getPanelTitle } from '../config';
 import type { CommandExecutionRequest } from '../commands/handler';
 import type { ExtensionMessage, WebviewMessage, WorkMode } from './messageTypes';
 import type { IChatHost } from './IChatHost';
@@ -44,7 +45,7 @@ export class ChatTabPanel implements IChatHost {
     // 创建 WebviewPanel
     this.panel = vscode.window.createWebviewPanel(
       'my-ai-plugin.chatTab',
-      'AI 聊天',
+      getPanelTitle(),
       vscode.ViewColumn.Two,
       {
         enableScripts: true,

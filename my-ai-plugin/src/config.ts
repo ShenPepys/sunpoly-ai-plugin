@@ -396,8 +396,9 @@ export function getProxy(): string {
 
 /**
  * 获取面板标题
- * 用户可自定义为企业名称，默认 "AI 助理"
+ * 用户可自定义为企业名称，默认 "Sunploy"
  */
 export function getPanelTitle(): string {
-  return get<string>('panelTitle', 'AI 助理');
+  const panelTitle = get<string>('panelTitle', 'Sunploy').trim();
+  return panelTitle || 'Sunploy';
 }
