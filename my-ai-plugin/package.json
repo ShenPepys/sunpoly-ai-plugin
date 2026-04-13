@@ -2,7 +2,7 @@
   "name": "my-ai-plugin",
   "displayName": "AI 助理",
   "description": "VS Code AI 助理插件，支持代码解释、Bug 修复、代码优化、续写和单测生成",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "publisher": "my-ai-plugin",
   "license": "MIT",
   "repository": {
