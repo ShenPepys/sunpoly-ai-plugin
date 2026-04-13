@@ -147,7 +147,7 @@ const DEFAULT_MODEL: ModelProfile = {
   contextWindow: 64000,
 };
 
-const DEFAULT_CONTEXT_WINDOW = 32000;
+const DEFAULT_CONTEXT_WINDOW = 16000;
 
 function getStoredModels(): ModelProfile[] {
   const models = vscode.workspace
@@ -175,6 +175,17 @@ const CONTEXT_WINDOW_MAP: Record<string, number> = {
   'doubao-pro-32k': 32768,
   'doubao-lite-32k': 32768,
 };
+
+/**
+ * 当 modelId 不在精确映射表中时，按模型名关键词匹配上下文窗口
+ * 用于处理本地部署的模型（modelId 通常是文件路径，无法精确匹配）
+ */
+const CONTEXT_WINDOW_PATTERNS: Array<{ pattern: RegExp; contextWindow: number }> = [
+  { pattern: /qwen/i, contextWindow: 16000 },
+  { pattern: /coder/i, contextWindow: 16000 },
+  { pattern: /llama/i, contextWindow: 8000 },
+  { pattern: /mistral/i, contextWindow: 32000 },
+];
 
 /** 知识截止日期映射表 */
 const CUTOFF_MAP: Record<string, string> = {
@@ -219,13 +230,26 @@ function normalizeModelProfile(model: ModelProfile): ModelProfile {
 }
 
 function resolveContextWindow(modelId: string, contextWindow?: number): number {
+  // 优先级1：用户显式配置的值
   const normalizedConfigured = normalizeContextWindow(contextWindow);
   if (normalizedConfigured !== undefined) {
     return normalizedConfigured;
   }
 
+  // 优先级2：精确匹配已知模型
   const normalizedModelId = (modelId || '').toLowerCase();
-  return CONTEXT_WINDOW_MAP[normalizedModelId] ?? DEFAULT_CONTEXT_WINDOW;
+  if (normalizedModelId in CONTEXT_WINDOW_MAP) {
+    return CONTEXT_WINDOW_MAP[normalizedModelId];
+  }
+
+  // 优先级3：模式匹配（适用于本地部署模型，modelId 通常是文件路径）
+  for (const entry of CONTEXT_WINDOW_PATTERNS) {
+    if (entry.pattern.test(normalizedModelId)) {
+      return entry.contextWindow;
+    }
+  }
+
+  return DEFAULT_CONTEXT_WINDOW;
 }
 
 /** 获取当前活跃模型的序号 */
