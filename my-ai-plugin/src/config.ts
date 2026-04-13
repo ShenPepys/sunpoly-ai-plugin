@@ -134,6 +134,8 @@ interface ModelProfile {
   contextWindow?: number;
   /** 是否支持图片输入（可选，不填则按 modelId 自动判断） */
   supportsVision?: boolean;
+  /** 自定义 API 路径，不填时默认 /v1/chat/completions */
+  apiPath?: string;
 }
 
 /** 默认模型配置 */
@@ -254,6 +256,7 @@ export function getModelConfig(): ModelConfig {
     modelId: model.modelId,
     baseUrl: model.baseUrl,
     apiKey: model.apiKey,
+    apiPath: model.apiPath || '/v1/chat/completions',
     knowledgeCutoff: CUTOFF_MAP[(model.modelId || '').toLowerCase()] ?? '未知',
     contextWindow: resolveContextWindow(model.modelId, model.contextWindow),
     // 用户在 settings 中显式声明优先，否则按 modelId 自动判断

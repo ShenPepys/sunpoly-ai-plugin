@@ -2,7 +2,7 @@
   "name": "my-ai-plugin",
   "displayName": "AI 助理",
   "description": "VS Code AI 助理插件，支持代码解释、Bug 修复、代码优化、续写和单测生成",
-  "version": "0.1.7",
+  "version": "0.1.12",
   "publisher": "my-ai-plugin",
   "license": "MIT",
   "repository": {
@@ -162,6 +162,10 @@
                 "type": "number",
                 "minimum": 1,
                 "description": "模型上下文窗口上限，用于估算当前会话占用；不填时插件会按已知模型或默认兜底值自动推断"
+              },
+              "apiPath": {
+                "type": "string",
+                "description": "自定义 API 路径（如 /v1/chat/completions、/chat/completions），不填时默认 /v1/chat/completions"
               }
             }
           }

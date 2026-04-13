@@ -113,6 +113,7 @@ export function buildApiClientConfig(options: {
     baseUrl: options.modelConfig.baseUrl,
     apiKey: options.apiKey,
     modelId: options.modelConfig.modelId,
+    apiPath: options.modelConfig.apiPath,
     maxTokens: options.maxTokens,
     temperature: options.temperature,
   };

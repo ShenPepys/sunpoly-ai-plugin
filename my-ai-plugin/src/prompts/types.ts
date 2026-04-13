@@ -43,6 +43,8 @@ export interface ModelConfig {
   baseUrl: string;
   /** API 密钥 */
   apiKey: string;
+  /** 自定义 API 路径，默认 /v1/chat/completions */
+  apiPath: string;
   /** 知识截止日期 */
   knowledgeCutoff: string;
   contextWindow: number;

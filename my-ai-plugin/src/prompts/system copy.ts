@@ -15,7 +15,7 @@ const MODE_CODE_SECTION = `# 工作模式：Code
 
 你当前处于 **Code 模式**，拥有以下能力：
 - 可以直接读取用户工作区中的文件
-- 可以直接创建、修改用户的文件
+- 可以直接创建、修改、删除用户的文件
 - 可以执行代码相关的操作（Bug 修复、重构、新功能开发等）
 
 当用户要求修改文件时，你应该：
@@ -43,7 +43,7 @@ const MODE_ASK_SECTION = `# 工作模式：Ask
 - 读取文件：<tool_call><read_file path="文件路径" /></tool_call>
 - 列出目录：<tool_call><list_dir path="目录路径" /></tool_call>
 
-如果用户要求修改文件，告知用户当前处于 Ask 模式，建议切换到 Code 模式。
+如果用户要求你修改文件，请告知用户当前处于 Ask 模式，建议切换到 Code 模式。
 你可以给出代码建议和方案，但不要调用 write_file 或 edit_file 工具。`;
 
 /** Plan 模式：先规划方案，等用户确认后再执行 */
