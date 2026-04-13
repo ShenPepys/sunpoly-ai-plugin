@@ -22,7 +22,7 @@ function estimateTextTokenCount(text: string): number {
   return Math.max(0, Math.round(text.length / 3));
 }
 
-export function estimateMessageTokenCount(message: ChatMessageParam): number {
+function estimateMessageTokenCount(message: ChatMessageParam): number {
   if (typeof message.content === 'string') {
     return estimateTextTokenCount(message.content);
   }
@@ -42,17 +42,13 @@ export function estimateMessageTokenCount(message: ChatMessageParam): number {
   return Math.max(0, Math.round(charCount / 3));
 }
 
-export function estimateMessagesTokenCount(messages: ChatMessageParam[]): number {
+function estimateHistoryTokenCount(history: ChatMessageParam[]): number {
   let totalTokens = 0;
-  for (const message of messages) {
+  for (const message of history) {
     totalTokens += estimateMessageTokenCount(message);
   }
 
   return totalTokens;
-}
-
-function estimateHistoryTokenCount(history: ChatMessageParam[]): number {
-  return estimateMessagesTokenCount(history);
 }
 
 function getHistoryTokenBudget(contextWindow: number, maxTokens: number): number {

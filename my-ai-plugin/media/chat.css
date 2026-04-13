@@ -39,12 +39,12 @@ body {
 .internal-tabs-bar {
   display: none;
   flex-shrink: 0;
-  border-bottom: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.08));
-  background: var(--vscode-editor-background, #1e1e1e);
-  padding: 0 6px;
+  background: transparent;
+  padding: 6px 10px 2px;
   align-items: center;
-  justify-content: flex-end;
-  min-height: 30px;
+  justify-content: flex-start;
+  gap: 8px;
+  min-height: 38px;
 }
 
 .internal-tabs-bar.visible {
@@ -53,12 +53,12 @@ body {
 
 .internal-tabs-list {
   display: flex;
-  align-items: stretch;
-  gap: 0;
+  align-items: center;
+  gap: 6px;
   overflow-x: auto;
   flex: 1;
   min-width: 0;
-  height: 100%;
+  padding: 2px 0 4px;
   scrollbar-width: none;
   -ms-overflow-style: none;
 }
@@ -71,31 +71,32 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0 8px;
-  font-size: 11px;
-  border-radius: 0;
+  padding: 0 10px 0 12px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 999px;
   cursor: pointer;
   white-space: nowrap;
-  color: var(--vscode-tab-inactiveForeground, rgba(255,255,255,0.5));
-  border-right: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.08));
-  border-bottom: 2px solid transparent;
+  color: var(--vscode-descriptionForeground, rgba(255,255,255,0.65));
+  border: 1px solid transparent;
   background: transparent;
-  height: 100%;
-  min-width: 64px;
-  max-width: 180px;
-  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  height: 28px;
+  min-width: 72px;
+  max-width: 200px;
+  transition: color 0.15s, border-color 0.15s, background 0.15s, box-shadow 0.15s;
   user-select: none;
 }
 
 .internal-tab:hover {
-  color: var(--vscode-tab-activeForeground, #fff);
-  background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.04));
+  color: var(--vscode-foreground, #fff);
+  background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.06));
 }
 
 .internal-tab.active {
-  color: var(--vscode-tab-activeForeground, #fff);
-  background: var(--vscode-editor-background, #1e1e1e);
-  border-bottom-color: var(--vscode-focusBorder, #007acc);
+  color: var(--vscode-foreground, #fff);
+  background: var(--vscode-editorWidget-background, rgba(255,255,255,0.08));
+  border-color: var(--vscode-panel-border, rgba(255,255,255,0.12));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
 }
 
 .internal-tab-label {
@@ -103,28 +104,30 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+  min-width: 0;
 }
 
 .internal-tab-close {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
-  font-size: 11px;
+  width: 16px;
+  height: 16px;
+  font-size: 12px;
   border: none;
   background: transparent;
   color: inherit;
   cursor: pointer;
-  border-radius: 3px;
+  border-radius: 999px;
   opacity: 0;
   flex-shrink: 0;
+  margin-right: -2px;
   transition: opacity 0.15s, background 0.15s;
 }
 
 .internal-tab:hover .internal-tab-close,
 .internal-tab.active .internal-tab-close {
-  opacity: 0.6;
+  opacity: 0.65;
 }
 
 .internal-tab-close:hover {
@@ -136,22 +139,22 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
-  margin-left: 4px;
+  width: 24px;
+  height: 24px;
+  margin-left: 0;
   font-size: 16px;
   border: 1px solid transparent;
   background: transparent;
-  color: var(--vscode-tab-inactiveForeground, rgba(255,255,255,0.75));
+  color: var(--vscode-descriptionForeground, rgba(255,255,255,0.72));
   cursor: pointer;
-  border-radius: 6px;
+  border-radius: 999px;
   flex-shrink: 0;
   align-self: center;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
 .internal-tab-add:hover {
-  color: var(--vscode-tab-activeForeground, #fff);
+  color: var(--vscode-foreground, #fff);
   background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.1));
   border-color: var(--vscode-panel-border, rgba(255,255,255,0.08));
 }
@@ -1026,6 +1029,59 @@ body {
 }
 
 /* ==================== 输入区域 ==================== */
+.message-queue-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding: 7px 8px;
+  border: 1px solid var(--vscode-panel-border, rgba(255, 255, 255, 0.08));
+  border-radius: 8px;
+  background: var(--vscode-editorWidget-background, rgba(255, 255, 255, 0.03));
+}
+
+.message-queue-bar.hidden {
+  display: none;
+}
+
+.message-queue-text {
+  min-width: 0;
+  color: var(--vscode-descriptionForeground, #9aa0a6);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.message-queue-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.message-queue-btn {
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--vscode-foreground);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.message-queue-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.08));
+}
+
+.message-queue-btn.hidden {
+  display: none;
+}
+
+.message-queue-btn.ghost {
+  color: var(--vscode-descriptionForeground, #9aa0a6);
+}
+
 #input-area {
   position: relative;
   display: flex;
@@ -1034,6 +1090,7 @@ body {
   flex-shrink: 0;
   background: var(--vscode-input-background, #2a2a2a);
   border: 1px solid var(--vscode-input-border, #3a3a3a);
+  border-top-color: transparent;
   border-radius: 10px;
   margin: 8px 10px 10px;
   transition: border-color 0.15s;
@@ -1041,6 +1098,7 @@ body {
 
 #input-area:focus-within {
   border-color: var(--vscode-focusBorder, #007fd4);
+  border-top-color: transparent;
 }
 
 #user-input {
@@ -1665,43 +1723,22 @@ body {
 
 .image-attachment-tag {
   position: relative;
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 6px;
-  background: var(--vscode-badge-background, rgba(255,255,255,0.08));
-  border: 1px solid var(--vscode-widget-border, rgba(255,255,255,0.12));
-  border-radius: 6px;
-  max-width: 180px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  max-width: none;
   animation: fadeIn 0.2s ease-in;
 }
 
 .image-attachment-tag .img-thumb {
-  width: 36px;
-  height: 36px;
+  width: 56px;
+  height: 56px;
   object-fit: cover;
-  border-radius: 3px;
+  border-radius: 8px;
   flex-shrink: 0;
-}
-
-.image-attachment-tag .img-info {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  flex: 1;
-}
-
-.image-attachment-tag .img-name {
-  font-size: 11px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--vscode-foreground, #ccc);
-}
-
-.image-attachment-tag .img-size {
-  font-size: 10px;
-  color: var(--vscode-descriptionForeground, #999);
 }
 
 .image-attachment-tag .img-remove {

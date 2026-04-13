@@ -5,7 +5,7 @@ import type { ChatMessageParam } from '../api/types';
 import { buildSystemPrompt } from '../prompts/system';
 import type { ModelConfig } from '../prompts/types';
 import { detectProjectType, getEnvContext, getGitStatus, getProjectContext } from '../utils/context';
-import { estimateMessagesTokenCount, trimHistoryToFitContextWindow } from './ChatViewProvider_a_contextUsage';
+import { trimHistoryToFitContextWindow } from './ChatViewProvider_a_contextUsage';
 import type {
   UpdateModelsResponse,
   VisionNotSupportedResponse,
@@ -17,16 +17,6 @@ const MODE_LABELS: Record<WorkMode, string> = {
   ask: 'Ask',
   plan: 'Plan',
 };
-
-type ContextWindowFitResult = {
-  messages: ChatMessageParam[];
-  effectiveMaxTokens: number;
-  droppedMessageCount: number;
-  promptTokenEstimate: number;
-};
-
-const MIN_COMPLETION_TOKENS = 256;
-const MIN_REQUEST_MAX_TOKENS = 64;
 
 export function buildUpdateModelsResponse(options: {
   models: Array<{ name: string }>;
@@ -129,41 +119,6 @@ export function buildApiClientConfig(options: {
   };
 }
 
-function fitMessagesToContextWindow(options: {
-  messages: ChatMessageParam[];
-  contextWindow: number;
-  requestedMaxTokens: number;
-}): ContextWindowFitResult {
-  const normalizedContextWindow = Math.max(options.contextWindow, 1);
-  const requestedMaxTokens = Math.max(options.requestedMaxTokens, MIN_REQUEST_MAX_TOKENS);
-  const safetyBufferTokens = Math.min(512, Math.max(128, Math.floor(normalizedContextWindow * 0.03)));
-  const minimumCompletionTokens = Math.min(requestedMaxTokens, MIN_COMPLETION_TOKENS);
-  const minimumPromptBudget = Math.max(1, normalizedContextWindow - minimumCompletionTokens - safetyBufferTokens);
-  const nextMessages = [...options.messages];
-  const minimumPreservedMessageCount = nextMessages.length > 1 ? 2 : 1;
-  let promptTokenEstimate = estimateMessagesTokenCount(nextMessages);
-  let droppedMessageCount = 0;
-
-  while (nextMessages.length > minimumPreservedMessageCount && promptTokenEstimate > minimumPromptBudget) {
-    nextMessages.splice(1, 1);
-    droppedMessageCount += 1;
-    promptTokenEstimate = estimateMessagesTokenCount(nextMessages);
-  }
-
-  const availableCompletionTokens = normalizedContextWindow - promptTokenEstimate - safetyBufferTokens;
-  const effectiveMaxTokens = Math.max(
-    1,
-    Math.min(requestedMaxTokens, availableCompletionTokens),
-  );
-
-  return {
-    messages: nextMessages,
-    effectiveMaxTokens,
-    droppedMessageCount,
-    promptTokenEstimate,
-  };
-}
-
 export function prepareChatRequestExecution(options: {
   modelConfig: ModelConfig;
   requestMode: WorkMode;
@@ -190,36 +145,13 @@ export function prepareChatRequestExecution(options: {
     includeProjectContext: options.includeProjectContext,
   });
 
-  const fittedRequest = fitMessagesToContextWindow({
-    messages: requestMessages.messages,
-    contextWindow: options.modelConfig.contextWindow,
-    requestedMaxTokens: options.maxTokens,
-  });
-
-  if (fittedRequest.droppedMessageCount > 0) {
-    info('请求发送前二次压缩历史消息', {
-      contextWindow: options.modelConfig.contextWindow,
-      droppedMessageCount: fittedRequest.droppedMessageCount,
-      promptTokenEstimate: fittedRequest.promptTokenEstimate,
-    });
-  }
-
-  if (fittedRequest.effectiveMaxTokens < options.maxTokens) {
-    info('请求发送前动态下调 maxTokens', {
-      requestedMaxTokens: options.maxTokens,
-      effectiveMaxTokens: fittedRequest.effectiveMaxTokens,
-      promptTokenEstimate: fittedRequest.promptTokenEstimate,
-      contextWindow: options.modelConfig.contextWindow,
-    });
-  }
-
   return {
     systemPrompt: requestMessages.systemPrompt,
-    messages: fittedRequest.messages,
+    messages: requestMessages.messages,
     apiConfig: buildApiClientConfig({
       modelConfig: options.modelConfig,
       apiKey: options.apiKey,
-      maxTokens: fittedRequest.effectiveMaxTokens,
+      maxTokens: options.maxTokens,
       temperature: options.temperature,
     }),
   };

@@ -165,6 +165,13 @@ export function buildChatViewHtml(options: {
     </div>
 
     <div id="input-area">
+      <div id="message-queue-bar" class="message-queue-bar hidden">
+        <span id="message-queue-text" class="message-queue-text"></span>
+        <div class="message-queue-actions">
+          <button id="message-queue-resume" class="message-queue-btn hidden" type="button">继续发送</button>
+          <button id="message-queue-clear" class="message-queue-btn ghost" type="button">清空队列</button>
+        </div>
+      </div>
       <div id="mention-dropdown" class="mention-dropdown hidden"></div>
       <div id="context-files" class="context-files"></div>
       <div id="image-attachments" class="image-attachments"></div>

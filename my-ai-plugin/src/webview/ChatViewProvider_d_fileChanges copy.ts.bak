@@ -115,18 +115,7 @@ export type ExecuteToolCallBatchResult = {
   batchWriteFiles: ChangeSummaryFile[];
   writeSuccessCount: number;
   writeFailCount: number;
-  executedToolCalls: ParsedToolCall[];
-  deferredToolCalls: ParsedToolCall[];
-  readOnlyBatchLimited: boolean;
 };
-
- type ToolCallExecutionPlan = {
-   executableToolCalls: ParsedToolCall[];
-   deferredToolCalls: ParsedToolCall[];
-   readOnlyBatchLimited: boolean;
- };
-
- const MAX_READ_ONLY_TOOL_CALLS_PER_ROUND = 3;
 
 type BuildPreviewSummaryFilesOptions = {
   writeFilePaths?: Set<string>;
@@ -209,35 +198,6 @@ export function detectLanguage(filePath: string): string {
 export function getDisplayPath(filePath: string): string {
   const relativePath = vscode.workspace.asRelativePath(filePath, false);
   return relativePath || (filePath.split(/[\\/]/).pop() || filePath);
-}
-
-function isReadOnlyToolCall(toolCall: ParsedToolCall): boolean {
-  return toolCall.type === 'read_file' || toolCall.type === 'list_dir';
-}
-
-function buildToolCallExecutionPlan(toolCalls: ParsedToolCall[]): ToolCallExecutionPlan {
-  if (toolCalls.length <= MAX_READ_ONLY_TOOL_CALLS_PER_ROUND) {
-    return {
-      executableToolCalls: toolCalls,
-      deferredToolCalls: [],
-      readOnlyBatchLimited: false,
-    };
-  }
-
-  const hasWriteOperation = toolCalls.some(toolCall => !isReadOnlyToolCall(toolCall));
-  if (hasWriteOperation) {
-    return {
-      executableToolCalls: toolCalls,
-      deferredToolCalls: [],
-      readOnlyBatchLimited: false,
-    };
-  }
-
-  return {
-    executableToolCalls: toolCalls.slice(0, MAX_READ_ONLY_TOOL_CALLS_PER_ROUND),
-    deferredToolCalls: toolCalls.slice(MAX_READ_ONLY_TOOL_CALLS_PER_ROUND),
-    readOnlyBatchLimited: true,
-  };
 }
 
 export async function ensurePreviewFileState(
@@ -477,18 +437,11 @@ export async function executeToolCallBatch(options: {
   const toolResults: ToolExecutionResult[] = [];
   const executionRecords: ToolCallExecutionRecord[] = [];
   const batchWriteFiles: ChangeSummaryFile[] = [];
-  const executionPlan = buildToolCallExecutionPlan(options.toolCalls);
   let writeSuccessCount = 0;
   let writeFailCount = 0;
   let nextStepSequence = options.stepSequenceStart;
 
-  if (executionPlan.readOnlyBatchLimited) {
-    info(
-      `只读工具调用过多，本轮仅执行 ${executionPlan.executableToolCalls.length} 个，延后 ${executionPlan.deferredToolCalls.length} 个`,
-    );
-  }
-
-  for (const toolCall of executionPlan.executableToolCalls) {
+  for (const toolCall of options.toolCalls) {
     if (options.canContinue && !options.canContinue()) {
       return {
         status: 'interrupted',
@@ -498,9 +451,6 @@ export async function executeToolCallBatch(options: {
         batchWriteFiles,
         writeSuccessCount,
         writeFailCount,
-        executedToolCalls: executionPlan.executableToolCalls,
-        deferredToolCalls: executionPlan.deferredToolCalls,
-        readOnlyBatchLimited: executionPlan.readOnlyBatchLimited,
       };
     }
 
@@ -579,9 +529,6 @@ export async function executeToolCallBatch(options: {
     batchWriteFiles,
     writeSuccessCount,
     writeFailCount,
-    executedToolCalls: executionPlan.executableToolCalls,
-    deferredToolCalls: executionPlan.deferredToolCalls,
-    readOnlyBatchLimited: executionPlan.readOnlyBatchLimited,
   };
 }
 

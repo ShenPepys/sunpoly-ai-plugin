@@ -3,7 +3,8 @@ import { sendStreamRequest } from '../api/client';
 import type { AbortStreamFn, ApiClientConfig } from '../api/client';
 import type { ChatMessageParam } from '../api/types';
 import type { ModelConfig } from '../prompts/types';
-import type { ParsedToolCall, ToolExecutionResult } from '../tools';
+import { formatToolResults } from '../tools';
+import type { ParsedToolCall } from '../tools';
 import {
   applyAssistantResponseDisplay,
   appendDisplayHistoryUserMessage,
@@ -33,8 +34,8 @@ import {
   recordToolStepInActiveHistorySummary,
 } from './ChatViewProvider_k_runtimeState';
 import {
+  buildChatRequestMessages,
   buildUserRequestContent,
-  prepareChatRequestExecution,
   prepareRemindedMessages,
 } from './ChatViewProvider_n_modelAndSession';
 import type {
@@ -131,7 +132,6 @@ export type ExecuteToolCallBatchRoundOptions = {
   toolCalls: ParsedToolCall[];
   requestMode: WorkMode;
   messageId: string;
-  apiConfig: ApiClientConfig;
   stepSequenceStart: number;
   writeBackups: Map<string, WriteBackupEntry>;
   turnWriteFiles: ChangeSummaryFile[];
@@ -162,136 +162,7 @@ export type ExecuteToolCallBatchRoundResult =
     nextActiveHistoryProcessSummary: HistoryProcessSummary | null;
     followUpSystemPrompt: string;
     followUpMessages: ChatMessageParam[];
-    followUpApiConfig: ApiClientConfig;
   };
-
- const MAX_TOOL_RESULT_SNIPPET_CHARS = 1600;
- const MAX_DIRECTORY_ENTRIES_IN_FEEDBACK = 40;
- const MAX_DEFERRED_TOOL_CALLS_IN_FEEDBACK = 12;
-
- function truncateFeedbackText(content: string, maxChars: number, suffix: string): string {
-   if (content.length <= maxChars) {
-     return content;
-   }
-
-   return `${content.slice(0, maxChars)}\n${suffix}`;
- }
-
- function buildReadResultSummary(result: ToolExecutionResult): string {
-   const content = result.result.content || '';
-   const lineCount = content ? content.split(/\r?\n/).length : 0;
-   const snippet = truncateFeedbackText(
-     content,
-     MAX_TOOL_RESULT_SNIPPET_CHARS,
-     `...(内容已压缩，原始返回 ${content.length} 字符，如仍需细读请继续读取该文件)`,
-   );
-
-   return [
-     `### 读取文件 ${result.toolCall.path}`,
-     `- 状态：${result.result.success ? '成功' : '失败'}`,
-     `- 估计行数：${lineCount}`,
-     '- 关键信息片段：',
-     '```',
-     snippet,
-     '```',
-   ].join('\n');
- }
-
- function buildListResultSummary(result: ToolExecutionResult): string {
-   const lines = (result.result.content || '').split(/\r?\n/).filter(Boolean);
-   const directoryCount = lines.filter(line => line.startsWith('[DIR]')).length;
-   const fileCount = lines.filter(line => line.startsWith('[FILE]')).length;
-   const visibleLines = lines.slice(0, MAX_DIRECTORY_ENTRIES_IN_FEEDBACK);
-   const suffix = lines.length > visibleLines.length
-     ? `...(目录项已压缩，原始共 ${lines.length} 项)`
-     : '';
-
-   return [
-     `### 目录列表 ${result.toolCall.path}`,
-     `- 状态：${result.result.success ? '成功' : '失败'}`,
-     `- 条目统计：目录 ${directoryCount}，文件 ${fileCount}，合计 ${lines.length}`,
-     '- 条目摘要：',
-     '```',
-     visibleLines.join('\n') || '(空目录)',
-     suffix,
-     '```',
-   ].join('\n');
- }
-
- function buildWriteResultSummary(result: ToolExecutionResult): string {
-   const content = truncateFeedbackText(
-     result.result.content || '',
-     500,
-     '...(结果已压缩)',
-   );
-
-   return [
-     `### ${result.toolCall.type} ${result.toolCall.path}`,
-     `- 状态：${result.result.success ? '成功' : '失败'}`,
-     '- 结果：',
-     '```',
-     content,
-     '```',
-   ].join('\n');
- }
-
- function buildSingleToolResultSummary(result: ToolExecutionResult): string {
-   if (result.toolCall.type === 'read_file') {
-     return buildReadResultSummary(result);
-   }
-
-   if (result.toolCall.type === 'list_dir') {
-     return buildListResultSummary(result);
-   }
-
-   return buildWriteResultSummary(result);
- }
-
- function buildDeferredToolCallsSummary(toolCalls: ParsedToolCall[]): string {
-   if (toolCalls.length === 0) {
-     return '';
-   }
-
-   const visibleToolCalls = toolCalls.slice(0, MAX_DEFERRED_TOOL_CALLS_IN_FEEDBACK);
-   const lines = visibleToolCalls.map(toolCall => `- ${toolCall.type} ${toolCall.path}`);
-
-   if (toolCalls.length > visibleToolCalls.length) {
-     lines.push(`- ...(其余 ${toolCalls.length - visibleToolCalls.length} 个待读操作已省略)`);
-   }
-
-   return [
-     '## 待读取目标（上一轮计划但本轮未执行）',
-     ...lines,
-   ].join('\n');
- }
-
- function buildToolFeedback(options: {
-   toolResults: ToolExecutionResult[];
-   deferredToolCalls: ParsedToolCall[];
-   readOnlyBatchLimited: boolean;
- }): string {
-   const sections: string[] = [
-     '以下是本轮工具执行后的阶段摘要。不要原样复述这些结果，请基于它们继续分析并决定下一步。',
-   ];
-
-   if (options.readOnlyBatchLimited) {
-     sections.push(
-       `为了避免本地模型上下文过长，本轮只执行了少量只读工具调用，仍有 ${options.deferredToolCalls.length} 个待读取项被延后。请先基于当前结果给出阶段判断，再继续读取下一批最关键的 1~3 个文件或目录，不要一次请求过多 read_file / list_dir。`,
-     );
-   }
-
-   sections.push('## 本轮执行结果');
-   sections.push(
-     options.toolResults.map(result => buildSingleToolResultSummary(result)).join('\n\n'),
-   );
-
-   if (options.deferredToolCalls.length > 0) {
-     sections.push(buildDeferredToolCallsSummary(options.deferredToolCalls));
-     sections.push('如果信息仍然不足，请继续读取最关键的下一批文件；如果已经足够回答，再给出最终结论。');
-   }
-
-   return sections.filter(Boolean).join('\n\n');
- }
 
 export async function executeToolCallBatchRound(
   options: ExecuteToolCallBatchRoundOptions,
@@ -360,16 +231,17 @@ export async function executeToolCallBatchRound(
     };
   }
 
-  const toolFeedback = buildToolFeedback({
-    toolResults: batchExecution.toolResults,
-    deferredToolCalls: batchExecution.deferredToolCalls,
-    readOnlyBatchLimited: batchExecution.readOnlyBatchLimited,
-  });
+  const resultText = formatToolResults(batchExecution.toolResults);
+  const toolFeedback = [
+    '以下是工具执行结果（不要在回复中重复展示这些原始数据，直接基于结果回答用户的问题）：',
+    '',
+    resultText,
+  ].join('\n');
   options.chatHistory.push({ role: 'user', content: toolFeedback });
   options.saveChatHistory();
 
   const modelConfig = getModelConfig();
-  const followUpRequest = prepareChatRequestExecution({
+  const followUpRequest = buildChatRequestMessages({
     modelConfig,
     requestMode: options.requestMode,
     remindedMessages: prepareRemindedMessages({
@@ -378,9 +250,6 @@ export async function executeToolCallBatchRound(
       contextWindow: modelConfig.contextWindow,
       maxTokens: getMaxTokens(),
     }),
-    apiKey: options.apiConfig.apiKey,
-    maxTokens: getMaxTokens(),
-    temperature: options.apiConfig.temperature,
     allowCustomPrompt: false,
   });
 
@@ -391,7 +260,6 @@ export async function executeToolCallBatchRound(
     nextActiveHistoryProcessSummary,
     followUpSystemPrompt: followUpRequest.systemPrompt,
     followUpMessages: followUpRequest.messages,
-    followUpApiConfig: followUpRequest.apiConfig,
   };
 }
 

@@ -764,6 +764,7 @@ export class ChatEngine {
         toolCalls,
         requestMode,
         messageId: reuseMsgId,
+        apiConfig,
         stepSequenceStart: this.stepSequence,
         writeBackups: this.writeBackups,
         turnWriteFiles: this.turnWriteFiles,
@@ -801,7 +802,7 @@ export class ChatEngine {
       });
 
       this.abortStream = startBasicAssistantStreamRequest({
-        apiConfig,
+        apiConfig: batchRound.followUpApiConfig,
         messages: batchRound.followUpMessages,
         messageId: reuseMsgId,
         chatHistory: this.chatHistory as ChatSessionHistoryMessage[],
@@ -835,7 +836,7 @@ export class ChatEngine {
         ),
         onToolCalls: ({ fullContent, parsedToolCalls, displayContent, assistantTimestamp }) => {
           if (this.toolCallRound < 200) {
-            this.handleToolCalls(fullContent, apiConfig, reuseMsgId, requestMode, parsedToolCalls, retryRequestId)
+            this.handleToolCalls(fullContent, batchRound.followUpApiConfig, reuseMsgId, requestMode, parsedToolCalls, retryRequestId)
               .catch(err => error('续轮工具调用处理异常:', err instanceof Error ? err.message : String(err)));
             return;
           }

@@ -46,6 +46,10 @@
   const internalTabsBar = document.getElementById('internal-tabs-bar');
   const internalTabsList = document.getElementById('internal-tabs-list');
   const btnInternalTabAdd = document.getElementById('internal-tab-add');
+  const queueBar = document.getElementById('message-queue-bar');
+  const queueText = document.getElementById('message-queue-text');
+  const btnQueueResume = document.getElementById('message-queue-resume');
+  const btnQueueClear = document.getElementById('message-queue-clear');
   const panelTitle = document.body.dataset.panelTitle || 'Sunploy';
   var sessionLauncherRequestTimer = 0;
 
@@ -142,6 +146,30 @@
   /** 点击页面其他区域时关闭所有面板 */
   document.addEventListener('click', function () {
     closeAllPanels();
+  });
+
+  btnQueueResume.addEventListener('click', function () {
+    var activeTab = getActiveInternalTab();
+    if (!activeTab) {
+      return;
+    }
+
+    setQueuePaused(activeTab.id, false);
+    queueAwaitingRunTabId = activeTab.id;
+    renderMessageQueueBar();
+    saveWebviewState();
+    trySendNextQueuedMessage();
+  });
+
+  btnQueueClear.addEventListener('click', function () {
+    var activeTab = getActiveInternalTab();
+    if (!activeTab) {
+      return;
+    }
+
+    clearQueuedMessages(activeTab.id);
+    renderMessageQueueBar();
+    saveWebviewState();
   });
 
   /**
@@ -292,6 +320,11 @@
   var pendingInternalTabId = '';
   var shouldRestoreInternalTabViewState = false;
   var sessionLauncherRequestInFlight = false;
+  var queuedMessagesByTabId = Object.create(null);
+  var queuePausedByTabId = Object.create(null);
+  var queuedMessageCounter = 0;
+  var queuedDispatchTimer = 0;
+  var queueAwaitingRunTabId = '';
 
   /**
    * 生成内部标签唯一 ID
@@ -319,6 +352,236 @@
     }
 
     return internalTabs.find(function (tab) { return tab.id === activeInternalTabId; }) || null;
+  }
+
+  function generateQueuedMessageId() {
+    queuedMessageCounter += 1;
+    return 'qmsg-' + Date.now() + '-' + queuedMessageCounter;
+  }
+
+  function cloneQueuedImages(images) {
+    if (!Array.isArray(images) || images.length === 0) {
+      return [];
+    }
+
+    return images.map(function (image) {
+      return {
+        id: typeof image.id === 'string' ? image.id : '',
+        fileName: typeof image.fileName === 'string' ? image.fileName : '',
+        dataUrl: typeof image.dataUrl === 'string' ? image.dataUrl : '',
+        mimeType: typeof image.mimeType === 'string' ? image.mimeType : 'image/png',
+        sizeKB: typeof image.sizeKB === 'number' ? image.sizeKB : 0,
+      };
+    });
+  }
+
+  function getQueuedMessages(tabId) {
+    if (!tabId) {
+      return [];
+    }
+
+    if (!queuedMessagesByTabId[tabId]) {
+      queuedMessagesByTabId[tabId] = [];
+    }
+
+    return queuedMessagesByTabId[tabId];
+  }
+
+  function isQueuePaused(tabId) {
+    return Boolean(tabId && queuePausedByTabId[tabId]);
+  }
+
+  function setQueuePaused(tabId, paused) {
+    if (!tabId) {
+      return;
+    }
+
+    if (paused) {
+      queuePausedByTabId[tabId] = true;
+      return;
+    }
+
+    delete queuePausedByTabId[tabId];
+  }
+
+  function clearQueuedMessages(tabId) {
+    if (!tabId) {
+      return;
+    }
+
+    delete queuedMessagesByTabId[tabId];
+    delete queuePausedByTabId[tabId];
+    if (queueAwaitingRunTabId === tabId) {
+      queueAwaitingRunTabId = '';
+    }
+  }
+
+  function updateQueueWatchForTab(tabId) {
+    if (!tabId) {
+      queueAwaitingRunTabId = '';
+      return;
+    }
+
+    queueAwaitingRunTabId = getQueuedMessages(tabId).length > 0 ? tabId : '';
+  }
+
+  function cancelQueuedDispatch() {
+    if (!queuedDispatchTimer) {
+      return;
+    }
+
+    clearTimeout(queuedDispatchTimer);
+    queuedDispatchTimer = 0;
+  }
+
+  function renderMessageQueueBar() {
+    var activeTab = getActiveInternalTab();
+    var queuedMessages = activeTab ? getQueuedMessages(activeTab.id) : [];
+    var queuedCount = queuedMessages.length;
+
+    if (!activeTab || queuedCount === 0) {
+      queueBar.classList.add('hidden');
+      queueText.textContent = '';
+      btnQueueResume.classList.add('hidden');
+      return;
+    }
+
+    var paused = isQueuePaused(activeTab.id);
+    queueBar.classList.remove('hidden');
+    queueText.textContent = paused
+      ? '排队已暂停，待发送 ' + queuedCount + ' 条'
+      : '排队中，待发送 ' + queuedCount + ' 条';
+
+    if (paused && !isGenerating) {
+      btnQueueResume.classList.remove('hidden');
+    } else {
+      btnQueueResume.classList.add('hidden');
+    }
+  }
+
+  function buildComposerMessageRequest() {
+    return {
+      text: userInput.value.trim(),
+      mode: btnCodeMode.getAttribute('data-mode') || 'code',
+      images: cloneQueuedImages(pendingImages),
+    };
+  }
+
+  function recordSentInputHistory(text) {
+    inputHistory.push(text);
+    if (inputHistory.length > 50) {
+      inputHistory.shift();
+    }
+    inputHistoryIndex = -1;
+    inputHistoryDraft = '';
+  }
+
+  function clearComposerState() {
+    pendingImages = [];
+    renderImageAttachments();
+    userInput.value = '';
+    userInput.style.height = 'auto';
+    updateCharCount();
+    syncActiveInternalTabDraftFromInput();
+    saveWebviewState();
+    userInput.focus();
+  }
+
+  function postMessageRequest(request) {
+    if (!request || !request.text) {
+      return false;
+    }
+
+    if (sessionLauncherVisible) {
+      setSessionLauncherVisible(false);
+      messagesContainer.innerHTML = '';
+    }
+
+    vscode.postMessage({
+      type: 'sendMessage',
+      text: request.text,
+      mode: request.mode,
+      images: request.images && request.images.length > 0 ? cloneQueuedImages(request.images) : undefined,
+    });
+    return true;
+  }
+
+  function enqueuePreparedMessage(tabId, request) {
+    if (!tabId || !request || !request.text) {
+      return false;
+    }
+
+    getQueuedMessages(tabId).push({
+      id: generateQueuedMessageId(),
+      text: request.text,
+      mode: request.mode,
+      images: cloneQueuedImages(request.images),
+    });
+    updateQueueWatchForTab(tabId);
+    renderMessageQueueBar();
+    saveWebviewState();
+    return true;
+  }
+
+  function trySendNextQueuedMessage() {
+    if (isGenerating) {
+      return false;
+    }
+
+    var activeTab = getActiveInternalTab();
+    if (!activeTab || queueAwaitingRunTabId !== activeTab.id || isQueuePaused(activeTab.id)) {
+      renderMessageQueueBar();
+      return false;
+    }
+
+    var queuedMessages = getQueuedMessages(activeTab.id);
+    if (queuedMessages.length === 0) {
+      updateQueueWatchForTab(activeTab.id);
+      renderMessageQueueBar();
+      return false;
+    }
+
+    var nextMessage = queuedMessages.shift();
+    updateQueueWatchForTab(activeTab.id);
+    if (!postMessageRequest(nextMessage)) {
+      renderMessageQueueBar();
+      saveWebviewState();
+      return false;
+    }
+
+    renderMessageQueueBar();
+    saveWebviewState();
+    userInput.focus();
+    return true;
+  }
+
+  function scheduleQueuedMessageDispatch(tabId) {
+    cancelQueuedDispatch();
+    if (!tabId || queueAwaitingRunTabId !== tabId) {
+      return;
+    }
+
+    queuedDispatchTimer = window.setTimeout(function () {
+      queuedDispatchTimer = 0;
+      trySendNextQueuedMessage();
+    }, 80);
+  }
+
+  function pauseQueuedMessages(tabId) {
+    if (!tabId || queueAwaitingRunTabId !== tabId) {
+      return;
+    }
+
+    if (getQueuedMessages(tabId).length === 0) {
+      queueAwaitingRunTabId = '';
+      renderMessageQueueBar();
+      return;
+    }
+
+    setQueuePaused(tabId, true);
+    queueAwaitingRunTabId = '';
+    renderMessageQueueBar();
+    saveWebviewState();
   }
 
   function syncActiveInternalTabDraftFromInput() {
@@ -354,6 +617,7 @@
   function restoreActiveInternalTabViewState() {
     var activeTab = getActiveInternalTab();
     restoreInputDraft(activeTab ? activeTab.draftText : '');
+    renderMessageQueueBar();
 
     if (sessionLauncherVisible) {
       return;
@@ -377,11 +641,13 @@
       return;
     }
 
+    clearQueuedMessages(activeTab.id);
     activeTab.sessionId = '';
     activeTab.title = '新对话';
     activeTab.awaitingSessionBind = true;
     activeTab.scrollTop = 0;
     renderInternalTabBar();
+    renderMessageQueueBar();
   }
 
   function createInternalTab() {
@@ -474,6 +740,7 @@
       return;
     }
 
+    clearQueuedMessages(tabId);
     internalTabs.splice(closingIndex, 1);
 
     if (tabId === activeInternalTabId) {
@@ -555,6 +822,7 @@
       }
 
       if (nextTab.sessionId && !matchedSession && !nextTab.awaitingSessionBind) {
+        clearQueuedMessages(nextTab.id);
         nextTab.sessionId = '';
         nextTab.title = '新对话';
         nextTab.awaitingSessionBind = true;
@@ -596,6 +864,7 @@
     }
 
     renderInternalTabBar();
+    renderMessageQueueBar();
     if (shouldRestoreInternalTabViewState) {
       restoreActiveInternalTabViewState();
       shouldRestoreInternalTabViewState = false;
@@ -889,12 +1158,14 @@
       return;
     }
 
-    // Enter：生成中时执行停止，否则发送消息
+    // Enter：生成中时优先加入排队，否则发送消息
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       if (isGenerating) {
-        vscode.postMessage({ type: 'stopGeneration' });
-        setLoading(false);
+        if (!sendMessage()) {
+          vscode.postMessage({ type: 'stopGeneration' });
+          setLoading(false);
+        }
       } else {
         sendMessage();
       }
@@ -971,46 +1242,31 @@
 
   /** 发送用户消息到 Extension */
   function sendMessage() {
-    if (isGenerating) {
-      vscode.postMessage({ type: 'stopGeneration' });
-      setLoading(false);
-      return;
+    var activeTab = getActiveInternalTab();
+    var request = buildComposerMessageRequest();
+    if (!activeTab || !request.text) {
+      return false;
     }
 
-    const text = userInput.value.trim();
-    if (!text) {
-      return;
+    recordSentInputHistory(request.text);
+
+    if (isGenerating || getQueuedMessages(activeTab.id).length > 0) {
+      enqueuePreparedMessage(activeTab.id, request);
+      clearComposerState();
+      if (!isGenerating && !isQueuePaused(activeTab.id)) {
+        queueAwaitingRunTabId = activeTab.id;
+        trySendNextQueuedMessage();
+      }
+      return true;
     }
 
-    // 记录到输入历史（最多保存 50 条）
-    inputHistory.push(text);
-    if (inputHistory.length > 50) { inputHistory.shift(); }
-    inputHistoryIndex = -1;
-    inputHistoryDraft = '';
-
-    if (sessionLauncherVisible) {
-      setSessionLauncherVisible(false);
-      messagesContainer.innerHTML = '';
+    if (!postMessageRequest(request)) {
+      return false;
     }
 
-    vscode.postMessage({
-      type: 'sendMessage',
-      text: text,
-      mode: btnCodeMode.getAttribute('data-mode') || 'code',
-      // 同时把图片附件一并发送，后端会根据模型视觉能力决定是否注入
-      images: pendingImages.length > 0 ? pendingImages.slice() : undefined,
-    });
-    // 前端先清空附件渲染（后端会再发 clearImageAttachments 确认一次）
-    pendingImages = [];
-    renderImageAttachments();
-
-    // 清空输入框并重置高度
-    userInput.value = '';
-    userInput.style.height = 'auto';
-    updateCharCount();
-    syncActiveInternalTabDraftFromInput();
-    saveWebviewState();
-    userInput.focus();
+    clearComposerState();
+    renderMessageQueueBar();
+    return true;
   }
 
   // ==================== 接收 Extension 消息 ====================
@@ -1146,6 +1402,7 @@
             window.chatSteps.cancelAllRunningSteps();
           }
         }
+        pauseQueuedMessages(activeInternalTabId);
         setLoading(false);
         syncRegenButtonForLatestTurn();
         break;
@@ -1799,11 +2056,7 @@
       tag.setAttribute('data-img-id', img.id);
       tag.innerHTML =
         '<img class="img-thumb" src="' + img.dataUrl + '" alt="' + escapeAttr(img.fileName) + '" />' +
-        '<div class="img-info">' +
-          '<span class="img-name">' + escapeHtml(img.fileName) + '</span>' +
-          '<span class="img-size">' + img.sizeKB + 'KB</span>' +
-        '</div>' +
-        '<button class="img-remove" title="移除图片">\u00d7</button>';
+        '<button class="img-remove" title="移除图片">×</button>';
       // 点击缩略图弹出大图预览
       tag.querySelector('.img-thumb').addEventListener('click', function () {
         var overlay = document.createElement('div');
@@ -2037,6 +2290,7 @@
     // 清除缓冲
     delete streamBuffers[messageId];
     setLoading(false);
+    scheduleQueuedMessageDispatch(activeInternalTabId);
 
     // 流式完成后：移除旧的重新生成按钮，在本条 AI 消息底部加新的
     syncRegenButtonForLatestTurn();
@@ -2166,6 +2420,9 @@
 
     messagesContainer.appendChild(errorEl);
     scrollToBottom();
+    if (retryRequestId) {
+      pauseQueuedMessages(activeInternalTabId);
+    }
     setLoading(false);
     syncRegenButtonForLatestTurn();
   }
@@ -2182,6 +2439,7 @@
   function setLoading(loading) {
     isGenerating = loading;
     if (loading) {
+      cancelQueuedDispatch();
       loadingEl.classList.remove('hidden');
       btnSend.innerHTML = stopBtnHtml;
       btnSend.classList.add('stop-btn');
@@ -2194,11 +2452,13 @@
       btnSend.title = '发送消息';
       btnSend.disabled = false;
     }
+    renderMessageQueueBar();
     scrollToBottom();
   }
 
   /** 清空聊天界面，恢复欢迎页 */
   function clearChat() {
+    var activeTab = getActiveInternalTab();
     if (scheduledScrollFrame) {
       cancelAnimationFrame(scheduledScrollFrame);
       scheduledScrollFrame = 0;
@@ -2214,6 +2474,10 @@
     Object.keys(streamBuffers).forEach(function (messageId) {
       delete streamBuffers[messageId];
     });
+    cancelQueuedDispatch();
+    if (activeTab) {
+      clearQueuedMessages(activeTab.id);
+    }
     // 清除图片附件
     pendingImages = [];
     renderImageAttachments();
@@ -2222,6 +2486,7 @@
       window.chatSteps.clearStore();
     }
     setLoading(false);
+    renderMessageQueueBar();
     renderMessagesBaseState();
   }
 
