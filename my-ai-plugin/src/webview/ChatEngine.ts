@@ -216,11 +216,17 @@ export class ChatEngine {
 
   // ==================== 构造与初始化 ====================
 
-  constructor(host: IChatHost, store: SessionStore) {
+  constructor(host: IChatHost, store: SessionStore, options?: { forceSessionLauncher?: boolean }) {
     this.host = host;
     this.store = store;
     // 从共享存储加载会话数据（首个引擎实际读取 globalState，后续引擎复用缓存）
     this.loadSessions();
+
+    // 新建 Tab 时强制进入 launcher 状态，避免多 Tab 默认进入同一个会话
+    if (options?.forceSessionLauncher) {
+      this.activeSessionId = '';
+      this.sessionLauncherVisible = true;
+    }
   }
 
   // ==================== displayHistory 代理 ====================
@@ -1141,7 +1147,7 @@ export class ChatEngine {
       this.saveSessions();
     }
 
-    info(`加载会话数据：共 ${this.sessions.length} 个会话，当前活跃: ${this.activeSessionId}`);
+    info(`加载会话数据：共 ${this.sessions.length} 个会话，活跃: ${this.activeSessionId}`);
   }
 
   private saveSessions(): ReturnType<typeof buildUpdateSessionsResponse> {

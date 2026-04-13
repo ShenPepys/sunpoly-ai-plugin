@@ -68,6 +68,8 @@ export function activate(context: vscode.ExtensionContext): void {
       const tab = tabManager!.getActiveTab();
       if (tab) {
         tab.clearCurrentSession();
+      } else {
+        vscode.window.showInformationMessage('请先打开或聚焦一个聊天 Tab。');
       }
     })
   );
@@ -108,11 +110,13 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
-  // 注册命令：新建对话（在右侧编辑器区域新建独立聊天 Tab）
+  // 注册命令：新建对话（在当前 Tab 中打开会话启动器，让用户选择历史会话或发消息新建）
   context.subscriptions.push(
     vscode.commands.registerCommand('my-ai-plugin.newChat', () => {
-      tabManager!.createTab();
-      info('用户触发：新建对话');
+      const tab = tabManager!.getOrCreateTab();
+      tab.reveal();
+      tab.openSessionLauncher();
+      info('用户触发：新建对话（打开会话启动器）');
     })
   );
 
@@ -121,7 +125,10 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('my-ai-plugin.switchMode', () => {
       const tab = tabManager!.getActiveTab();
-      if (!tab) { return; }
+      if (!tab) {
+        vscode.window.showInformationMessage('请先打开或聚焦一个聊天 Tab。');
+        return;
+      }
       const currentMode = tab.getMode();
       const currentIndex = modeOrder.indexOf(currentMode);
       const nextMode = modeOrder[(currentIndex + 1) % modeOrder.length];

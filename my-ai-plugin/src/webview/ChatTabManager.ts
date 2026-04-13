@@ -36,7 +36,8 @@ export class ChatTabManager {
    * @returns 新创建的 ChatTabPanel 实例
    */
   public createTab(): ChatTabPanel {
-    const tab = new ChatTabPanel(this.context, this.sessionStore);
+    // 新 Tab 默认进入 session launcher，避免与已有 Tab 进入同一个会话
+    const tab = new ChatTabPanel(this.context, this.sessionStore, { forceSessionLauncher: true });
 
     // Tab 关闭时自动从管理器中移除
     tab.onDispose = () => {

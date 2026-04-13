@@ -36,7 +36,7 @@ export class ChatTabPanel implements IChatHost {
   /** 模型切换回调，外部设置后在切换模型时触发 */
   public onModelSwitch?: (modelName: string) => void;
 
-  constructor(context: vscode.ExtensionContext, store: SessionStore) {
+  constructor(context: vscode.ExtensionContext, store: SessionStore, options?: { forceSessionLauncher?: boolean }) {
     this.tabId = `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     this.extensionUri = context.extensionUri;
     this.globalState = context.globalState;
@@ -60,7 +60,7 @@ export class ChatTabPanel implements IChatHost {
     this.panel.iconPath = vscode.Uri.joinPath(this.extensionUri, 'media', 'icon.svg');
 
     // 创建引擎实例（共享同一个 SessionStore）
-    this.engine = new ChatEngine(this, store);
+    this.engine = new ChatEngine(this, store, options);
 
     // 桥接 onModelSwitch 到引擎
     Object.defineProperty(this.engine, 'onModelSwitch', {
