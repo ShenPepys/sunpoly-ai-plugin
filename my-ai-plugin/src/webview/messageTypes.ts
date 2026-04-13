@@ -194,6 +194,11 @@ export interface OpenSettingsRequest {
   type: 'openSettings';
 }
 
+/** 在编辑器区新建一个原生聊天 Tab */
+export interface CreateNativeTabRequest {
+  type: 'createNativeTab';
+}
+
 /** 关闭内部子标签（前端 Tab bar 中的单个标签） */
 export interface CloseInternalTabRequest {
   type: 'closeInternalTab';
@@ -231,6 +236,7 @@ export type WebviewMessage =
   | RetryRequestRequest
   | OpenFilesInIdeRequest
   | OpenSettingsRequest
+  | CreateNativeTabRequest
   | CloseInternalTabRequest
   | SwitchInternalTabRequest
   | UndoAllChangesRequest

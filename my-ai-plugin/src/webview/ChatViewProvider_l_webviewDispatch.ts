@@ -71,6 +71,10 @@ export async function tryHandleLightweightWebviewMessage(
       await vscode.commands.executeCommand('my-ai-plugin.editModels');
       return true;
 
+    case 'createNativeTab':
+      await vscode.commands.executeCommand('my-ai-plugin.newChatTab');
+      return true;
+
     case 'executeCommand': {
       const cmdType = options.resolveCommandType(message.command);
       if (cmdType) {

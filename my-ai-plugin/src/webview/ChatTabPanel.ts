@@ -169,11 +169,6 @@ export class ChatTabPanel implements IChatHost {
     return this.engine.getActiveModelName();
   }
 
-  /** 在当前面板内创建一个新的内部子标签 */
-  public createInternalTab(): void {
-    this.postMessage({ type: 'createInternalTab' });
-  }
-
   /** 关闭此 Tab */
   public dispose(): void {
     this.panel.dispose();

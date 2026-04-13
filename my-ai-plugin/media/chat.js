@@ -373,8 +373,7 @@
   function renderInternalTabBar() {
     internalTabsList.innerHTML = '';
 
-    // 只有 1 个标签时隐藏标签栏，减少视觉干扰
-    if (internalTabs.length <= 1) {
+    if (internalTabs.length === 0) {
       internalTabsBar.classList.remove('visible');
       return;
     }
@@ -386,18 +385,20 @@
       tabEl.className = 'internal-tab' + (tab.id === activeInternalTabId ? ' active' : '');
 
       var labelEl = document.createElement('span');
+      labelEl.className = 'internal-tab-label';
       labelEl.textContent = tab.title || ('对话 ' + (index + 1));
       tabEl.appendChild(labelEl);
 
-      // 多于 1 个标签时显示关闭按钮
-      var closeBtn = document.createElement('button');
-      closeBtn.className = 'internal-tab-close';
-      closeBtn.textContent = '\u00d7';
-      closeBtn.addEventListener('click', function (e) {
-        e.stopPropagation();
-        closeInternalTab(tab.id);
-      });
-      tabEl.appendChild(closeBtn);
+      if (internalTabs.length > 1) {
+        var closeBtn = document.createElement('button');
+        closeBtn.className = 'internal-tab-close';
+        closeBtn.textContent = '\u00d7';
+        closeBtn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          closeInternalTab(tab.id);
+        });
+        tabEl.appendChild(closeBtn);
+      }
 
       tabEl.addEventListener('click', function () {
         switchInternalTab(tab.id);
@@ -575,7 +576,7 @@
   btnInternalTabAdd.addEventListener('click', function (e) {
     e.preventDefault();
     e.stopPropagation();
-    createInternalTab();
+    vscode.postMessage({ type: 'createNativeTab' });
   });
 
   /**
@@ -873,7 +874,6 @@
         break;
 
       case 'createInternalTab':
-        createInternalTab();
         break;
 
       case 'setSessionLauncher':
@@ -1030,7 +1030,7 @@
     var timeStr = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
     // AI 消息在消息体右上角添加悬浮操作栏（含复制按钮和时间戳）
     var msgActionsHtml = role === 'assistant'
-      ? '<div class="msg-actions"><span class="msg-time">' + timeStr + '</span><button class="btn-copy-msg" title="复制全文">复制</button></div>'
+      ? '<div class="msg-actions"><span class="msg-time">' + timeStr + '</span><button class="msg-action-btn btn-copy-msg" title="复制全文"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div>'
       : '<div class="msg-actions"><span class="msg-time">' + timeStr + '</span></div>';
 
     messageEl.innerHTML =
@@ -1928,9 +1928,9 @@
     if (!actionsEl) { return; }
 
     var btn = document.createElement('button');
-    btn.className = 'btn-regen btn-copy-msg';
-    btn.title = '重做这句要求';
-    btn.textContent = '重做';
+    btn.className = 'msg-action-btn btn-regen';
+    btn.title = '重新生成';
+    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 10 4 15 9 20"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></svg>';
     btn.addEventListener('click', function () {
       removeAllRegenButtons();
       vscode.postMessage({ type: 'regenerate', assistantMessageId: assistantMessageId });
@@ -2229,16 +2229,24 @@
     }
 
     // 复制整条 AI 回复按钮
-    if (target.classList.contains('btn-copy-msg')) {
-      var msgContent = target.closest('.message-content');
+    var copyBtn = typeof target.closest === 'function'
+      ? target.closest('.btn-copy-msg')
+      : null;
+    if (copyBtn) {
+      var msgContent = copyBtn.closest('.message-content');
       if (msgContent) {
         var bodyEl = msgContent.querySelector('.message-body');
         if (bodyEl) {
           vscode.postMessage({ type: 'copyCode', code: bodyEl.textContent });
-          target.textContent = '已复制 ✓';
-          setTimeout(function () { target.textContent = '复制'; }, 1500);
+          copyBtn.classList.add('is-copied');
+          copyBtn.title = '已复制';
+          setTimeout(function () {
+            copyBtn.classList.remove('is-copied');
+            copyBtn.title = '复制全文';
+          }, 1500);
         }
       }
+      return;
     }
 
     // 插入代码按钮
@@ -2601,7 +2609,8 @@
     };
     internalTabs.push(firstTab);
     activeInternalTabId = firstTab.id;
-    // 只有 1 个标签时不显示标签栏，无需调用 renderInternalTabBar
   }
+
+  renderInternalTabBar();
 
 })();

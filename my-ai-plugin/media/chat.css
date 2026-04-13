@@ -40,23 +40,25 @@ body {
   display: none;
   flex-shrink: 0;
   border-bottom: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.08));
-  background: var(--vscode-editor-background, #1e1e1e);
-  padding: 0 4px;
+  background: var(--vscode-editorGroupHeader-tabsBackground, #252526);
+  padding: 0 8px;
   align-items: center;
-  min-height: 32px;
+  justify-content: flex-end;
+  min-height: 36px;
 }
 
 .internal-tabs-bar.visible {
-  display: flex;
+  display: none;
 }
 
 .internal-tabs-list {
-  display: flex;
-  align-items: center;
-  gap: 2px;
+  display: none;
+  align-items: stretch;
+  gap: 0;
   overflow-x: auto;
   flex: 1;
   min-width: 0;
+  height: 100%;
 }
 
 .internal-tabs-list::-webkit-scrollbar {
@@ -66,33 +68,47 @@ body {
 .internal-tab {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
+  gap: 6px;
+  padding: 0 10px;
   font-size: 12px;
-  border-radius: 4px 4px 0 0;
+  border-radius: 0;
   cursor: pointer;
   white-space: nowrap;
   color: var(--vscode-tab-inactiveForeground, rgba(255,255,255,0.5));
+  border-right: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.08));
   border-bottom: 2px solid transparent;
-  transition: color 0.15s, border-color 0.15s;
+  background: transparent;
+  height: 100%;
+  min-width: 72px;
+  max-width: 180px;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
   user-select: none;
 }
 
 .internal-tab:hover {
   color: var(--vscode-tab-activeForeground, #fff);
+  background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.04));
 }
 
 .internal-tab.active {
   color: var(--vscode-tab-activeForeground, #fff);
+  background: var(--vscode-editor-background, #1e1e1e);
   border-bottom-color: var(--vscode-focusBorder, #007acc);
+}
+
+.internal-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
 }
 
 .internal-tab-close {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   font-size: 11px;
   border: none;
   background: transparent;
@@ -100,7 +116,8 @@ body {
   cursor: pointer;
   border-radius: 3px;
   opacity: 0;
-  transition: opacity 0.15s;
+  flex-shrink: 0;
+  transition: opacity 0.15s, background 0.15s;
 }
 
 .internal-tab:hover .internal-tab-close,
@@ -117,20 +134,24 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
-  font-size: 16px;
-  border: none;
+  width: 30px;
+  height: 30px;
+  margin-left: 6px;
+  font-size: 18px;
+  border: 1px solid transparent;
   background: transparent;
-  color: var(--vscode-tab-inactiveForeground, rgba(255,255,255,0.5));
+  color: var(--vscode-tab-inactiveForeground, rgba(255,255,255,0.75));
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: 6px;
   flex-shrink: 0;
+  align-self: center;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
 .internal-tab-add:hover {
   color: var(--vscode-tab-activeForeground, #fff);
   background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.1));
+  border-color: var(--vscode-panel-border, rgba(255,255,255,0.08));
 }
 
 /* ==================== 会话启动器（历史会话列表） ==================== */
@@ -573,19 +594,42 @@ body {
   user-select: none;
 }
 
-.btn-copy-msg {
+.msg-action-btn {
   background: var(--vscode-editorGroupHeader-tabsBackground, #252526);
   border: 1px solid var(--vscode-panel-border, #454545);
   color: var(--vscode-descriptionForeground, #888);
-  padding: 2px 8px;
-  border-radius: 3px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 6px;
   cursor: pointer;
-  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
 }
 
-.btn-copy-msg:hover {
+.msg-action-btn svg {
+  vertical-align: middle;
+}
+
+.msg-action-btn:hover {
   background: var(--vscode-button-secondaryHoverBackground, #444);
   color: var(--vscode-foreground);
+}
+
+.msg-action-btn:active {
+  transform: scale(0.96);
+}
+
+.btn-copy-msg.is-copied {
+  color: var(--vscode-testing-iconPassed, #73c991);
+  border-color: var(--vscode-testing-iconPassed, #73c991);
+}
+
+.btn-regen:hover {
+  color: var(--vscode-textLink-foreground, #4daafc);
+  border-color: var(--vscode-textLink-foreground, #4daafc);
 }
 
 /* AI 消息：强制撑满整个宽度 */

@@ -140,10 +140,8 @@ export function activate(context: vscode.ExtensionContext): void {
   // 注册命令：新建聊天 Tab（在当前面板内创建内部子标签）
   context.subscriptions.push(
     vscode.commands.registerCommand('my-ai-plugin.newChatTab', () => {
-      const tab = tabManager!.getOrCreateTab();
-      tab.reveal();
-      tab.createInternalTab();
-      info('用户触发：新建内部子标签');
+      tabManager!.createTab();
+      info('用户触发：新建原生聊天 Tab');
     })
   );
 
