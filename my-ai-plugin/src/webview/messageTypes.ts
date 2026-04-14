@@ -11,6 +11,32 @@
 /** 工作模式类型 */
 export type WorkMode = 'code' | 'ask' | 'plan';
 
+export interface HistoryProcessSummary {
+  thinkingElapsedMs?: number;
+  totalSteps: number;
+  readCount: number;
+  listCount: number;
+  modifyCount: number;
+  createCount: number;
+  failedCount: number;
+  changedFiles: string[];
+}
+
+export interface ChatSessionDisplayMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp?: number;
+  messageId?: string;
+  processSummary?: HistoryProcessSummary;
+}
+
+export interface ChatSessionHistoryMessage {
+  role: string;
+  content: unknown;
+  timestamp?: number;
+  displayContent?: string;
+}
+
 // ==================== 会话数据结构 ====================
 
 /** 单个聊天会话的完整数据，存储到 globalState中 */
@@ -21,8 +47,11 @@ export interface ChatSession {
   name: string;
   /** 创建时间戳 */
   createdAt: number;
-  /** 对话历史（OpenAI 消息格式） */
-  history: Array<{ role: string; content: unknown }>;
+  updatedAt: number;
+  /** 对话历史（OpenAI 消息格式）；timestamp 为可选字段，旧存档没有也不影响加载 */
+  history: ChatSessionHistoryMessage[];
+  /** 历史展示层的持久化快照，用于恢复与导出；旧存档没有也可按 history 自动回填 */
+  displayHistory?: ChatSessionDisplayMessage[];
   uiTranscript?: PersistedUiEntry[];
 }
 
@@ -32,6 +61,7 @@ export interface ChatSession {
 export interface SendMessageRequest {
   type: 'sendMessage';
   text: string;
+  mode?: WorkMode;
   /** 可选：随消息一起发送的图片附件（base64 DataURL 格式） */
   images?: Array<{ id: string; dataUrl: string; fileName: string; mimeType: string; sizeKB: number }>;
 }
@@ -118,6 +148,22 @@ export interface AnalyzeTerminalErrorRequest {
 /** 用户点击「重新生成」按钮，后端删除最后一条 AI 回复并重新发送 */
 export interface RegenerateRequest {
   type: 'regenerate';
+  assistantMessageId: string;
+}
+
+export interface RetryRequestRequest {
+  type: 'retryRequest';
+  requestId: string;
+}
+
+/**
+ * 用户点击 "View all changes" 按钮，请求 Extension 在 IDE 中打开对应文件
+ * 新建文件 → showTextDocument，编辑文件 → vscode.diff 对比编辑器
+ */
+export interface OpenFilesInIdeRequest {
+  type: 'openFilesInIde';
+  /** 要打开的文件列表（绝对路径 + 状态） */
+  files: Array<{ path: string; status: 'created' | 'modified' | 'read' | 'listed' }>;
 }
 
 /** 新建会话 */
@@ -144,6 +190,28 @@ export interface RenameSessionRequest {
   name: string;
 }
 
+/** 打开插件设置页（VS Code settings 定位到 myAiPlugin） */
+export interface OpenSettingsRequest {
+  type: 'openSettings';
+}
+
+/** 在编辑器区新建一个原生聊天 Tab */
+export interface CreateNativeTabRequest {
+  type: 'createNativeTab';
+}
+
+/** 关闭内部子标签（前端 Tab bar 中的单个标签） */
+export interface CloseInternalTabRequest {
+  type: 'closeInternalTab';
+  tabId: string;
+}
+
+/** 切换内部子标签 */
+export interface SwitchInternalTabRequest {
+  type: 'switchInternalTab';
+  tabId: string;
+}
+
 /** Webview 发送给 Extension 的所有消息类型 */
 export type WebviewMessage =
   | SendMessageRequest
@@ -160,16 +228,20 @@ export type WebviewMessage =
   | ExportChatRequest
   | StopGenerationRequest
   | ExecuteCommandRequest
-  | AcceptChangeRequest
-  | RejectChangeRequest
-  | AcceptAllChangesRequest
-  | RejectAllChangesRequest
   | CreateSessionRequest
   | SwitchSessionRequest
   | DeleteSessionRequest
   | RenameSessionRequest
   | AnalyzeTerminalErrorRequest
-  | RegenerateRequest;
+  | RegenerateRequest
+  | RetryRequestRequest
+  | OpenFilesInIdeRequest
+  | OpenSettingsRequest
+  | CreateNativeTabRequest
+  | CloseInternalTabRequest
+  | SwitchInternalTabRequest
+  | UndoAllChangesRequest
+  | UndoFileChangeRequest;
 
 // ==================== Extension → Webview ====================
 
@@ -206,6 +278,7 @@ export interface ShowErrorResponse {
   type: 'showError';
   message: string;
   retryable?: boolean;
+  retryRequestId?: string;
   createdAt?: number;
   readOnly?: boolean;
 }
@@ -239,6 +312,21 @@ export interface UpdateMessageResponse {
   content: string;
 }
 
+export interface ShowHistoryProcessSummaryResponse {
+  type: 'showHistoryProcessSummary';
+  messageId: string;
+  summary: HistoryProcessSummary;
+}
+
+export interface RemoveLastAssistantMessageResponse {
+  type: 'removeLastAssistantMessage';
+}
+
+export interface ResetMessageStateResponse {
+  type: 'resetMessageState';
+  messageId: string;
+}
+
 /** 在指定气泡中显示 Thinking 动画 */
 export interface ShowThinkingResponse {
   type: 'showThinking';
@@ -269,6 +357,8 @@ export interface WorkspaceFilesResponse {
 export interface UpdateTokenCountResponse {
   type: 'updateTokenCount';
   tokenCount: number;
+  contextWindow: number;
+  usagePercentage: number;
 }
 
 /** 推送当前工作模式到 Webview */
@@ -282,12 +372,21 @@ export interface GenerationStoppedResponse {
   type: 'generationStopped';
 }
 
+export interface FocusInputResponse {
+  type: 'focusInput';
+}
+
+export interface SetSessionLauncherResponse {
+  type: 'setSessionLauncher';
+  visible: boolean;
+}
+
 // ==================== Windsurf 风格步骤展示 ====================
 
 /** 工具步骤状态 */
 export type StepStatus = 'running' | 'done' | 'error';
 
-export type PersistedUiChangeSummaryStatus = 'applying' | 'accepted' | 'partial' | 'failed' | 'rejected' | 'cancelled';
+export type PersistedUiChangeSummaryStatus = 'applying' | 'accepted' | 'partial' | 'failed' | 'rejected' | 'cancelled' | 'undone' | 'partial-undone';
 
 export interface PersistedUiChangeSummaryFile {
   path: string;
@@ -296,6 +395,7 @@ export interface PersistedUiChangeSummaryFile {
   deletions: number;
   status: 'created' | 'modified' | 'read' | 'listed';
   issueText?: string;
+  stepId?: string;
 }
 
 export type PersistedUiEvent =
@@ -330,6 +430,7 @@ export type PersistedUiEvent =
     noticeText?: string;
     needsConfirm: boolean;
     collapsed?: boolean;
+    readOnly?: boolean;
   }
   | {
     type: 'showChangeSummary';
@@ -426,12 +527,18 @@ export interface UpdateChangeSummaryResponse {
   text: string;
 }
 
+/** Extension 通知 Webview 创建一个新的内部子标签（Alt+T 触发） */
+export interface CreateInternalTabResponse {
+  type: 'createInternalTab';
+}
+
 /** 流式阶段完成后显示 Thinking 耗时（替代之前的 Thinking 动画） */
 export interface ThinkingCompleteResponse {
   type: 'thinkingComplete';
   messageId: string;
   /** 思考耗时（毫秒） */
   elapsed: number;
+  isExecutionMessage: boolean;
 }
 
 // ==================== 图片附件（Image Attachment） ====================
@@ -455,6 +562,8 @@ export interface VisionNotSupportedResponse {
   type: 'visionNotSupported';
   /** 当前模型名称，用于在提示中展示 */
   modelName: string;
+  /** 已配置中支持视觉的模型名称列表，为空则表示没有可用的视觉模型 */
+  visionModels?: string[];
 }
 
 /** 后端通知前端清空图片附件缩略图（消息发送后图片已处理，可以清除展示） */
@@ -470,6 +579,7 @@ export interface UpdateSessionsResponse {
     id: string;
     name: string;
     createdAt: number;
+    updatedAt: number;
     /** 对话轮数（用于在 Tab 上展示徽章） */
     messageCount: number;
   }>;
@@ -477,27 +587,18 @@ export interface UpdateSessionsResponse {
   activeSessionId: string;
 }
 
-// ==================== Webview → Extension（Accept/Reject） ====================
+// ==================== Webview → Extension（Undo） ====================
 
-/** 用户接受文件变更 */
-export interface AcceptChangeRequest {
-  type: 'acceptChange';
-  stepId: string;
-}
-
-/** 用户拒绝文件变更 */
-export interface RejectChangeRequest {
-  type: 'rejectChange';
-  stepId: string;
-}
-
-export interface AcceptAllChangesRequest {
-  type: 'acceptAllChanges';
+/** 用户点击"Undo all"按钮，撤销本轮所有文件变更 */
+export interface UndoAllChangesRequest {
+  type: 'undoAllChanges';
   summaryId: string;
 }
 
-export interface RejectAllChangesRequest {
-  type: 'rejectAllChanges';
+/** 用户点击单文件"↩"按钮，撤销指定文件的变更 */
+export interface UndoFileChangeRequest {
+  type: 'undoFileChange';
+  filePath: string;
   summaryId: string;
 }
 
@@ -511,6 +612,9 @@ export type ExtensionMessage =
   | ClearChatResponse
   | UpdateModelsResponse
   | UpdateMessageResponse
+  | ShowHistoryProcessSummaryResponse
+  | RemoveLastAssistantMessageResponse
+  | ResetMessageStateResponse
   | ShowThinkingResponse
   | AddContextFileResponse
   | ClearContextFilesResponse
@@ -518,6 +622,8 @@ export type ExtensionMessage =
   | UpdateTokenCountResponse
   | UpdateModeResponse
   | GenerationStoppedResponse
+  | FocusInputResponse
+  | SetSessionLauncherResponse
   | AddStepResponse
   | UpdateStepResponse
   | ShowDiffResponse
@@ -526,4 +632,5 @@ export type ExtensionMessage =
   | ThinkingCompleteResponse
   | VisionNotSupportedResponse
   | ClearImageAttachmentsResponse
-  | UpdateSessionsResponse;
+  | UpdateSessionsResponse
+  | CreateInternalTabResponse;

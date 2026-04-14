@@ -3,11 +3,14 @@
  * 负责插件的激活、命令注册和生命周期管理
  */
 import * as vscode from 'vscode';
-import { initLogger, disposeLogger, info } from './logger';
+import { initLogger, disposeLogger, info, error } from './logger';
 import { setExtensionPath, getAllModels, getActiveModelIndex } from './config';
-import { ChatViewProvider } from './webview/ChatViewProvider';
+import { ChatTabManager } from './webview/ChatTabManager';
 import { executeCommand } from './commands/handler';
 import type { CommandType } from './commands/handler';
+
+/** Tab 管理器实例，模块级变量供 deactivate 时清理 */
+let tabManager: ChatTabManager | undefined;
 
 /**
  * 插件激活时调用
@@ -22,12 +25,9 @@ export function activate(context: vscode.ExtensionContext): void {
   setExtensionPath(context.extensionUri.fsPath);
   info(`插件路径: ${context.extensionUri.fsPath}`);
 
-  // 注册 Webview 聊天面板
-  const chatProvider = new ChatViewProvider(context);
-  context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatProvider)
-  );
-  info('聊天面板已注册');
+  // 初始化 Tab 管理器（聊天面板以右侧编辑器 Tab 形式打开）
+  tabManager = new ChatTabManager(context);
+  info('Tab 管理器已初始化');
 
   // 启动时校验 API 配置：缺少 API Key 时提示用户
   const startupModels = getAllModels();
@@ -48,8 +48,15 @@ export function activate(context: vscode.ExtensionContext): void {
   const commandTypes: CommandType[] = ['explain', 'fix', 'optimize', 'complete', 'test'];
   for (const type of commandTypes) {
     context.subscriptions.push(
-      vscode.commands.registerCommand(`my-ai-plugin.${type}`, () => {
-        executeCommand(type, chatProvider);
+      vscode.commands.registerCommand(`my-ai-plugin.${type}`, async () => {
+        try {
+          const tab = tabManager!.getOrCreateTab();
+          await executeCommand(type, tab);
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          error(`执行命令 ${type} 失败:`, err);
+          vscode.window.showErrorMessage(`AI 命令执行失败：${errMsg}`);
+        }
       })
     );
   }
@@ -58,8 +65,12 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('my-ai-plugin.clearChat', () => {
       info('用户触发：清空对话');
-      chatProvider.clearHistory();
-      chatProvider.postMessage({ type: 'clearChat' });
+      const tab = tabManager!.getActiveTab();
+      if (tab) {
+        tab.clearCurrentSession();
+      } else {
+        vscode.window.showInformationMessage('请先打开或聚焦一个聊天 Tab。');
+      }
     })
   );
 
@@ -73,8 +84,8 @@ export function activate(context: vscode.ExtensionContext): void {
   statusBarItem.show();
   context.subscriptions.push(statusBarItem);
 
-  // 模型切换时同步更新状态栏
-  chatProvider.onModelSwitch = (modelName: string) => {
+  // Tab 内切换模型时同步更新状态栏
+  tabManager.onModelSwitch = (modelName: string) => {
     statusBarItem.text = `$(hubot) ${modelName}`;
   };
 
@@ -89,37 +100,58 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
-  // 注册命令：Ctrl+L 聚焦聊天输入框
+  // 注册命令：聚焦聊天输入框（打开/聚焦右侧 Tab）
   context.subscriptions.push(
-    vscode.commands.registerCommand('my-ai-plugin.focusChat', async () => {
-      // 先显示侧边栏（如果隐藏了会自动展开）
-      await vscode.commands.executeCommand('my-ai-plugin.chatView.focus');
-      // 通知 Webview 聚焦输入框
-      chatProvider.postMessage({ type: 'focusInput' } as any);
+    vscode.commands.registerCommand('my-ai-plugin.focusChat', () => {
+      const tab = tabManager!.getOrCreateTab();
+      tab.reveal();
+      tab.postMessage({ type: 'focusInput' } as any);
       info('用户触发：聚焦聊天输入框');
     })
   );
 
-  // 注册命令：Ctrl+Shift+N 新建对话
+  // 注册命令：新建对话（在当前 Tab 中打开会话启动器，让用户选择历史会话或发消息新建）
   context.subscriptions.push(
-    vscode.commands.registerCommand('my-ai-plugin.newChat', async () => {
-      chatProvider.clearHistory();
-      chatProvider.postMessage({ type: 'clearChat' } as any);
-      await vscode.commands.executeCommand('my-ai-plugin.chatView.focus');
-      chatProvider.postMessage({ type: 'focusInput' } as any);
-      info('用户触发：新建对话');
+    vscode.commands.registerCommand('my-ai-plugin.newChat', () => {
+      const tab = tabManager!.getOrCreateTab();
+      tab.reveal();
+      tab.openSessionLauncher();
+      info('用户触发：新建对话（打开会话启动器）');
     })
   );
 
-  // 注册命令：Ctrl+. 切换工作模式（code → ask → plan 循环）
+  // 注册命令：切换工作模式（code → ask → plan 循环）
   const modeOrder: Array<'code' | 'ask' | 'plan'> = ['code', 'ask', 'plan'];
   context.subscriptions.push(
     vscode.commands.registerCommand('my-ai-plugin.switchMode', () => {
-      const currentMode = chatProvider.getMode();
+      const tab = tabManager!.getActiveTab();
+      if (!tab) {
+        vscode.window.showInformationMessage('请先打开或聚焦一个聊天 Tab。');
+        return;
+      }
+      const currentMode = tab.getMode();
       const currentIndex = modeOrder.indexOf(currentMode);
       const nextMode = modeOrder[(currentIndex + 1) % modeOrder.length];
-      chatProvider.switchMode(nextMode);
+      tab.switchMode(nextMode);
       info(`用户快捷键切换模式: ${currentMode} → ${nextMode}`);
+    })
+  );
+
+  // 注册命令：新建聊天 Tab（在当前面板内创建内部子标签）
+  context.subscriptions.push(
+    vscode.commands.registerCommand('my-ai-plugin.newChatTab', () => {
+      const hadOpenedTab = tabManager!.size > 0;
+      const tab = tabManager!.getOrCreateTab();
+      tab.reveal();
+
+      if (!hadOpenedTab) {
+        tab.postMessage({ type: 'focusInput' } as any);
+        info('用户触发：首次打开聊天面板');
+        return;
+      }
+
+      tab.postMessage({ type: 'createInternalTab' });
+      info('用户触发：新建内部聊天标签');
     })
   );
 
@@ -134,20 +166,34 @@ export function activate(context: vscode.ExtensionContext): void {
   // 注册命令：Ctrl+Shift+P 搜索 "AI: 编辑模型配置 (JSON)"
   context.subscriptions.push(
     vscode.commands.registerCommand('my-ai-plugin.editModels', async () => {
-      // 打开用户级 settings.json 并定位到 myAiPlugin.models
-      await vscode.commands.executeCommand('workbench.action.openSettingsJson');
-      // 给用户提示如何添加模型
-      const hasModels = getAllModels().some(m => m.apiKey && m.apiKey !== '');
-      if (!hasModels) {
-        vscode.window.showInformationMessage(
-          '请在 settings.json 中添加 "myAiPlugin.models" 配置，包含 name、modelId、baseUrl、apiKey 四个字段',
-          '查看示例'
-        ).then(choice => {
-          if (choice === '查看示例') {
-            vscode.env.openExternal(vscode.Uri.parse('https://api.deepseek.com'));
-          }
-        });
+      const config = vscode.workspace.getConfiguration('myAiPlugin');
+      const currentModels = config.get<Array<{ name: string; modelId: string; baseUrl: string; apiKey: string }>>('models', []);
+      const hasValidKey = currentModels.some(m => m.apiKey && m.apiKey !== '' && !m.apiKey.startsWith('填写'));
+
+      // 如果没有有效的模型配置，自动写入模板方便用户填写
+      if (!hasValidKey) {
+        const templateModels = [
+          {
+            name: '填写模型显示名称，如 DeepSeek Chat、GPT-4o、豆包',
+            modelId: '填写模型 ID，如 deepseek-chat、gpt-4o、doubao-pro-32k',
+            baseUrl: '填写 API 地址，如 https://api.deepseek.com',
+            apiKey: '填写你的 API Key',
+          },
+        ];
+        await config.update('models', templateModels, vscode.ConfigurationTarget.Global);
+        info('已写入模型配置模板到 settings.json');
       }
+
+      // 打开用户级 settings.json
+      await vscode.commands.executeCommand('workbench.action.openSettingsJson');
+
+      // 提示用户找到并修改 apiKey
+      if (!hasValidKey) {
+        vscode.window.showInformationMessage(
+          '已在 settings.json 中插入模型配置模板，请搜索 "myAiPlugin.models"，将 name、modelId、baseUrl、apiKey 四项全部替换为你的真实配置。'
+        );
+      }
+
       info('用户触发：编辑模型配置 JSON');
     })
   );
@@ -160,6 +206,11 @@ export function activate(context: vscode.ExtensionContext): void {
  * 负责清理资源
  */
 export function deactivate(): void {
+  // 关闭所有聊天 Tab
+  if (tabManager) {
+    tabManager.dispose();
+    tabManager = undefined;
+  }
   info('AI 助理插件已停用');
   disposeLogger();
 }

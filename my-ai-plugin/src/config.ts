@@ -131,6 +131,11 @@ interface ModelProfile {
   modelId: string;
   baseUrl: string;
   apiKey: string;
+  contextWindow?: number;
+  /** 是否支持图片输入（可选，不填则按 modelId 自动判断） */
+  supportsVision?: boolean;
+  /** 自定义 API 路径，不填时默认 /v1/chat/completions */
+  apiPath?: string;
 }
 
 /** 默认模型配置 */
@@ -139,7 +144,48 @@ const DEFAULT_MODEL: ModelProfile = {
   modelId: 'deepseek-chat',
   baseUrl: 'https://api.deepseek.com',
   apiKey: '',
+  contextWindow: 64000,
 };
+
+const DEFAULT_CONTEXT_WINDOW = 16000;
+
+function getStoredModels(): ModelProfile[] {
+  const models = vscode.workspace
+    .getConfiguration(CONFIG_PREFIX)
+    .get<ModelProfile[]>('models');
+
+  return Array.isArray(models) ? models : [];
+}
+
+function buildEnvModel(env: Record<string, string>): ModelProfile {
+  return normalizeModelProfile({
+    name: env.MODEL_NAME ?? 'DeepSeek Chat',
+    modelId: env.MODEL_ID ?? 'deepseek-chat',
+    baseUrl: env.BASE_URL ?? 'https://api.deepseek.com',
+    apiKey: env.API_KEY ?? '',
+    contextWindow: env.CONTEXT_WINDOW ? Number(env.CONTEXT_WINDOW) : undefined,
+  });
+}
+
+const CONTEXT_WINDOW_MAP: Record<string, number> = {
+  'deepseek-chat': 64000,
+  'deepseek-coder': 64000,
+  'gpt-4o': 128000,
+  'gpt-4o-mini': 128000,
+  'doubao-pro-32k': 32768,
+  'doubao-lite-32k': 32768,
+};
+
+/**
+ * 当 modelId 不在精确映射表中时，按模型名关键词匹配上下文窗口
+ * 用于处理本地部署的模型（modelId 通常是文件路径，无法精确匹配）
+ */
+const CONTEXT_WINDOW_PATTERNS: Array<{ pattern: RegExp; contextWindow: number }> = [
+  { pattern: /qwen/i, contextWindow: 16000 },
+  { pattern: /coder/i, contextWindow: 16000 },
+  { pattern: /llama/i, contextWindow: 8000 },
+  { pattern: /mistral/i, contextWindow: 32000 },
+];
 
 /** 知识截止日期映射表 */
 const CUTOFF_MAP: Record<string, string> = {
@@ -156,28 +202,54 @@ const CUTOFF_MAP: Record<string, string> = {
  * 优先从 .env 读取（开发调试），否则从 VS Code 设置读取
  */
 export function getAllModels(): ModelProfile[] {
-  // .env 中的配置作为第一个模型（开发调试用）
   const env = loadEnvFile();
+  const settingsModels = getStoredModels().map(normalizeModelProfile);
+
   if (env.API_KEY) {
-    const envModel: ModelProfile = {
-      name: env.MODEL_NAME ?? 'DeepSeek Chat',
-      modelId: env.MODEL_ID ?? 'deepseek-chat',
-      baseUrl: env.BASE_URL ?? 'https://api.deepseek.com',
-      apiKey: env.API_KEY,
-    };
-    // .env 配置与 VS Code 设置中的合并，.env 排第一
-    const settingsModels = vscode.workspace
-      .getConfiguration(CONFIG_PREFIX)
-      .get<ModelProfile[]>('models', [DEFAULT_MODEL]);
-    return [envModel, ...settingsModels.filter(m => m.apiKey)];
+    const envModel = buildEnvModel(env);
+    return settingsModels.length > 0 ? [envModel, ...settingsModels] : [envModel];
   }
 
-  // 仅从 VS Code 设置读取
-  const models = vscode.workspace
-    .getConfiguration(CONFIG_PREFIX)
-    .get<ModelProfile[]>('models', [DEFAULT_MODEL]);
+  return settingsModels.length > 0 ? settingsModels : [normalizeModelProfile(DEFAULT_MODEL)];
+}
 
-  return models.length > 0 ? models : [DEFAULT_MODEL];
+function normalizeContextWindow(value: number | undefined): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return undefined;
+  }
+
+  const safeValue = Math.floor(value);
+  return safeValue > 0 ? safeValue : undefined;
+}
+
+function normalizeModelProfile(model: ModelProfile): ModelProfile {
+  return {
+    ...model,
+    contextWindow: resolveContextWindow(model.modelId, model.contextWindow),
+  };
+}
+
+function resolveContextWindow(modelId: string, contextWindow?: number): number {
+  // 优先级1：用户显式配置的值
+  const normalizedConfigured = normalizeContextWindow(contextWindow);
+  if (normalizedConfigured !== undefined) {
+    return normalizedConfigured;
+  }
+
+  // 优先级2：精确匹配已知模型
+  const normalizedModelId = (modelId || '').toLowerCase();
+  if (normalizedModelId in CONTEXT_WINDOW_MAP) {
+    return CONTEXT_WINDOW_MAP[normalizedModelId];
+  }
+
+  // 优先级3：模式匹配（适用于本地部署模型，modelId 通常是文件路径）
+  for (const entry of CONTEXT_WINDOW_PATTERNS) {
+    if (entry.pattern.test(normalizedModelId)) {
+      return entry.contextWindow;
+    }
+  }
+
+  return DEFAULT_CONTEXT_WINDOW;
 }
 
 /** 获取当前活跃模型的序号 */
@@ -208,8 +280,11 @@ export function getModelConfig(): ModelConfig {
     modelId: model.modelId,
     baseUrl: model.baseUrl,
     apiKey: model.apiKey,
-    knowledgeCutoff: CUTOFF_MAP[model.modelId] ?? '未知',
-    supportsVision: detectVisionSupport(model.modelId),
+    apiPath: model.apiPath || '/v1/chat/completions',
+    knowledgeCutoff: CUTOFF_MAP[(model.modelId || '').toLowerCase()] ?? '未知',
+    contextWindow: resolveContextWindow(model.modelId, model.contextWindow),
+    // 用户在 settings 中显式声明优先，否则按 modelId 自动判断
+    supportsVision: model.supportsVision ?? detectVisionSupport(model.modelId),
   };
 }
 
@@ -217,14 +292,14 @@ export function getModelConfig(): ModelConfig {
  * 根据 modelId 判断该模型是否支持图片输入
  * 已知支持 Vision 的模型字符串匹配，新增模型时在此数组中补充
  */
-function detectVisionSupport(modelId: string): boolean {
+export function detectVisionSupport(modelId: string): boolean {
   const lowerModelId = modelId.toLowerCase();
   const visionPrefixes = [
     'gpt-4o', 'gpt-4-turbo', 'gpt-4-vision',
     'claude-3', 'claude-3-5', 'claude-3-7',
     'gemini',
-    'doubao-vision',
-    'qwen-vl',
+    'doubao-vision', 'doubao-1.5-pro',
+    'qwen-vl', 'qwen2.5-vl', 'qwen-max',
   ];
   return visionPrefixes.some(prefix => lowerModelId.includes(prefix));
 }
@@ -248,14 +323,28 @@ export async function ensureApiKey(): Promise<string | undefined> {
   });
 
   if (input) {
-    // 将 key 写入当前活跃模型的配置中
-    const models = getAllModels();
-    const activeIndex = Math.min(getActiveModelIndex(), models.length - 1);
-    if (models[activeIndex]) {
-      models[activeIndex].apiKey = input;
+    const allModels = getAllModels();
+    const activeIndex = Math.min(getActiveModelIndex(), allModels.length - 1);
+    const settingsModels = getStoredModels();
+    const modelsToSave = settingsModels.length > 0
+      ? settingsModels.map(model => ({ ...model }))
+      : [{ ...DEFAULT_MODEL }];
+    const isEnvModelSelected = !!loadEnvFile().API_KEY && activeIndex === 0;
+    const settingsIndex = isEnvModelSelected ? -1 : (loadEnvFile().API_KEY ? activeIndex - 1 : activeIndex);
+
+    if (isEnvModelSelected) {
+      // 选中的是 .env 来源的模型，API Key 应写入 .env 文件而非 settings
+      vscode.window.showInformationMessage(
+        '当前模型来自 .env 文件，请在 .env 中设置 API_KEY 以持久保存（本次输入仅当次生效）'
+      );
+    } else if (settingsIndex >= 0 && modelsToSave[settingsIndex]) {
+      modelsToSave[settingsIndex] = {
+        ...modelsToSave[settingsIndex],
+        apiKey: input,
+      };
       await vscode.workspace
         .getConfiguration(CONFIG_PREFIX)
-        .update('models', models, true);
+        .update('models', modelsToSave, true);
     }
     return input;
   }
@@ -307,8 +396,9 @@ export function getProxy(): string {
 
 /**
  * 获取面板标题
- * 用户可自定义为企业名称，默认 "AI 助理"
+ * 用户可自定义为企业名称，默认 "Sunploy"
  */
 export function getPanelTitle(): string {
-  return get<string>('panelTitle', 'AI 助理');
+  const panelTitle = get<string>('panelTitle', 'Sunploy').trim();
+  return panelTitle || 'Sunploy';
 }

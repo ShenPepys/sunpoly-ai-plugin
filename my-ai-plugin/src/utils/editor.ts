@@ -5,6 +5,9 @@
 import * as vscode from 'vscode';
 import type { EditorContext } from '../prompts/types';
 
+const MAX_UNSELECTED_CONTEXT_CHARS = 12000;
+const MAX_UNSELECTED_CONTEXT_LINES = 200;
+
 /**
  * 获取当前编辑器上下文
  * 包括选中代码、文件路径、语言等信息
@@ -19,14 +22,36 @@ export function getEditorContext(): EditorContext | null {
   const document = editor.document;
   const selection = editor.selection;
 
-  // 获取选中代码，如果未选中则取整个文件内容
-  const selectedCode = selection.isEmpty
-    ? document.getText()
-    : document.getText(selection);
+  let selectedCode = '';
+  let startLine = selection.start.line + 1;
+  let endLine = selection.end.line + 1;
 
-  // 行号从 0-indexed 转换为 1-indexed，更符合人类阅读习惯
-  const startLine = selection.isEmpty ? 1 : selection.start.line + 1;
-  const endLine = selection.isEmpty ? document.lineCount : selection.end.line + 1;
+  if (selection.isEmpty) {
+    const fullText = document.getText();
+
+    if (fullText.length <= MAX_UNSELECTED_CONTEXT_CHARS && document.lineCount <= MAX_UNSELECTED_CONTEXT_LINES) {
+      selectedCode = fullText;
+      startLine = 1;
+      endLine = document.lineCount;
+    } else {
+      const halfWindow = Math.floor(MAX_UNSELECTED_CONTEXT_LINES / 2);
+      const cursorLine = selection.active.line;
+      const tentativeStartLine = Math.max(0, cursorLine - halfWindow);
+      const excerptEndLine = Math.min(document.lineCount, tentativeStartLine + MAX_UNSELECTED_CONTEXT_LINES);
+      const excerptStartLine = Math.max(0, excerptEndLine - MAX_UNSELECTED_CONTEXT_LINES);
+      const excerptRange = new vscode.Range(excerptStartLine, 0, excerptEndLine, 0);
+      const excerptText = document.getText(excerptRange);
+      const needsTrimByChars = excerptText.length > MAX_UNSELECTED_CONTEXT_CHARS;
+
+      selectedCode = needsTrimByChars
+        ? `${excerptText.slice(0, MAX_UNSELECTED_CONTEXT_CHARS)}\n...(已截断，仅提供光标附近内容)`
+        : `${excerptText}\n...(已截断，仅提供光标附近内容)`;
+      startLine = excerptStartLine + 1;
+      endLine = excerptEndLine;
+    }
+  } else {
+    selectedCode = document.getText(selection);
+  }
 
   return {
     selectedCode,

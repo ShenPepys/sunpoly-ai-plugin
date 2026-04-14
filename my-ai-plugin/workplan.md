@@ -1,0 +1,1275 @@
+# AI 插件问题分析与修复计划
+
+## 背景
+
+当前插件已经具备以下新能力：
+
+- Windsurf 风格步骤展示
+- 文件 Diff 与变更汇总
+- `View all changes` 在 IDE 中打开文件
+- `↺` 重新生成按钮
+- 自动注入项目背景（`README.md` / `package.json`）
+
+在实际测试中，暴露出若干与产品稳定性、上下文控制、交互一致性有关的问题。为避免继续叠加复杂度，本计划将优先修复高风险问题，再处理体验一致性问题。
+
+---
+
+## 已确认的问题分析
+
+### P0：高优先级问题
+
+#### 1. tool_call 检测与解析不一致，可能导致界面持续转圈
+
+现象：
+
+- AI 回复中只要包含 `<tool_call>` 字样，就会进入工具续轮流程
+- 但如果 XML 不完整、标签损坏或解析失败，`parseToolCalls()` 可能返回空数组
+- 当前实现中，进入工具流程后 UI 已经切到 loading 状态，但解析失败时没有完整收尾逻辑
+
+风险：
+
+- 前端一直显示正在生成
+- 用户误以为插件卡死
+- 对产品稳定性伤害很大
+
+修复方向：
+
+- 让 `hasToolCalls()` 与 `parseToolCalls()` 的判定逻辑更一致
+- 即使解析失败，也必须有明确的收尾逻辑：关闭 loading、恢复状态、输出可理解提示
+
+#### 2. `@` 引用文件内容没有大小控制，容易把上下文撑爆
+
+现象：
+
+- `buildContextContent()` 会直接读取 `@` 文件的完整内容
+- 没有文件大小限制、字符数限制，也没有文本类型校验
+
+风险：
+
+- 大文件直接导致上下文暴涨
+- 与工具系统 `readFile()` 的 512KB 限制不一致
+- 易造成首包极慢、长时间转圈、费用上升
+
+修复方向：
+
+- 增加 `@` 文件大小与字符数控制
+- 对超限内容改为截断或摘要式注入
+- 至少保证不会把超大文件全文直接塞进用户消息
+
+#### 3. `read_file` 工具结果会把全文再次注入下一轮上下文
+
+现象：
+
+- 工具执行后的 `result.content` 会被 `formatToolResults()` 原样写回 `toolFeedback`
+- 若工具读取的是大文件，则文件内容会再次进入续轮请求
+
+风险：
+
+- 文件内容重复注入
+- 历史越长越肥
+- 造成 token 激增与响应变慢
+
+修复方向：
+
+- 对工具结果做长度控制
+- 对 `read_file` 的反馈优先保留摘要、片段、统计信息，而不是完整全文
+
+#### 4. 上下文预算只裁剪历史，不裁剪整轮真实负载
+
+现象：
+
+- `trimChatHistory()` 只按历史消息长度做粗略估算
+- 未把 system prompt、项目背景、当前 `@` 文件、选中代码、工具反馈等纳入预算
+
+风险：
+
+- 看起来已经 trim，但真实请求仍然过大
+- 预算模型失真，难以稳定控制 token
+
+修复方向：
+
+- 先通过局部控制（`@` 文件、工具结果）降低爆炸风险
+- 后续再补统一预算模型
+
+---
+
+### P1：中优先级问题
+
+#### 5. `regenerate` 链路与普通发送链路不一致
+
+现象：
+
+- 普通发送时，如果 AI 回复包含 tool_call，会继续执行工具链
+- 当前重新生成路径没有完全复用同样的处理流程
+
+风险：
+
+- `↺` 与正常发送行为不一致
+- 影响用户理解与可预测性
+
+修复方向：
+
+- 尽量复用同一套流式完成与工具调用处理逻辑
+
+#### 6. `View all changes` 当前语义偏向“打开文件”，不是“查看变更”
+
+现象：
+
+- 当前为了稳定性，修改文件也直接 `showTextDocument`
+- 用户点的是 `View all changes`，但未必真的看到了“变更”本身
+
+风险：
+
+- 产品语义略有偏差
+
+修复方向：
+
+- 短期先保稳定
+- 后续在稳定前提下恢复更稳妥的 diff 打开策略
+
+---
+
+## 修复顺序
+
+### 第一阶段：先修稳定性（P0）
+
+1. 修复 tool_call 解析失败时的 loading 残留问题
+2. 给 `@` 文件注入增加大小/字符限制
+3. 给工具结果回传增加长度控制，先止住 token 暴涨
+
+### 第二阶段：修一致性（P1）
+
+4. 统一 `regenerate` 与普通发送链路
+5. 复查 `View all changes`、最终 summary、会话切换等边界行为
+
+---
+
+## 实施原则
+
+- 每次只修一类问题，避免一次性大改引入新的风险
+- 每完成一项都进行构建验证
+- 优先保障：可用性 > 稳定性 > 体验增强
+- 在没有完成 P0 前，不继续叠加复杂功能
+
+---
+
+## 当前执行状态
+
+- [x] 完成问题分析
+- [x] 修复 tool_call 解析失败导致的持续转圈
+- [x] 修复 `@` 文件注入导致的上下文爆炸
+- [x] 修复 `read_file` 工具反馈导致的上下文重复注入
+- [x] 统一 regenerate 链路
+- [x] 复查 View all changes / summary / 会话切换边界行为
+
+---
+
+# 会话系统交互重构计划（Windsurf 风格）
+
+## 背景
+
+当前插件已经支持基础的多会话能力：
+
+- 顶部固定 Tab 切换会话
+- 新建、删除、重命名会话
+- 会话历史持久化恢复
+
+但现有交互与目标产品体验仍有明显差异：
+
+- 顶部固定 Tab 在进入对话后持续占用空间，界面不够聚焦
+- `新建对话` 命令当前语义更接近“清空当前会话”，容易误导用户
+- 会话入口缺少类似 Windsurf 的“启动态历史列表”体验
+- 删除会话缺少更温和的行内二次确认交互
+
+本阶段目标是在不影响现有核心 AI 能力的前提下，将会话入口改造成 Windsurf 风格，并为后续“多会话并发执行”预留清晰的架构边界。
+
+---
+
+## 第一阶段目标
+
+### 1. 引入启动态历史会话列表
+
+在“新建对话”场景下，输入框上方显示历史会话列表，用于：
+
+- 继续之前的会话
+- 或直接输入，自动开始一个新的会话
+
+### 2. 避免打断当前工作流
+
+用户重新打开插件时：
+
+- 若当前已经处于某个会话中，则继续显示当前会话
+- 不强制跳回历史会话列表
+
+### 3. 新建对话语义改正
+
+`新建对话` 的行为调整为：
+
+- 进入启动态历史会话列表
+- 不再直接清空当前会话内容
+
+### 4. 会话标题自动命名
+
+第一阶段采用轻量方案：
+
+- 以首条用户消息为基础自动截断生成标题
+- 不额外发起 AI 请求生成标题
+
+### 5. 删除会话交互升级
+
+历史列表项 hover 时显示：
+
+- `继续`
+- `删除`
+
+删除采用：
+
+- 行内二次确认
+- 不使用弹窗确认
+
+### 6. 历史会话按活跃时间排序
+
+- 增加或维护 `updatedAt`
+- 历史列表按 `updatedAt` 倒序展示
+- 展示相对时间，如 `now`、`5h`
+
+### 7. 删除当前活跃会话后的落点
+
+若删除当前正在查看的会话：
+
+- 回到启动态历史会话列表
+- 不自动跳转到其他会话，避免造成理解混乱
+
+### 8. 清空对话能力继续保留
+
+语义拆分为：
+
+- `新建对话`：进入启动态
+- `清空对话`：清空当前会话内容
+
+---
+
+## 第一阶段明确规则
+
+### 进入插件面板时
+
+- 如果已有当前活跃会话，则继续显示当前会话内容
+- 不主动展示历史会话列表
+
+### 点击“新建对话”时
+
+- 进入启动态
+- 显示历史会话列表
+- 当前会话内容不被直接清空
+
+### 在启动态直接发送消息时
+
+- 自动创建一个新会话
+- 使用首条用户消息自动命名
+- 发送成功后隐藏历史会话列表，进入正常聊天态
+
+### 点击历史会话项的“继续”时
+
+- 恢复该会话历史内容
+- 隐藏历史会话列表
+- 进入该会话的正常聊天态
+
+### 历史会话项 hover 时
+
+- 显示 `继续`
+- 显示 `删除`
+- 不显示 `编辑`
+
+### 点击“删除”时
+
+- 当前行切换到删除确认状态
+- 用户再次确认后才真正删除
+- 取消则恢复普通 hover 状态
+
+### 当前存在进行中的生成任务时
+
+第一阶段不支持多会话并发执行，因此：
+
+- 若当前会话仍在生成或工具执行中，不允许切到启动态后再启动另一个会话执行
+- 应提示用户先停止当前生成，或等待当前任务完成
+
+---
+
+## 第一阶段影响范围
+
+### `src/webview/ChatViewProvider.ts`
+
+- 增加“启动态 / 会话态”状态控制
+- 调整会话创建、切换、删除、恢复逻辑
+- 调整 `newChat` 相关语义
+- 增加 `updatedAt` 的维护与下发
+- 调整删除当前会话后的回退逻辑
+
+### `media/chat.js`
+
+- 将固定 Tab 渲染改造成启动态历史列表渲染
+- 增加启动态与正常聊天态的显示切换
+- 增加 hover 操作按钮与行内删除确认交互
+- 增加继续会话与直接输入开新会话的前端逻辑
+
+### `media/chat.css`
+
+- 增加 Windsurf 风格历史列表样式
+- 增加 hover 操作区样式
+- 增加删除确认态样式
+- 清理或收敛旧固定 Tab 相关样式
+
+### `src/webview/messageTypes.ts`
+
+- 根据前后端交互需要补充或调整消息结构
+- 明确历史列表、启动态切换、删除确认所需的数据类型
+
+### `src/extension.ts`
+
+- 调整 `my-ai-plugin.newChat` 命令语义
+- 确保与 `focusChat`、`clearChat` 的职责边界清晰
+
+### `package.json`
+
+- 如有必要，校对命令标题与描述，确保“新建对话”不再被误解为“清空对话”
+
+---
+
+## 第一阶段数据结构调整建议
+
+当前 `ChatSession` 至少需要具备：
+
+- `id`
+- `name`
+- `createdAt`
+- `updatedAt`
+- `history`
+
+其中：
+
+- `name`：由首条用户消息自动截断生成
+- `updatedAt`：在发送消息、收到回复、继续会话后按需要更新
+
+需要兼容旧数据：
+
+- 若旧会话缺少 `updatedAt`，需在加载时回填默认值
+- 保证旧版本持久化数据可平滑迁移
+
+---
+
+## 第一阶段回归验证清单
+
+### 基础路径
+
+- 首次安装或无历史会话时，界面是否正常
+- 已有历史会话时，重新打开插件是否继续显示当前会话
+- 点击“新建对话”后是否进入启动态历史列表
+- 在启动态直接输入是否自动创建新会话
+- 新会话标题是否按首条消息自动生成
+
+### 会话继续与删除
+
+- 点击历史会话“继续”是否正确恢复历史消息
+- hover 是否只显示 `继续` 和 `删除`
+- 删除是否走行内二次确认
+- 删除取消后是否正确恢复普通状态
+- 删除非当前会话是否不影响当前会话展示
+- 删除当前会话后是否回到启动态历史列表
+
+### 持久化与排序
+
+- 会话是否按 `updatedAt` 正确排序
+- 相对时间展示是否正确
+- 重启 VS Code 后会话列表、排序、当前活跃状态是否正确恢复
+- 旧版本会话数据迁移后是否正常
+
+### 与现有能力的兼容
+
+- `清空对话` 是否仍只清空当前会话内容
+- `新建对话` 是否不再误清空当前会话
+- 工具调用、Diff 展示、会话切换、重新生成是否不受影响
+- 生成中尝试切换启动态或启动其他会话时，是否给出正确提示
+
+---
+
+## 第二阶段预留：多会话并发执行
+
+> ⏸ **状态：待开发者确认后再进行研发改动**
+
+第一阶段暂不实现多会话并发执行，但必须在设计上预留扩展空间。
+
+第二阶段目标：
+
+- 支持多个会话同时进行流式生成
+- 支持多个会话独立进行工具调用链
+- 支持多个会话独立维护待确认变更状态
+- 支持在历史列表中展示后台运行状态
+
+第二阶段需要重点处理：
+
+### 1. 会话级运行时状态隔离
+
+将以下状态从全局单例迁移为按会话维护：
+
+- `activeRunId`
+- `abortStream`
+- `toolCallsInProgress`
+- `toolCallRound`
+- `pendingConfirms`
+- `pendingBatchConfirms`
+
+### 2. 后台状态展示
+
+在历史会话列表中展示会话状态，例如：
+
+- 生成中
+- 待确认变更
+- 已完成
+- 失败
+
+### 3. 文件变更冲突控制
+
+需要处理两个会话可能同时修改同一文件的场景，明确：
+
+- 是否允许并发写同一文件
+- 是否提示冲突
+- 是否阻止后发请求覆盖前一个会话结果
+
+### 4. 工具确认与交互隔离
+
+避免不同会话之间的接受/拒绝操作串扰，确保确认按钮只作用于所属会话。
+
+---
+
+## 当前执行状态
+
+- [x] 完成会话交互目标讨论并确认第一阶段规则
+- [x] 明确自动命名、排序、删除落点、清空对话语义
+- [x] 明确第一阶段暂不支持多会话并发执行
+- [x] 记录第二阶段“多会话并发执行”需求
+- [x] 完成第一阶段代码改造
+- [x] 完成第一阶段构建验证（`npm run build`）
+- [x] 完成第一阶段类型检查（`npx tsc --noEmit`）
+- [x] 开始下一阶段交互增强改造
+
+---
+
+# 下一阶段交互增强计划（清单版）
+
+## 标记说明
+
+- [x] 已完成 / 已确认
+- [ ] 未开始 / 待实现
+
+## 总览清单
+
+- [x] 第一阶段会话系统改造已完成
+- [x] 第一阶段构建验证已完成
+- [x] 第一阶段类型检查已完成
+- [x] 已确认下一阶段的 3 个改造方向
+- [x] 开始第一子阶段：文件改动聚合展示升级
+- [x] 开始第二子阶段：模型 `contextWindow` 与上下文占用展示
+- [x] 开始第三子阶段：折叠过程展示
+
+## 执行顺序清单
+
+- [x] 优先级 1：文件改动聚合展示
+- [x] 优先级 2：上下文占用展示
+- [x] 优先级 3：折叠过程展示
+
+---
+
+## 第一子阶段：文件改动聚合展示升级
+
+### 目标清单
+
+- [x] 将本轮修改文件集中展示在一个汇总面板中
+- [x] 支持 `Accept all` / `Reject all`
+- [x] 每行文件支持单独接受 / 拒绝
+- [x] 每行文件支持点击后在 IDE 中打开
+
+### 交互语义清单
+
+- [x] 汇总区展示的是“预览后的待确认改动”
+- [x] `Accept all` 表示确认写入当前汇总中的全部文件
+- [x] `Reject all` 表示拒绝写入当前汇总中的全部文件
+- [x] 行级 `✓ / X` 仅作用于当前文件，不影响其他文件
+- [x] 单击文件行优先执行“在 IDE 中打开文件 / Diff”，不直接改变确认状态
+
+### 实现清单
+
+- [x] 扩展汇总数据结构，支持文件级操作状态与唯一标识
+- [x] 将当前“整批确认”的后端链路拆分为“批量 + 单文件”两级确认能力
+- [x] 前端汇总区增加文件列表行、状态展示、hover 操作和批量操作区
+- [x] 明确文件被单独接受 / 拒绝后，汇总状态如何更新
+
+### 涉及文件清单
+
+- [x] `src/webview/ChatViewProvider.ts`：调整批量变更确认的数据结构与状态流转
+- [x] `src/webview/ChatViewProvider.ts`：支持汇总级与单文件级接受 / 拒绝消息
+- [x] `src/webview/ChatViewProvider.ts`：统一“打开文件”“批量接受”“单文件接受”的处理逻辑
+- [x] `src/webview/messageTypes.ts`：扩展 `showChangeSummary` 的文件项结构
+- [x] `src/webview/messageTypes.ts`：增加单文件级确认与状态更新消息类型
+- [x] `media/chat_b_steps.js`：重构 change summary 渲染
+- [x] `media/chat_b_steps.js`：增加文件行点击打开、单文件 `✓ / X`、批量确认状态更新
+- [x] `media/chat.css`：为聚合文件列表、行级按钮、状态反馈补充样式
+
+### 回归验证清单
+
+- [x] 多文件改动是否始终聚合到同一个汇总区
+- [x] `Accept all` / `Reject all` 是否只作用于当前汇总
+- [x] 行级 `✓ / X` 是否只作用于当前文件
+- [x] 单击文件行是否正确在 IDE 中打开
+- [x] 部分接受、部分拒绝后的汇总状态是否正确
+- [x] 与现有 Diff 预览、步骤流、最终 summary 是否不冲突
+
+---
+
+## 第二子阶段：模型 `contextWindow` 与上下文占用展示
+
+### 目标清单
+
+- [x] 为每个模型配置 `contextWindow`
+- [x] 前端展示已使用上下文
+- [x] 前端展示上下文上限
+- [x] 前端展示使用百分比
+- [x] 前端展示阈值颜色提醒
+
+### 展示规则清单
+
+- [x] 展示值属于估算值，文案应避免伪装成绝对精确
+- [x] 前端可以显示“约 `201K / 272K`”这类形式
+- [x] 使用率按阈值着色
+- [x] 60% 以下：正常
+- [x] 60% ~ 80%：提醒
+- [x] 80% 以上：警告
+- [x] 不伪造模型供应商侧的 `prompt cache expired` 这类状态提示，除非后端真实可得
+
+### 实现清单
+
+- [x] 在模型配置层增加 `contextWindow`
+- [x] 统一默认模型与用户自定义模型的兼容逻辑
+- [x] 后端根据当前活跃会话历史估算使用量并推送结构化数据
+- [x] 前端将现有 token 展示升级为“已使用 / 上限 / 百分比 / 颜色阈值”展示
+
+### 涉及文件清单
+
+- [x] `src/config.ts`：为 `ModelProfile` 与 `getModelConfig()` 增加 `contextWindow`
+- [x] `src/config.ts`：为默认模型补充合理的默认上下文窗口配置
+- [x] `src/webview/ChatViewProvider.ts`：调整 `pushTokenCount()`，改为推送更完整的上下文占用结构
+- [x] `src/webview/messageTypes.ts`：扩展 `updateTokenCount` 响应结构
+- [x] `media/chat.js`：渲染“已使用 / 上限 / 百分比”与 hover 提示
+- [x] `media/chat.css`：补充不同使用率阈值下的颜色样式
+
+### 回归验证清单
+
+- [x] 默认模型是否带有正确的 `contextWindow`
+- [x] 用户自定义模型未配置 `contextWindow` 时是否有合理兜底
+- [x] 会话越长，使用率是否同步增长
+- [x] 切换模型后展示是否立即更新
+- [x] 不同阈值颜色是否正确变化
+
+---
+
+## 第三子阶段：折叠过程展示
+
+### 目标清单
+
+- [x] 基于现有 `Thinking`、步骤流、工具执行状态整理为可折叠的过程展示区
+- [x] 让用户知道当前正在执行什么
+- [x] 让用户在需要时可展开查看
+- [x] 让用户在不需要时可折叠减少视觉噪音
+
+### 设计原则清单
+
+- [x] 学习 Windsurf 的“折叠过程容器”形式
+- [x] 不直接照搬完整原始 thinking 文本
+- [x] 优先展示结构化过程信息，而不是模型原始自言自语
+
+### 建议交互清单
+
+- [x] 生成中显示 `Thinking` 或 `执行过程` 折叠标题
+- [x] 展开后展示当前阶段、已完成步骤、耗时等结构化信息
+- [x] 生成完成后默认收拢为摘要态，用户仍可手动展开回看
+
+### 实现清单
+
+- [x] 将现有 `Thinking` / `steps` / `summary` 的展示关系重新编排
+- [x] 为消息气泡增加过程容器层级，而不是把所有过程信息散落在正文中
+- [x] 支持折叠状态切换与完成后的摘要态展示
+
+### 涉及文件清单
+
+- [x] `src/webview/ChatViewProvider.ts`：统一发送“过程开始 / 更新 / 完成”消息
+- [x] `src/webview/ChatViewProvider.ts`：复用现有步骤数据，避免重复构造另一套流程数据
+- [x] `src/webview/messageTypes.ts`：根据前端需要扩展折叠过程展示消息
+- [x] `media/chat_b_steps.js`：将步骤流渲染为可折叠的过程区
+- [x] `media/chat_b_steps.js`：增加摘要态与展开态切换
+- [x] `media/chat.js`：协调消息气泡、过程区、正文区的插入顺序
+- [x] `media/chat.css`：补充折叠容器、摘要态、展开态样式
+
+### 回归验证清单
+
+- [x] 生成中是否能清楚看到当前过程状态
+- [x] 折叠 / 展开是否稳定
+- [x] 完成后默认展开（实时）/ 折叠（历史），用户可手动切换
+- [x] 工具调用很多时是否仍保持可读性
+- [x] 不展示完整原始 thinking 文本时，用户是否仍能理解执行过程
+
+---
+
+## 阶段性执行清单
+
+- [x] 第一子阶段完成后执行构建验证
+- [x] 第一子阶段完成后执行类型检查
+- [x] 第一子阶段完成后执行人工回归验证
+- [x] 第二子阶段完成后执行构建验证
+- [x] 第二子阶段完成后执行类型检查
+- [x] 第二子阶段完成后执行人工回归验证
+- [x] 第三子阶段完成后执行构建验证
+- [x] 第三子阶段完成后执行类型检查
+- [x] 第三子阶段完成后执行人工回归验证
+
+---
+
+## 当前执行状态
+
+- [x] 完成下一阶段交互增强方向确认
+- [x] 输出下一阶段 workplan
+- [x] 开始第一子阶段：文件改动聚合展示升级
+- [x] 完成第二子阶段：模型 `contextWindow` 与上下文占用展示
+- [x] 历史会话恢复采用方案 B：最终结果 + 可折叠过程摘要
+- [x] 继续第三子阶段：统一生成中与完成态的折叠过程展示
+- [x] 完成第三子阶段静态检查（`npx tsc --noEmit`、`node --check media/chat.js`、`node --check media/chat_b_steps.js`）
+- [x] 进入第三子阶段最后一轮验证（构建验证 + 人工回归）
+- [x] 修复 Ask/Code 模式切换链路（模式快照 + 历史污染注入提醒）
+- [x] 实时完成后执行过程默认展开
+
+---
+
+## 架构重构：静默执行 + Undo all（方案四）
+
+### 目标
+
+移除所有写操作确认对话框，文件立即写入磁盘，AI 零阻塞地完成整个任务。
+AI 完成后展示统一的变更汇总面板，提供 **Undo all** 和**单文件撤销**入口。
+用户如果满意直接继续对话；如不满意点 Undo 一键还原。
+
+### 现状 vs 目标对比
+
+| 维度 | 现状 | 目标 |
+|------|------|------|
+| 写文件时 | 停住等用户确认 | 立即写入，不打断 AI |
+| 确认次数 | N 个文件 = N 次弹窗 | 0 次（改为事后撤销） |
+| 用户干预时机 | 事前：逐步批准 | 事后：整体撤销 |
+| 体验 | 烦躁，多次点击 | 流畅，不满意再撤 |
+
+### 核心设计
+
+**写前备份，写后可撤**
+
+```
+AI 调用 write_file("A") → 备份原内容到内存 → 立即写入磁盘 → 继续
+AI 调用 edit_file("B") → 备份原内容到内存 → 立即写入磁盘 → 继续
+AI 调用 run_command    → 正常执行 → 继续
+AI 全部完成，输出文本
+  ↓
+展示汇总面板（只读，无 Accept/Reject）
+  ├─ [Undo all]      → 恢复所有备份文件
+  └─ 每行 [↩ Undo]  → 恢复单个文件
+用户发送下一条消息 → 备份清空
+```
+
+**备份结构（内存）**
+
+```typescript
+// 写前备份：key = 文件路径
+private writeBackups = new Map<string, WriteBackup>();
+
+interface WriteBackup {
+  originalContent: string | null;  // null 表示文件原本不存在（新建文件）
+  messageId: string;               // 属于哪一轮 AI 对话
+}
+```
+
+### 详细实现清单
+
+#### 阶段 1：删除旧的确认流程（ChatViewProvider.ts）
+
+- [x] 删除 `deferredSteps`、`deferRemainingSteps` 相关逻辑
+- [x] 删除 `pendingBatchConfirms`、`pendingConfirms` Map 和等待逻辑
+- [x] 删除 `autoAcceptRun` 字段及相关重置逻辑
+- [x] 删除 `handleWebviewMessage` 中 `acceptChange`、`rejectChange`、`acceptAllChanges`、`rejectAllChanges`、`resolveChangeSummary`、`setAutoAcceptRun` 的处理
+
+#### 阶段 2：写操作改为立即执行 + 备份（handleToolCalls）
+
+- [x] 遇到 `write_file` / `edit_file` → 先读原文件内容存入 `writeBackups`
+- [x] 立即执行写操作（不再 defer）
+- [x] 写成功后步骤状态正常显示为 done/error
+- [x] 无需等待任何 Promise
+
+#### 阶段 3：汇总面板改为只读 + Undo 入口
+
+- [x] `showChangeSummary` 的 `needsConfirm` 永远为 `false`
+- [x] 面板操作区改为：`[View all changes]` + `[↩ Undo all]`
+- [x] 每个文件行右侧增加 `[↩]` 单文件撤销按钮
+- [x] 点 Undo all → 发送 `undoAllChanges` 消息
+- [x] 点单行 ↩ → 发送 `undoFileChange` 消息（带文件路径）
+
+#### 阶段 4：Undo 逻辑（ChatViewProvider.ts）
+
+- [x] 收到 `undoAllChanges` → 遍历 `writeBackups` 恢复所有文件
+  - 原内容为 `null`（新建文件）→ 删除该文件
+  - 原内容非空 → 写回原内容
+- [x] 收到 `undoFileChange` → 只恢复指定文件
+- [x] 恢复完成后发送 `updateChangeSummary`（status: 'undone'，text: '↩ Undone'）
+- [x] 更新对应步骤状态为 error/cancelled（表示已回退）
+
+#### 阶段 5：备份生命周期管理
+
+- [x] 用户发送新消息时 → 清空 `writeBackups`（上一轮修改不再可撤）
+- [x] 重新生成时 → 清空 `writeBackups`
+- [x] 停止生成时 → 保留已执行的备份（文件已写，允许撤销）
+- [x] 切换会话时 → 清空 `writeBackups`
+
+#### 阶段 6：清理前端旧代码（chat_b_steps.js / chat.css）
+
+- [x] 删除 `bindSummaryInteractions`（含行级 ✓/✗ 按钮绑定）
+- [x] 删除 `⚡ Auto` 按钮及相关逻辑
+- [x] 删除 `fileDecisions`、`checkAutoSubmit`、`submitDecisions` 相关代码
+- [x] `showChangeSummary` 统一走 `needsConfirm = false` 的只读分支
+- [x] 添加 Undo all / 单文件 ↩ 按钮及点击处理
+
+#### 阶段 7：消息类型清理（messageTypes.ts）
+
+- [x] 新增 `UndoAllChangesRequest`（type: 'undoAllChanges', summaryId）
+- [x] 新增 `UndoFileChangeRequest`（type: 'undoFileChange', filePath）
+- [x] 新增 status = 'undone' 到 `UpdateChangeSummaryResponse`
+- [x] 删除 `AcceptChangeRequest`、`RejectChangeRequest`、`AcceptAllChangesRequest`、`RejectAllChangesRequest`、`ResolveChangeSummaryRequest`、`SetAutoAcceptRunRequest`
+- [x] 从 `WebviewMessage` 联合类型中移除上述已删消息
+
+### 涉及文件清单
+
+- [x] `src/webview/ChatViewProvider.ts`：核心重构（删除 defer/confirm，加 backup/undo）
+- [x] `src/webview/messageTypes.ts`：删旧消息类型，加 undo 消息类型
+- [x] `media/chat_b_steps.js`：删 confirm 交互，加 Undo 按钮
+- [x] `media/chat.css`：删 confirm 样式，加 undo 按钮样式
+
+### 风险与注意事项
+
+- [x] **新建文件的撤销**：backup 存 `null`，undo 时删除该文件，需用 `fs.unlinkSync`
+- [x] **用户在 AI 写完后手动编辑了文件**：Undo 会覆盖用户的手动编辑，暂不处理（V1 不做校验）
+- [x] **run_command 的副作用不可撤销**：如 `npm install` 无法 undo，这是 V1 的已知局限，可在面板上加说明
+- [x] **会话切换/刷新**：备份在内存，刷新后不可撤，这是可接受行为
+
+### 回归验证清单
+
+- [x] AI 修改多个文件 → 全程无弹窗 → 文件直接写入
+- [x] AI 完成后展示只读汇总面板 + Undo all 按钮
+- [x] Undo all → 所有文件恢复原状
+- [x] 单文件 ↩ → 只还原该文件
+- [x] 新建文件 undo → 文件被删除
+- [x] 发送下一条消息 → Undo 不再可用（按钮消失或灰显）
+- [x] 停止生成 → 已写文件仍可 undo
+- [x] 普通聊天、只读工具不受影响
+
+---
+
+# 缺陷与 BUG
+
+## 背景
+
+在对插件核心代码进行系统性审查后，发现以下缺陷与 BUG。按严重程度分为三类：确定性 BUG（会导致错误行为）、中等问题（可能导致异常或数据不一致）、架构与工程问题。
+
+---
+
+## 确定性 BUG（会导致错误行为）
+
+### BUG-1：🔴 图片错误检测的运算符优先级错误
+
+文件：`src/webview/ChatViewProvider.ts`（约第 837 行）
+
+```typescript
+const isImageError = errorMessage.includes('image_url') || errorMessage.includes('image') && errorMessage.includes('unknown');
+```
+
+由于 `&&` 优先级高于 `||`，实际等价于：
+
+```typescript
+errorMessage.includes('image_url') || (errorMessage.includes('image') && errorMessage.includes('unknown'))
+```
+
+问题：任何包含 `image_url` 字样的错误（如限流错误提到该端点）都会被误判为"模型不支持图片"，吞掉真实错误信息。应补充括号明确意图。
+
+- [x] 修复运算符优先级，补充括号
+
+### BUG-2：🔴 `ensureApiKey` 会将 `.env` 模型污染到 settings
+
+文件：`src/config.ts`（约第 296-303 行）
+
+`getAllModels()` 在有 `.env` 时会在数组前插入 `.env` 模型。`ensureApiKey` 中将合并后的数组直接写回 `settings.json`，会导致 `.env` 模型被持久化到用户设置中。之后即使删除 `.env`，该模型也会重复出现。
+
+- [x] 修复 `ensureApiKey`，写回 settings 时排除 `.env` 来源的模型
+
+### BUG-3：🟡 `handleRegenerate` 忽略传入的 `targetAssistantMessageId`
+
+文件：`src/webview/ChatViewProvider.ts`（约第 1861-1867 行）
+
+无论前端传来哪个 `targetAssistantMessageId`，后端始终查找最后一条 assistant 消息进行重新生成。如果用户要重新生成非末尾的 AI 回复，行为与预期不一致。
+
+- [x] 修复为根据 `targetAssistantMessageId` 定位目标消息
+
+### BUG-4：🟡 `editFile` 只替换首个匹配
+
+文件：`src/tools/fileOps.ts`（约第 150 行）
+
+```typescript
+const updatedContent = fileContent.replace(oldContent, newContent);
+```
+
+JavaScript `String.replace(string, string)` 只替换第一个匹配。如果文件中有多处相同代码片段，AI 指定的 `oldContent` 只有第一处被替换，可能导致修改不完整。
+
+- [x] 改为“多处命中时报错，不再静默只替换首个”，并在提示词中要求 `old` 内容唯一命中
+
+### BUG-5：🟡 `regenerateResponse` 使用闭包累积内容而非回调参数
+
+文件：`src/webview/ChatViewProvider.ts`（约第 1983-2001 行）
+
+`regenerateResponse` 在闭包中自行累积 `fullContent`，忽略了 `sendStreamRequest` 的 `onDone` 回调传入的参数。而 `handleUserMessage` 使用的是回调参数。在中断等场景下，两份 `fullContent` 可能不一致。
+
+- [x] 统一为使用 `onDone` 回调参数
+
+### BUG-6：🔴 `handleToolCalls` 多个提前 return 路径未清理 loading 状态
+
+文件：`src/webview/ChatViewProvider.ts`（约第 880-882、906-908、1007-1009 行）
+
+如果用户在工具执行过程中停止生成（`stopGeneration` 修改了 `activeRunId`），`handleToolCalls` 循环中的 guard 会触发提前返回，但不会调用 `postMessage({ type: 'setLoading', loading: false })`，导致前端一直显示加载状态。
+
+- [x] 在所有提前 return 路径中补充 `setLoading(false)`
+
+### BUG-7：🟡 `writeBackups` 在会话切换时未清空
+
+文件：`src/webview/ChatViewProvider.ts`（约第 2861-2883 行）
+
+`switchSession` 方法中未清空 `this.writeBackups`。切换到其他会话后，如果用户点击 Undo，实际恢复的是前一个会话产生的文件变更，可能造成误操作。
+
+- [x] 在 `switchSession` 中清空 `writeBackups`
+
+### BUG-8：🟡 同一文件多次 edit 的 diff 基准错误
+
+文件：`src/webview/ChatViewProvider.ts`（约第 940-941 行）
+
+对于 `edit_file`，diff 的 `oldContent` 始终是最初的原始备份。如果同一批次内 AI 对同一个文件执行了两次 `edit_file`，第二次展示的 diff 仍以原始文件为基准，而不是第一次编辑后的状态，导致 diff 展示不准确。
+
+- [x] 评估是否为每次 edit 记录中间态，或改为以实际磁盘文件为 diff 基准
+
+---
+
+## 中等问题（可能导致异常或数据不一致）
+
+### 问题-1：🟡 `context.ts` 存在废弃的 `getModelConfig()` 函数
+
+文件：`src/utils/context.ts`（约第 38-51 行）
+
+此函数读取 `myAiPlugin.modelId`、`myAiPlugin.modelName` 等不存在的单独配置项（实际配置使用 `myAiPlugin.models` 数组），与 `config.ts` 中的同名函数冲突。虽然当前代码未调用此处版本，但导出会造成混淆，被其他模块误引用时会返回错误数据。
+
+- [x] 删除 `context.ts` 中废弃的 `getModelConfig()` 函数
+
+### 问题-2：🟠 `turnWriteFiles` 去重但不更新统计值
+
+文件：`src/webview/ChatViewProvider.ts`（约第 986-988 行）
+
+同一文件在多轮工具调用中被修改时，只保留首次的 `additions`/`deletions` 统计。最终汇总显示的行数变化可能与实际不符。
+
+- [x] 修复去重逻辑，更新为最终累计统计值
+
+### 问题-3：🟠 `retryableRequests` 在会话切换/删除时未清理
+
+文件：`src/webview/ChatViewProvider.ts`（约第 1197-1213 行）
+
+虽有 20 条上限，但切换/删除会话后，旧会话的 retry 快照仍留在 map 中。过期对象持续占用内存。
+
+- [x] 在会话切换/删除时清理已失效的 retry 快照
+
+### 问题-4：🟠 `readContextFilePreview` 未处理文件不存在
+
+文件：`src/webview/ChatViewProvider.ts`（约第 2224 行）
+
+```typescript
+const stat = fs.statSync(filePath);
+```
+
+如果文件在添加上下文后被删除，`statSync` 会抛异常。虽然外层 `buildContextContent` 有 `try-catch`，但 `readContextFilePreview` 本身异常信息不够精确。
+
+- [x] 在 `readContextFilePreview` 内部增加文件存在性检查或更精确的异常处理
+
+---
+
+## 架构与工程问题
+
+### 架构-1：🔴 `ChatViewProvider.ts` 严重超长 — 3557 行（已完成收敛）
+
+按项目规则（单文件不超 1200 行），此文件曾严重超标。主要承载了：
+
+- 会话管理逻辑
+- 消息处理与流式通信
+- 工具调用执行与 diff 计算
+- Undo/Redo 备份系统
+- 文件搜索与上下文构建
+- Workflow 发现与执行
+- History 恢复与导出
+- 完整 HTML 模板
+
+- [x] 按功能拆分 `ChatViewProvider.ts` 为多个模块，当前主文件已收敛到 `1181` 行，并通过 `tsc -p . --noEmit`
+
+### 架构-2：🟠 备份文件残留在源码目录中
+
+以下 copy 文件不应长期留在代码库中，影响搜索和误导开发：
+
+- `src/extension copy.ts`
+- `src/commands/handler copy.ts`
+- `src/webview/ChatViewProvider copy.ts`
+- `src/webview/ChatViewProvider latest copy.ts`
+
+- [x] 已在人工确认后删除所有 copy 备份文件，源码目录中已无残留
+
+### 架构-3：🟡 运行时状态未做会话级隔离
+
+`activeRunId`、`abortStream`、`toolCallsInProgress`、`toolCallRound`、`writeBackups`、`turnWriteFiles` 等全部是 `ChatViewProvider` 的实例属性。切换会话时只切换了 `activeSessionId`，这些运行时状态未重置，导致跨会话状态残留。
+
+- [x] 会话切换时统一重置所有运行时状态（第二阶段多会话并发执行时进一步做会话级隔离）
+
+### 架构-4：🟡 `getEditorContext()` 未选中代码时返回整个文件
+
+文件：`src/utils/editor.ts`（约第 22-25 行）
+
+当用户未选中任何代码时，`selectedCode` 返回整个文件内容。对于大文件（数万行），会在命令调用链路中注入大量 token，可能超出模型上下文窗口。
+
+- [x] 增加未选中代码时的大小限制或截断提示
+
+---
+
+## 缺陷汇总表
+
+| 编号 | 严重度 | 类别 | 简述 | 状态 |
+|------|--------|------|------|------|
+| BUG-1 | 🔴 高 | 逻辑错误 | 图片错误检测运算符优先级问题 | [x] |
+| BUG-2 | 🔴 高 | 数据污染 | ensureApiKey 将 .env 模型写入 settings | [x] |
+| BUG-3 | 🟡 中 | 逻辑错误 | handleRegenerate 忽略目标消息 ID | [x] |
+| BUG-4 | 🟡 中 | 功能缺陷 | editFile 只替换首个匹配 | [x] |
+| BUG-5 | 🟡 中 | 一致性 | regenerateResponse 双份 fullContent 可能不一致 | [x] |
+| BUG-6 | 🔴 高 | UI 状态 | handleToolCalls 提前 return 未清理 loading | [x] |
+| BUG-7 | 🟡 中 | 状态泄漏 | writeBackups 在会话切换时未清空 | [x] |
+| BUG-8 | 🟡 中 | 展示错误 | 同文件多次 edit 的 diff 基准错误 | [x] |
+| 问题-1 | 🟡 中 | 死代码 | context.ts 废弃 getModelConfig 导出 | [x] |
+| 问题-2 | 🟠 低 | 数据不准 | turnWriteFiles 去重不更新统计 | [x] |
+| 问题-3 | 🟠 低 | 内存 | retryableRequests 未随会话清理 | [x] |
+| 问题-4 | 🟠 低 | 健壮性 | readContextFilePreview 未处理文件不存在 | [x] |
+| 架构-1 | 🔴 高 | 工程规范 | ChatViewProvider 3557 行远超 1200 行限制 | [x] |
+| 架构-2 | 🟠 低 | 代码卫生 | copy 备份文件清理完成 | [x] |
+| 架构-3 | 🟡 中 | 状态隔离 | 运行时状态未做会话级隔离 | [x] |
+| 架构-4 | 🟡 中 | 性能 | 未选中代码时注入整个文件内容 | [x] |
+
+---
+
+## 建议修复顺序
+
+### 第一批：高优先级 BUG（🔴）
+
+1. BUG-6：`handleToolCalls` 提前 return 未清理 loading
+2. BUG-1：图片错误检测运算符优先级
+3. BUG-2：`ensureApiKey` 污染 settings
+
+### 第二批：中优先级 BUG（🟡）
+
+4. BUG-7：`writeBackups` 会话切换未清空
+5. BUG-5：`regenerateResponse` 双份 fullContent
+6. BUG-3：`handleRegenerate` 忽略目标消息 ID
+7. BUG-4：`editFile` 只替换首个匹配
+8. BUG-8：同文件多次 edit diff 基准错误
+9. 问题-1：删除 `context.ts` 废弃函数
+10. 架构-3：会话切换时统一重置运行时状态
+
+### 第三批：工程优化
+
+11. 架构-1：拆分 `ChatViewProvider.ts`
+12. 架构-4：大文件截断
+13. 问题-2 ~ 问题-4：低优先级修复
+14. 架构-2：清理 copy 备份文件
+
+---
+
+## 当前执行状态
+
+- [x] 完成缺陷与 BUG 系统性分析
+- [x] 输出缺陷清单到 workplan
+- [x] 第一批高优先级 BUG 修复
+- [x] 第二批中优先级 BUG 修复
+- [x] 完成 `ChatViewProvider.ts` 第 20 阶段两轮收尾，主文件降到 `1181` 行并通过 `tsc -p . --noEmit`
+- [x] 第三批工程优化完成（含 `架构-2`：copy 备份文件清理）
+- [x] 已补修停止生成中断后已写文件缺少 change summary / Undo 入口，以及单文件 Undo 失败静默无反馈的问题，并再次通过 `tsc -p . --noEmit`
+
+---
+
+## 架构-1 分阶段执行计划
+
+说明：以下阶段属于 `架构-1：拆分 ChatViewProvider.ts` 的内部执行计划，用于按低耦合、低风险方式分批推进，不替代上方总任务项。
+
+- [x] 第一阶段：创建最新备份并抽离低耦合模块（`context usage`、Webview HTML）
+- [x] 第二阶段：抽离会话恢复 / 展示层辅助逻辑，继续缩小 `ChatViewProvider.ts`
+- [x] 第三阶段：抽离工具预览 / diff / 文件变更汇总相关逻辑
+- [x] 第四阶段：抽离工作区文件搜索 / workflow 扫描 / 上下文文件预览 / Markdown 导出等边缘辅助逻辑
+- [x] 第五阶段：抽离会话辅助逻辑与重新生成前置校验 / 快照构建
+- [x] 第六阶段：抽离命令分发辅助逻辑与 `retryableRequests` 管理逻辑
+- [x] 第七阶段：抽离 IDE / 编辑器交互相关低耦合逻辑（终端错误分析 Prompt、文件打开、工作流选择、代码插入）
+- [x] 第八阶段：抽离运行时状态辅助逻辑（运行中判断、重做回滚状态消费、过程摘要状态读写）
+- [x] 第九阶段：抽离 Webview 消息分发路由（轻量分支分发与剩余分支 router）
+- [x] 第十阶段：抽离模型列表响应构建、模式提醒与会话保存前整理逻辑
+- [x] 第十一阶段：抽离活跃会话访问 / displayHistory 解析，以及 token / sessions 响应构建逻辑
+- [x] 第十二阶段：归并 session 领域 helper，并下沉上下文窗口裁剪包装逻辑
+- [x] 第十三阶段：收口 displayHistory / regenerate / sessions 相关纯 helper 包装
+- [x] 第十四阶段：下沉 session 领域 Webview 响应构建，并收口会话切换 / 历史恢复编排
+- [x] 第十五阶段：继续清理纯转手 helper 包装与无用 preview 桥接代码
+- [x] 第十六阶段：继续收口 Undo / 文件备份恢复逻辑到 `fileChanges` 领域 helper
+- [x] 第十七阶段：继续评估上下文操作 / 导出 / 其他低耦合编排逻辑
+- [x] 第十八阶段：继续评估模型 / 模式 / 其他低耦合编排逻辑
+- [x] 第十九阶段：继续评估停止生成 / 运行时状态编排的下沉空间
+- [x] 第二十阶段：继续评估 displayHistory / 会话访问 / 运行时与会话交界处的残余桥接
+- [x] 收尾阶段：继续缩小 `ChatViewProvider.ts`，直到低于 1200 行，并完成编译验证
+- [x] `架构-2` 收尾：已在用户确认后处理 `copy` 备份文件
+
+当前进度：`ChatViewProvider.ts` 已由 `3557` 行缩减到 `1181` 行，已低于项目规定的 `1200` 行上限，并通过 `tsc -p . --noEmit`。
+
+---
+
+## v0.2.0 Bug 修复批次
+
+### 已完成修复
+
+- [x] BUG-3：流式请求 onDone/onError 双触发互斥 → `client.ts` 添加 `settled` 互斥标志
+- [x] BUG-5：regenerateResponse 缺少 retryRequestId → 生成并传递 retryRequestId
+- [x] BUG-1：ensureApiKey 中 .env model 的 settingsIndex=-1 不保存 → 检测 .env 模型时提示用户
+- [x] DEFECT-8：editFile 的 .replace() 特殊字符问题 → 改用 indexOf + slice 拼接
+- [x] DEFECT-11：handleToolCalls 递归调用缺少 await → 添加 .catch() 错误处理
+- [x] BUG-4：onStopGeneration 不发送多轮全量变更汇总 → 停止时检查 turnWriteRounds 并发送
+- [x] BUG-2：CUTOFF_MAP 查表缺少 toLowerCase → 查表前统一 .toLowerCase()
+
+### 已完成的运行时修复
+
+- [x] Webview localResourceRoots 未包含 `dist/media/` → 添加 `dist/media` 到允许列表
+- [x] 工具调用轮次上限从 10 提升到 200（兜底保护，正常不触发）
+- [x] 工具执行改为读操作并行、写操作串行 → `toolExecutor.ts` 中 `Promise.all` 并行只读批次
+
+---
+
+## 多 Tab 聊天功能（v0.2.0 新功能）
+
+### 目标
+
+支持在 VS Code 编辑器中打开多个独立的 AI 聊天 Tab，每个 Tab 拥有独立的会话状态和对话流程，与侧边栏聊天面板并存。
+
+### 依赖关系
+
+```
+阶段 0（准备） → 阶段 1（引擎抽离） → 阶段 2（Tab 新增） → 阶段 3（隔离与共享） → 阶段 4（前端适配）
+```
+
+### 阶段 0：准备工作
+
+> 低风险，为后续重构建立安全网和接口契约
+
+- [x] **0-1 备份源文件**
+  - 操作：创建 `src/webview/ChatViewProvider latest copy.ts`
+  - 验证：文件存在且内容与源文件一致
+
+- [x] **0-2 定义 IChatHost 接口**
+  - 新建文件：`src/webview/IChatHost.ts`
+  - 定义 Webview 容器必须提供的能力：
+    - `postMessage(message: ExtensionMessage): void` — 向前端发送消息
+    - `getWebview(): vscode.Webview | undefined` — 获取 Webview 实例
+    - `getExtensionUri(): vscode.Uri` — 获取插件根目录 URI
+    - `getGlobalState(): vscode.Memento` — 获取持久化存储
+    - `reveal(): void` — 使面板可见
+  - 验证：`tsc -p . --noEmit` 通过
+
+### 阶段 1：抽离聊天引擎 ChatEngine
+
+> 核心阶段，最大改动量。将 ChatViewProvider 的业务逻辑全部迁移到独立引擎类。
+> 完成后侧边栏功能必须与改动前完全一致。
+
+- [x] **1-1 新建 ChatEngine.ts 骨架**
+  - 新建文件：`src/webview/ChatEngine.ts`
+  - 迁移所有实例状态字段（约 20 个）：
+    - `sessions`, `activeSessionId`, `currentMode`, `contextFiles`
+    - `abortStream`, `activeRunId`, `toolCallsInProgress`, `stepSequence`, `toolCallRound`
+    - `writeBackups`, `sessionLauncherVisible`, `turnWriteFiles`, `turnWriteRounds`
+    - `activeHistoryProcessSummary`, `pendingRegenerateState`, `retryableRequests`
+    - `sessionDisplayHistoryAccessors`
+    - `displayHistory` getter/setter, `chatHistory` getter/setter
+  - 构造函数接收 `IChatHost` 实例而非 `vscode.ExtensionContext`
+  - 验证：tsc 通过（此时 ChatEngine 只有字段，无方法）
+
+- [x] **1-2 迁移业务方法到 ChatEngine**
+  - 迁移以下 private 方法：
+    - `handleUserMessage` — 用户消息处理主流程
+    - `handleToolCalls` — 工具调用执行与续轮
+    - `handleRegenerate` — 重新生成入口
+    - `regenerateResponse` — 重新生成请求发起
+    - `handleWebviewMessage` — Webview 消息分发
+    - `resetSessionScopedRuntimeState` — 会话级运行时重置
+    - `rollbackPendingRegenerateState` — 重做回滚
+    - `hasRunningTask` — 运行中判断
+  - 迁移以下 public/private 会话管理方法：
+    - `clearCurrentSession`, `openSessionLauncher`, `switchSession`, `deleteSession`
+    - `loadSessions`, `saveSessions`, `saveChatHistory`
+  - 迁移以下辅助方法：
+    - `sendModelList`, `pushTokenCount`, `exportChatToMarkdown`
+  - 所有方法中 `this.postMessage(...)` 改为 `this.host.postMessage(...)`
+  - 所有方法中 `this.context.globalState` 改为 `this.host.getGlobalState()`
+  - 验证：tsc 通过
+
+- [x] **1-3 ChatViewProvider 改为薄壳**
+  - `ChatViewProvider` 内部持有 `private engine: ChatEngine`
+  - 构造函数中创建 `ChatEngine` 实例，传入自身作为 `IChatHost`
+  - `ChatViewProvider` 实现 `IChatHost` 接口
+  - `resolveWebviewView` 保留在 Provider 中（VS Code API 要求）
+  - 所有公开方法委托到 `this.engine.xxx()`：
+    - `runCommandRequest` → `this.engine.runCommandRequest()`
+    - `clearCurrentSession` → `this.engine.clearCurrentSession()`
+    - `getMode` → `this.engine.getMode()`
+    - `switchMode` → `this.engine.switchMode()`
+    - `openSessionLauncher` → `this.engine.openSessionLauncher()`
+    - `postMessage` → 保留在 Provider（直接调 webviewView.webview.postMessage）
+  - `onModelSwitch` 回调保留在 Provider，通过 engine 事件桥接
+  - 验证：tsc 通过 + 打包安装测试侧边栏功能完全正常
+
+- [x] **1-4 外部调用者适配**
+  - `extension.ts`：无需改动（ChatViewProvider 公开 API 不变）
+  - `commands/handler.ts`：无需改动（依赖 ChatViewProvider 类型不变）
+  - 验证：tsc 通过 + 所有右键命令可用
+
+### 阶段 2：新增 Tab 面板能力
+
+> 增量新增，不修改已有侧边栏逻辑。
+
+- [x] **2-1 新建 ChatTabPanel.ts**
+  - 新建文件：`src/webview/ChatTabPanel.ts`
+  - 类实现 `IChatHost` 接口
+  - 内部持有：
+    - `vscode.WebviewPanel` 实例
+    - 独立的 `ChatEngine` 实例
+  - 构造函数：
+    - 创建 `vscode.window.createWebviewPanel(...)` 
+    - 配置 `localResourceRoots`（复用 Provider 逻辑）
+    - 设置 HTML（复用 `buildChatViewHtml`）
+    - 绑定消息监听到 `this.engine.handleWebviewMessage`
+    - 监听 `onDidDispose` 清理资源
+  - 实现 `IChatHost` 方法
+  - 验证：tsc 通过
+
+- [x] **2-2 新建 ChatTabManager.ts**
+  - 新建文件：`src/webview/ChatTabManager.ts`
+  - 管理所有打开的 Tab：
+    - `private tabs: Map<string, ChatTabPanel>`
+    - `createTab(context: vscode.ExtensionContext): ChatTabPanel`
+    - `closeTab(tabId: string): void`
+    - `getActiveTab(): ChatTabPanel | undefined`
+    - `dispose(): void` — 关闭所有 Tab
+  - 监听 Tab 关闭事件，自动从 Map 中移除
+  - 验证：tsc 通过
+
+- [x] **2-3 注册命令与快捷键**
+  - 修改文件：`src/extension.ts`
+  - 新增操作：
+    - 创建 `ChatTabManager` 实例
+    - 注册命令 `myAiPlugin.newChatTab`，调用 `tabManager.createTab(context)`
+  - 修改文件：`package.json`
+  - 新增操作：
+    - `contributes.commands` 添加 `myAiPlugin.newChatTab`（标题："AI 助理：新建聊天 Tab"）
+    - `contributes.keybindings` 添加快捷键绑定（`Ctrl+Shift+T`）
+  - 验证：tsc 通过 + 打包后按快捷键能弹出新 Tab 并正常对话
+
+### 阶段 3：会话隔离与共享资源
+
+> 确保多个 ChatEngine 实例并发运行时数据安全。
+
+- [x] **3-1 新建 SessionStore 单例**
+  - 新建文件：`src/webview/SessionStore.ts`
+  - 统一管理 sessions 的读写和 globalState 持久化
+  - 所有 ChatEngine 实例通过 SessionStore 读写会话数据
+  - 防止并发 saveSessions 导致数据覆盖
+  - 验证：tsc 通过
+
+- [x] **3-2 ChatEngine 改用 SessionStore**
+  - `ChatEngine.sessions` 改为委托 store 的 getter/setter，多引擎共享同一引用
+  - `loadSessions` 通过 store.load 加载（首个引擎实际读 globalState，后续复用缓存）
+  - `saveSessions` 通过 store.persist 持久化
+  - `ChatTabPanel` / `ChatTabManager` 创建并传递单一 SessionStore 实例
+  - 验证：tsc 通过
+
+- [x] **3-3 状态栏同步**
+  - `ChatTabManager.createTab` 监听 `onDidChangeViewState`，Tab 获得焦点时触发 `onModelSwitch`
+  - `ChatEngine` / `ChatTabPanel` 新增 `getActiveModelName()` 方法
+  - 验证：tsc 通过
+
+### 阶段 4：前端适配与体验优化
+
+> 细节打磨，提升多 Tab 使用体验。
+
+- [x] **4-1 Tab 标题动态显示**
+  - `IChatHost` 新增可选 `setTitle?()` 方法
+  - `ChatEngine` 新增 `syncHostTitle()` 在 6 个会话变更点调用（初始化/创建/切换/重命名/删除/清空）
+  - 验证：tsc 通过
+
+- [x] **4-2 右键命令路由**
+  - 已在前一轮完成：所有命令统一通过 `tabManager.getOrCreateTab()` 路由到 Tab
+  - 验证：tsc 通过
+
+- [x] **4-3 Tab 间切换体验**
+  - `retainContextWhenHidden` 已启用，切换时保持状态
+  - `ChatTabManager.dispose` 关闭所有 Tab，`onDispose` 回调清理事件监听
+  - 验证：tsc 通过
+
+---
+
+### 里程碑检查点
+
+| 检查点 | 触发条件 | 操作 |
+|--------|---------|------|
+| **M1** | 阶段 1 完成 | 打包安装，验证侧边栏所有功能与改前一致 |
+| **M2** | 阶段 2 完成 | 打包安装，验证新 Tab 能独立对话 |
+| **M3** | 阶段 3 完成 | 多 Tab + 侧边栏同时使用，会话不串扰 |
+| **M4** | 阶段 4 完成 | 完整体验测试，发布 v0.2.0 |
+
+---
+
+## 右侧 Tab 主入口改造（Windsurf / Cursor 风格）
+
+### 背景
+
+Windsurf 和 Cursor 的 AI 聊天面板始终固定在编辑器右侧区域，而非左侧侧边栏。本次改造将插件主入口从侧边栏 `WebviewViewProvider` 切换为右侧编辑器 Tab（`ViewColumn.Two`），多个对话在同一右侧编辑器分组内以 Tab 形式切换。
+
+### 已完成改动
+
+- [x] `ChatTabPanel.ts`：`ViewColumn.One` → `ViewColumn.Two`（固定右侧）；补齐 `runCommandRequest`/`clearCurrentSession`/`getMode`/`switchMode`/`openSessionLauncher` 公开 API
+- [x] `ChatTabManager.ts`：新增 `getOrCreateTab()` 作为统一命令路由入口
+- [x] `handler.ts`：`executeCommand` 参数类型从 `ChatViewProvider` 改为通用接口 `CommandTarget`
+- [x] `extension.ts`：移除 `ChatViewProvider` 侧边栏注册；`Alt+Q`/`Alt+N`/AI 命令/清空/切换模式全部路由到 `tabManager`
+- [x] `package.json`：移除 `viewsContainers` 和 `views` 配置；添加 `onStartupFinished` 激活事件
+- [x] TypeScript 编译验证通过（`tsc -p . --noEmit`）
+- [x] `Alt+N` 快捷键改为新建独立 Tab（原来是在已有 Tab 中打开会话启动器）
+- [x] 历史会话列表分页：默认显示最近 20 条，超出时显示"显示更多"按钮
+- [x] `SessionStore.ts`：多 Tab 共享同一个 sessions 池，防止并发保存数据覆盖
+- [x] `ChatEngine` 的 `sessions` 改为委托 store 的 getter/setter，`loadSessions`/`saveSessions` 改用 store
+- [x] Tab 标题动态显示：`IChatHost.setTitle?()` + `ChatEngine.syncHostTitle()` 在 6 个会话变更点同步
+- [x] 状态栏跟随活跃 Tab：`ChatTabManager` 监听 `onDidChangeViewState`，切换 Tab 时同步模型名
+- [x] BUG-1：`newChat`（Alt+N）改为在当前 Tab 打开 session launcher，`newChatTab`（Alt+T）新建独立 Tab，语义区分
+- [x] BUG-2+3：新 Tab 强制进入 session launcher（`forceSessionLauncher`），避免多 Tab 默认进入同一会话；间接消除 persist activeSessionId 覆盖风险
+- [x] BUG-5+6：`clearChat` / `switchMode` 无活跃 Tab 时提示用户而非静默失败
+
+### 待清理文件
+
+以下文件已不再被导入，但暂时保留供参考，待人工确认功能正常后可手动删除：
+
+- `src/webview/ChatViewProvider.ts` — 原侧边栏薄壳，已被 `ChatTabPanel` + `ChatTabManager` 完全替代
+- `src/webview/ChatViewProvider latest copy.ts` — 历史备份

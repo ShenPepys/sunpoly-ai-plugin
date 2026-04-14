@@ -10,6 +10,38 @@ import * as path from 'path';
 import { info, error } from '../logger';
 
 /**
+ * 应跳过的文件名（精确匹配）
+ * 这些文件对理解代码逻辑没有帮助，读取它们只会浪费模型上下文
+ */
+const SKIP_FILE_NAMES = new Set([
+  'package-lock.json',
+  'yarn.lock',
+  'pnpm-lock.yaml',
+  'composer.lock',
+  'Gemfile.lock',
+  'Cargo.lock',
+  'poetry.lock',
+  '.DS_Store',
+  'Thumbs.db',
+]);
+
+/**
+ * 应跳过的文件扩展名（二进制或无意义文件）
+ */
+const SKIP_EXTENSIONS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.svg',
+  '.woff', '.woff2', '.ttf', '.eot', '.otf',
+  '.mp3', '.mp4', '.wav', '.avi', '.mov',
+  '.zip', '.tar', '.gz', '.rar', '.7z',
+  '.exe', '.dll', '.so', '.dylib',
+  '.map', '.min.js', '.min.css',
+  '.pyc', '.class', '.o', '.obj',
+]);
+
+/** 单个文件返回给模型的最大字符数，超出部分截断 */
+const MAX_CONTENT_CHARS = 8192;
+
+/**
  * 获取工作区根目录路径
  * 如果没有打开工作区则返回 undefined
  */
@@ -28,15 +60,15 @@ function getWorkspaceRoot(): string | undefined {
  * @param targetPath 待校验的文件/目录路径
  * @returns 规范化后的绝对路径，如果不安全则返回 undefined
  */
-function resolveAndValidatePath(targetPath: string): string | undefined {
-  const workspaceRoot = getWorkspaceRoot();
-  if (!workspaceRoot) {
-    return undefined;
+export function resolveAndValidatePath(targetPath: string): string | null {
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  if (!workspaceFolder) {
+    return null;
   }
 
   // 将相对路径转为绝对路径（基于工作区根目录）
-  const absolutePath = path.resolve(workspaceRoot, targetPath);
-  const normalizedWorkspaceRoot = path.resolve(workspaceRoot);
+  const absolutePath = path.resolve(workspaceFolder.uri.fsPath, targetPath);
+  const normalizedWorkspaceRoot = path.resolve(workspaceFolder.uri.fsPath);
   const compareAbsolutePath = process.platform === 'win32'
     ? absolutePath.toLowerCase()
     : absolutePath;
@@ -51,8 +83,8 @@ function resolveAndValidatePath(targetPath: string): string | undefined {
   const isSameDirectory = compareAbsolutePath === compareWorkspaceRoot;
   const isChildDirectory = compareAbsolutePath.startsWith(workspacePrefix);
   if (!isSameDirectory && !isChildDirectory) {
-    error(`文件路径越权: ${absolutePath} 不在工作区 ${workspaceRoot} 内`);
-    return undefined;
+    error(`文件路径越权: ${absolutePath} 不在工作区 ${workspaceFolder.uri.fsPath} 内`);
+    return null;
   }
 
   return absolutePath;
@@ -64,6 +96,24 @@ export interface FileOpResult {
   success: boolean;
   /** 操作结果内容（文件内容、目录列表等） */
   content: string;
+}
+
+function countExactOccurrences(source: string, search: string): number {
+  if (!search) {
+    return 0;
+  }
+
+  let count = 0;
+  let startIndex = 0;
+  while (true) {
+    const matchIndex = source.indexOf(search, startIndex);
+    if (matchIndex === -1) {
+      return count;
+    }
+
+    count += 1;
+    startIndex = matchIndex + search.length;
+  }
 }
 
 /**
@@ -88,7 +138,31 @@ export async function readFile(filePath: string): Promise<FileOpResult> {
       return { success: false, content: `文件过大 (${(stat.size / 1024).toFixed(0)}KB)，超过 512KB 限制: ${safePath}` };
     }
 
+    // 根据文件名和扩展名判断是否应跳过
+    const fileName = path.basename(safePath);
+    const fileExt = path.extname(safePath).toLowerCase();
+
+    if (SKIP_FILE_NAMES.has(fileName)) {
+      info(`跳过无意义文件: ${safePath}`);
+      return { success: true, content: `[已跳过] ${fileName} 是依赖锁定/系统文件，不含有用代码信息` };
+    }
+    if (SKIP_EXTENSIONS.has(fileExt)) {
+      info(`跳过二进制/无意义扩展名文件: ${safePath}`);
+      return { success: true, content: `[已跳过] ${fileName} 是二进制或编译产物文件` };
+    }
+
     const content = fs.readFileSync(safePath, 'utf-8');
+
+    // 超长文件截断，避免单个文件占用过多模型上下文
+    if (content.length > MAX_CONTENT_CHARS) {
+      const truncated = content.slice(0, MAX_CONTENT_CHARS);
+      info(`读取文件(截断): ${safePath} (原 ${content.length} 字符 → ${MAX_CONTENT_CHARS} 字符)`);
+      return {
+        success: true,
+        content: truncated + `\n\n[文件已截断，仅显示前 ${MAX_CONTENT_CHARS} 字符，原始长度 ${content.length} 字符]`,
+      };
+    }
+
     info(`读取文件: ${safePath} (${content.length} 字符)`);
     return { success: true, content };
   } catch (err) {
@@ -147,7 +221,17 @@ export async function editFile(filePath: string, oldContent: string, newContent:
       return { success: false, content: `未找到要替换的内容，文件未修改: ${safePath}` };
     }
 
-    const updatedContent = fileContent.replace(oldContent, newContent);
+    const matchCount = countExactOccurrences(fileContent, oldContent);
+    if (matchCount > 1) {
+      return {
+        success: false,
+        content: `要替换的内容在文件中出现了 ${matchCount} 次，请提供更精确的 old 内容以唯一定位: ${safePath}`,
+      };
+    }
+
+    // 用 indexOf + slice 拼接而非 .replace()，避免 newContent 含 $& 等特殊替换模式导致意外结果
+    const matchIndex = fileContent.indexOf(oldContent);
+    const updatedContent = fileContent.slice(0, matchIndex) + newContent + fileContent.slice(matchIndex + oldContent.length);
     fs.writeFileSync(safePath, updatedContent, 'utf-8');
     info(`编辑文件: ${safePath} (替换 ${oldContent.length} → ${newContent.length} 字符)`);
     return { success: true, content: `文件已编辑: ${safePath}` };

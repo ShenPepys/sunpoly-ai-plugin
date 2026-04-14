@@ -1,9 +1,12 @@
 /**
- * Webview 聊天面板提供者
- * 
- * 负责创建和管理侧边栏中的聊天 Webview 面板。
- * 实现 VS Code 的 WebviewViewProvider 接口，
- * 处理 Webview 的生命周期和消息通信。
+ * Webview 聊天面板提供者（薄壳）
+ *
+ * 实现 VS Code 的 WebviewViewProvider 接口和 IChatHost 接口，
+ * 所有聊天业务逻辑委托给内部的 ChatEngine 实例。
+ * 本文件只负责：
+ *   1. VS Code 侧边栏生命周期管理（resolveWebviewView）
+ *   2. IChatHost 适配（postMessage、reveal 等）
+ *   3. 对外暴露公开 API 供 extension.ts / handler.ts 调用
  */
 import * as vscode from 'vscode';
 import * as fs from 'fs';
@@ -20,26 +23,11 @@ import type { ExtensionMessage, WebviewMessage, WorkMode, ChatSession, Persisted
 import { parseToolCalls, hasToolCalls, stripToolCalls, executeToolCalls, formatToolResults, readFile } from '../tools';
 import { readErrorFromClipboard, buildErrorAnalysisPrompt } from '../terminal/terminalCapture';
 import type { ToolExecutionResult, ParsedToolCall, ToolCallType } from '../tools';
-
-type ChangeSummaryFile = {
-  path: string;
-  displayPath: string;
-  additions: number;
-  deletions: number;
-  status: 'created' | 'modified' | 'read' | 'listed';
-  issueText?: string;
-};
-
-type PreviewFileState = {
-  content: string;
-  exists: boolean;
-};
-
-type PreviewBuildResult = {
-  newContent: string;
-  canApply: boolean;
-  issueText?: string;
-};
+import type { CommandExecutionRequest } from '../commands/handler';
+import type { IChatHost } from './IChatHost';
+import { ChatEngine } from './ChatEngine';
+import type { ChangeSummaryFile, PreviewFileState, PreviewBuildResult } from './ChatViewProvider_d_fileChanges';
+import { SessionStore } from './SessionStore';
 
 type DeferredToolStep = {
   stepId: string;
@@ -48,18 +36,27 @@ type DeferredToolStep = {
   startedAt: number;
 };
 
-export class ChatViewProvider implements vscode.WebviewViewProvider {
+function getNonce(): string {
+  let text = '';
+  const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  for (let i = 0; i < 32; i += 1) {
+    text += possible.charAt(Math.floor(Math.random() * possible.length));
+  }
+  return text;
+}
+
+export class ChatViewProvider implements vscode.WebviewViewProvider, IChatHost {
   /** Provider 的注册 ID，必须与 package.json 中 views.id 一致 */
   public static readonly viewType = 'my-ai-plugin.chatView';
 
-  /** 当前活跃的 Webview 实例引用，用于从外部向 Webview 发送消息 */
+  /** 当前活跃的 Webview 实例引用 */
   private webviewView?: vscode.WebviewView;
 
-  /** 所有会话列表，持久化到 globalState */
-  private sessions: ChatSession[] = [];
+  /** 插件根目录 URI */
+  private readonly extensionUri: vscode.Uri;
 
-  /** 当前活跃会话的 ID */
-  private activeSessionId: string = '';
+  /** VS Code 扩展上下文 */
+  private readonly context: vscode.ExtensionContext;
 
   /**
    * 当前活跃会话的对话历史（getter 返回对活跃会话历史数组的引用）
@@ -117,6 +114,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private stepSequence = 0;
 
+  private sessions: ChatSession[] = [];
+
+  private activeSessionId = '';
+
+  /** 聊天引擎，持有所有业务状态和方法 */
+  private readonly engine: ChatEngine;
+
   private stepToMessageId: Map<string, string> = new Map();
 
   private summaryToMessageId: Map<string, string> = new Map();
@@ -126,17 +130,107 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** 模型切换回调，外部设置后在切换模型时触发 */
   public onModelSwitch?: (modelName: string) => void;
 
-  /** 插件根目录 URI，用于加载 media 资源 */
-  private readonly extensionUri: vscode.Uri;
-
-  /** VS Code 扩展上下文，用于 globalState 持久化 */
-  private context: vscode.ExtensionContext;
-
   constructor(context: vscode.ExtensionContext) {
     this.context = context;
     this.extensionUri = context.extensionUri;
-    // 从 globalState 加载会话数据（与旧单会话数据兼容）
-    this.loadSessions();
+    // 廈代路径：侧边栏已移除，此处仅保留编译兼容
+    const store = new SessionStore(context.globalState);
+    this.engine = new ChatEngine(this, store);
+
+    // 将 onModelSwitch 桥接到引擎
+    // 引擎内部设置回调时会通过此代理触发外部回调
+    Object.defineProperty(this.engine, 'onModelSwitch', {
+      get: () => this.onModelSwitch,
+      set: (fn: ((modelName: string) => void) | undefined) => {
+        this.onModelSwitch = fn;
+      },
+    });
+  }
+
+  /** 向前端 Webview 发送消息 */
+  public postMessage(message: ExtensionMessage): void {
+    if (this.webviewView) {
+      this.webviewView.webview.postMessage(message);
+    }
+  }
+
+  /** 获取当前 Webview 实例 */
+  public getWebview(): vscode.Webview | undefined {
+    return this.webviewView?.webview;
+  }
+
+  /** 获取插件根目录 URI */
+  public getExtensionUri(): vscode.Uri {
+    return this.extensionUri;
+  }
+
+  /** 获取 globalState 持久化存储 */
+  public getGlobalState(): vscode.Memento {
+    return this.context.globalState;
+  }
+
+  /** 使侧边栏面板可见 */
+  public reveal(): void {
+    if (this.webviewView) {
+      this.webviewView.show(true);
+    }
+  }
+
+  /**
+   * VS Code 在侧边栏面板首次可见时调用此方法
+   * 负责初始化 Webview 的 HTML 内容和消息监听
+   */
+  public resolveWebviewView(
+    webviewView: vscode.WebviewView,
+    _context: vscode.WebviewViewResolveContext,
+    _token: vscode.CancellationToken,
+  ): void {
+    this.webviewView = webviewView;
+
+    webviewView.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [
+        vscode.Uri.joinPath(this.extensionUri, 'media'),
+        vscode.Uri.joinPath(this.extensionUri, 'dist', 'media'),
+      ],
+    };
+
+    webviewView.onDidChangeVisibility(() => {
+      if (webviewView.visible) {
+        this.engine.sendModelList();
+      }
+    });
+
+    webviewView.webview.html = this.engine.buildHtml();
+    webviewView.webview.onDidReceiveMessage(
+      (message: WebviewMessage) => this.engine.handleWebviewMessage(message),
+      undefined,
+      [],
+    );
+
+    info('聊天面板 Webview 已初始化');
+    this.engine.initializeWebviewState();
+  }
+
+  /** 执行命令请求（供 extension.ts 命令处理器调用） */
+  public async runCommandRequest(commandRequest: CommandExecutionRequest): Promise<void> {
+    await vscode.commands.executeCommand('my-ai-plugin.chatView.focus');
+    await this.engine.runCommandRequest(commandRequest);
+  }
+
+  /** 清空当前会话（供 extension.ts 清空命令调用） */
+  public clearCurrentSession(): void {
+    this.engine.clearCurrentSession();
+  }
+
+  /** 获取当前工作模式（供 extension.ts 快捷键使用） */
+  public getMode(): WorkMode {
+    return this.engine.getMode();
+  }
+
+  /** 切换工作模式（供 extension.ts 快捷键使用） */
+  public switchMode(mode: WorkMode): void {
+    this.engine.switchMode(mode);
   }
 
   private ensureUiMessageEntry(
@@ -376,7 +470,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private postUiThinkingComplete(messageId: string, elapsed: number): void {
     this.appendUiEvent(messageId, { type: 'thinkingComplete', elapsed });
     this.saveSessions();
-    this.postMessage({ type: 'thinkingComplete', messageId, elapsed });
+    this.postMessage({ type: 'thinkingComplete', messageId, elapsed, isExecutionMessage: false });
   }
 
   private postUiStepStart(
@@ -496,6 +590,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               type: 'thinkingComplete',
               messageId: entry.messageId,
               elapsed: event.elapsed,
+              isExecutionMessage: false,
             });
             break;
           case 'addStep':
@@ -559,78 +654,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * VS Code 在侧边栏面板首次可见时调用此方法
-   * 负责初始化 Webview 的 HTML 内容和消息监听
-   */
-  public resolveWebviewView(
-    webviewView: vscode.WebviewView,
-    _context: vscode.WebviewViewResolveContext,
-    _token: vscode.CancellationToken,
-  ): void {
-    this.webviewView = webviewView;
-
-    // 配置 Webview 权限
-    webviewView.webview.options = {
-      enableScripts: true,
-      localResourceRoots: [
-        vscode.Uri.joinPath(this.extensionUri, 'media'),
-      ],
-    };
-
-    // 隐藏侧边栏时保留 Webview 状态，避免切换时重建 DOM
-    webviewView.onDidChangeVisibility(() => {
-      if (webviewView.visible) {
-        // 重新可见时推送 token 计数（可能已更新）
-        this.pushTokenCount();
-      }
-    });
-
-    // 设置 HTML 内容
-    webviewView.webview.html = this.getHtmlContent(webviewView.webview);
-
-    // 监听来自 Webview 的消息
-    webviewView.webview.onDidReceiveMessage(
-      (message: WebviewMessage) => this.handleWebviewMessage(message),
-      undefined,
-      [],
-    );
-
-    info('聊天面板 Webview 已初始化');
-
-    // 初始化完成后推送模型列表、工作模式和会话列表到前端
-    this.sendModelList();
-    this.postMessage({ type: 'updateMode', mode: this.currentMode });
-    this.sendSessionList();
-
-    // 恢复当前活跃会话的历史到界面
-    this.restoreHistoryToWebview();
-  }
-
-  /**
-   * 向 Webview 发送消息
-   * 供外部模块调用（如命令处理器、API 回调等）
-   */
-  public postMessage(message: ExtensionMessage): void {
-    if (this.webviewView) {
-      this.webviewView.webview.postMessage(message);
-    }
-  }
-
-  /**
-   * 确保聊天面板可见
-   * 用于从命令或右键菜单触发时，自动打开侧边栏
-   */
-  public reveal(): void {
-    if (this.webviewView) {
-      this.webviewView.show(true);
-    }
-  }
-
-  /**
    * 处理 Webview 发来的消息
    * 根据 message.type 分发到不同的处理逻辑
    */
-  private handleWebviewMessage(message: WebviewMessage): void {
+  private handleWebviewMessage(message: any): void {
     switch (message.type) {
       case 'sendMessage':
         info('收到用户消息:', message.text);
@@ -831,17 +858,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  /** 获取当前工作模式（供外部模块使用） */
-  public getMode(): WorkMode {
-    return this.currentMode;
-  }
-
-  /** 从外部切换工作模式（供 Ctrl+. 快捷键使用） */
-  public switchMode(mode: WorkMode): void {
-    this.currentMode = mode;
-    this.postMessage({ type: 'updateMode', mode });
-  }
-
   /**
    * 向 Webview 推送当前模型列表和活跃模型
    */
@@ -968,6 +984,7 @@ ${projectCtx}` : baseSystemPrompt;
       baseUrl: modelConfig.baseUrl,
       apiKey,
       modelId: modelConfig.modelId,
+      apiPath: modelConfig.apiPath,
       maxTokens: getMaxTokens(),
       temperature: getTemperature(),
     };
@@ -1945,6 +1962,7 @@ ${projectCtx}` : baseSystemPrompt;
       baseUrl: modelConfig.baseUrl,
       apiKey,
       modelId: modelConfig.modelId,
+      apiPath: modelConfig.apiPath,
       maxTokens: getMaxTokens(),
       temperature: getTemperature(),
     };
@@ -2259,6 +2277,7 @@ ${projectCtx}` : baseSystemPrompt;
       id: `session-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       name,
       createdAt: Date.now(),
+      updatedAt: Date.now(),
       history: [],
     };
   }
@@ -2350,6 +2369,7 @@ ${projectCtx}` : baseSystemPrompt;
         id: s.id,
         name: s.name,
         createdAt: s.createdAt,
+        updatedAt: s.updatedAt ?? s.createdAt,
         // 历史消息数：过滤工具反馈中间消息，只计用户和 AI 的回合
         messageCount: (s.history as Array<{ role: string }>)
           .filter(m => m.role === 'user' || m.role === 'assistant').length,
@@ -2371,7 +2391,7 @@ ${projectCtx}` : baseSystemPrompt;
     }
     // 混合语言粗略估算：平均 3 字符/token
     const tokenCount = Math.round(charCount / 3);
-    this.postMessage({ type: 'updateTokenCount', tokenCount });
+    this.postMessage({ type: 'updateTokenCount', tokenCount, contextWindow: 0, usagePercentage: 0 });
   }
 
   /**
@@ -2675,17 +2695,9 @@ ${projectCtx}` : baseSystemPrompt;
 </body>
 </html>`;
   }
-}
 
-/**
- * 生成随机 nonce 字符串
- * 用于 CSP 安全策略，确保只有合法脚本可以执行
- */
-function getNonce(): string {
-  let text = '';
-  const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  for (let i = 0; i < 32; i++) {
-    text += possible.charAt(Math.floor(Math.random() * possible.length));
+  /** 打开会话启动器（供 extension.ts 新建对话命令使用） */
+  public openSessionLauncher(): void {
+    this.engine.openSessionLauncher();
   }
-  return text;
 }

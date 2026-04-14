@@ -43,8 +43,11 @@ export interface ModelConfig {
   baseUrl: string;
   /** API 密钥 */
   apiKey: string;
+  /** 自定义 API 路径，默认 /v1/chat/completions */
+  apiPath: string;
   /** 知识截止日期 */
   knowledgeCutoff: string;
+  contextWindow: number;
   /** 是否支持图片输入（Vision API），不支持时不应允许发送图片 */
   supportsVision?: boolean;
 }

@@ -16,6 +16,16 @@
   // 注意：VS Code API 由 chat.js 初始化后暴露到 window.vscodeApi
   // 本模块在函数调用时惰性读取（加载时 chat.js 尚未执行）
 
+  /**
+   * summaryId → files 数组（含绝对路径）
+   * showChangeSummary 时写入，View all changes 点击时读取，
+   * 用于通知 Extension 在 IDE 中打开对应文件
+   */
+  var summaryFilesStore = {};
+  var summaryUndoIntentStore = {};
+  var processSummaryStore = {};
+  var processCollapseTimers = {};
+
   // ==================== 步骤容器管理 ====================
 
   /**
@@ -36,27 +46,710 @@
     if (!container) {
       container = document.createElement('div');
       container.className = 'steps-container';
-      // 插入到 message-body 之后、stream-status 之前
+      var resultPanelEl = contentEl.querySelector('.message-result-panel');
       var statusEl = contentEl.querySelector('.stream-status');
-      if (statusEl) {
+      if (resultPanelEl) {
+        contentEl.insertBefore(container, resultPanelEl);
+      } else if (statusEl) {
         contentEl.insertBefore(container, statusEl);
       } else {
         contentEl.appendChild(container);
       }
     }
+    ensureStepSections(container);
     return container;
   }
 
-  // ==================== 步骤块渲染 ====================
+  function ensureStepSections(container) {
+    var headerEl = container.querySelector('.process-panel-toggle');
+    var bodyEl = container.querySelector('.process-panel-body');
+    var linesEl = bodyEl ? bodyEl.querySelector('.steps-lines') : container.querySelector('.steps-lines');
+    var groupsEl = bodyEl ? bodyEl.querySelector('.step-process-groups') : container.querySelector('.step-process-groups');
+    var detailsEl = bodyEl ? bodyEl.querySelector('.steps-details') : container.querySelector('.steps-details');
 
-  /**
-   * 添加一个进度步骤
-   * 
-   * @param {object} data { messageId, stepId, icon, description, status }
-   */
-  function addStep(data) {
-    var container = getOrCreateStepsContainer(data.messageId);
+    if (headerEl && bodyEl && linesEl && groupsEl && detailsEl) {
+      return {
+        container: container,
+        headerEl: headerEl,
+        bodyEl: bodyEl,
+        linesEl: linesEl,
+        groupsEl: groupsEl,
+        detailsEl: detailsEl,
+      };
+    }
+
+    if (!headerEl) {
+      headerEl = document.createElement('button');
+      headerEl.type = 'button';
+      headerEl.className = 'process-panel-toggle';
+      headerEl.setAttribute('aria-expanded', 'true');
+      headerEl.innerHTML =
+        '<span class="process-panel-toggle-main">' +
+          '<span class="process-panel-toggle-prefix">执行过程</span>' +
+          '<span class="process-panel-toggle-summary">处理中</span>' +
+        '</span>' +
+        '<span class="process-panel-toggle-icon">▼</span>';
+    }
+
+    if (!bodyEl) {
+      bodyEl = document.createElement('div');
+      bodyEl.className = 'process-panel-body';
+    }
+
+    if (!linesEl) {
+      linesEl = document.createElement('div');
+      linesEl.className = 'steps-lines';
+    }
+    if (!groupsEl) {
+      groupsEl = document.createElement('div');
+      groupsEl.className = 'step-process-groups';
+    }
+    if (!detailsEl) {
+      detailsEl = document.createElement('div');
+      detailsEl.className = 'steps-details';
+    }
+
+    var existingChildren = Array.prototype.slice.call(container.children);
+    Array.prototype.forEach.call(existingChildren, function (child) {
+      if (child === headerEl || child === bodyEl || child === linesEl || child === groupsEl || child === detailsEl) { return; }
+      if (child.classList.contains('step-item') || child.classList.contains('step-thinking')) {
+        linesEl.appendChild(child);
+      } else {
+        detailsEl.appendChild(child);
+      }
+    });
+
+    if (linesEl.parentNode !== bodyEl) {
+      bodyEl.appendChild(linesEl);
+    }
+    if (groupsEl.parentNode !== bodyEl) {
+      bodyEl.appendChild(groupsEl);
+    }
+    if (detailsEl.parentNode !== bodyEl) {
+      bodyEl.appendChild(detailsEl);
+    }
+    if (headerEl.parentNode !== container) {
+      container.appendChild(headerEl);
+    }
+    if (bodyEl.parentNode !== container) {
+      container.appendChild(bodyEl);
+    }
+
+    if (!headerEl.getAttribute('data-bound')) {
+      headerEl.setAttribute('data-bound', 'true');
+      headerEl.addEventListener('click', function () {
+        setProcessPanelCollapsed(container, !container.classList.contains('process-panel-collapsed'));
+      });
+    }
+
+    return {
+      container: container,
+      headerEl: headerEl,
+      bodyEl: bodyEl,
+      linesEl: linesEl,
+      groupsEl: groupsEl,
+      detailsEl: detailsEl,
+    };
+  }
+
+  function getStepSections(messageId) {
+    var container = getOrCreateStepsContainer(messageId);
+    if (!container) { return null; }
+    return ensureStepSections(container);
+  }
+
+  function findStepSections(messageId) {
+    var messageEl = document.querySelector('[data-message-id="' + messageId + '"]');
+    if (!messageEl) { return null; }
+
+    var container = messageEl.querySelector('.steps-container');
+    if (!container) { return null; }
+
+    return ensureStepSections(container);
+  }
+
+  function getMessageIdByElement(el) {
+    var messageEl = el && el.closest ? el.closest('[data-message-id]') : null;
+    return messageEl ? (messageEl.getAttribute('data-message-id') || '') : '';
+  }
+
+  function applyExecutionHintState(hintEl, text, state) {
+    if (!hintEl) { return; }
+
+    hintEl.className = 'message-execution-hint';
+    if (state) {
+      hintEl.classList.add('is-' + state);
+    }
+    hintEl.textContent = text || '';
+  }
+
+  function setExecutionResultTitle(resultPanelEl, completed) {
+    if (!resultPanelEl) { return; }
+
+    var titleEl = resultPanelEl.querySelector('.message-result-title');
+    if (!titleEl) {
+      titleEl = document.createElement('div');
+      titleEl.className = 'message-result-title';
+      resultPanelEl.insertBefore(titleEl, resultPanelEl.firstChild || null);
+    }
+
+    titleEl.textContent = completed ? '最终结果' : '最终结果（整理中）';
+  }
+
+  function applyExecutionLayoutState(layout, completed) {
+    if (!layout) { return; }
+
+    setExecutionResultTitle(layout.resultPanelEl, completed);
+    applyExecutionHintState(
+      layout.hintEl,
+      completed
+        ? 'AI 已完成执行，下方是最终结果。'
+        : 'AI 正在执行任务，最终结果会显示在下方。',
+      completed ? 'complete' : 'running'
+    );
+  }
+
+  function ensureExecutionLayout(messageId, options) {
+    var normalizedOptions = options || {};
+    var messageEl = document.querySelector('[data-message-id="' + messageId + '"]');
+    if (!messageEl || !messageEl.classList.contains('assistant')) {
+      return null;
+    }
+
+    var contentEl = messageEl.querySelector('.message-content');
+    var bodyEl = contentEl ? contentEl.querySelector('.message-body') : null;
+    if (!contentEl || !bodyEl) {
+      return null;
+    }
+
+    var hintEl = contentEl.querySelector('.message-execution-hint');
+    if (!hintEl) {
+      hintEl = document.createElement('div');
+      hintEl.className = 'message-execution-hint';
+    }
+
+    var resultPanelEl = contentEl.querySelector('.message-result-panel');
+    if (!resultPanelEl) {
+      resultPanelEl = document.createElement('div');
+      resultPanelEl.className = 'message-result-panel';
+      resultPanelEl.innerHTML = '<div class="message-result-title"></div>';
+    }
+
+    if (resultPanelEl.parentNode !== contentEl) {
+      var statusEl = contentEl.querySelector('.stream-status');
+      if (statusEl) {
+        contentEl.insertBefore(resultPanelEl, statusEl);
+      } else {
+        contentEl.appendChild(resultPanelEl);
+      }
+    }
+
+    if (bodyEl.parentNode !== resultPanelEl) {
+      resultPanelEl.appendChild(bodyEl);
+    }
+
+    if (hintEl.parentNode !== contentEl) {
+      var stepsContainerEl = contentEl.querySelector('.steps-container');
+      if (stepsContainerEl) {
+        contentEl.insertBefore(hintEl, stepsContainerEl);
+      } else {
+        contentEl.insertBefore(hintEl, resultPanelEl);
+      }
+    }
+
+    if (!normalizedOptions.preserveExistingContent && !String(bodyEl.textContent || '').trim()) {
+      bodyEl.innerHTML = '<p>执行中，结果整理后会显示在这里。</p>';
+    }
+
+    messageEl.classList.add('assistant-execution-layout');
+    applyExecutionLayoutState({
+      messageEl: messageEl,
+      contentEl: contentEl,
+      hintEl: hintEl,
+      resultPanelEl: resultPanelEl,
+      bodyEl: bodyEl,
+    }, normalizedOptions.completed === true);
+
+    return {
+      messageEl: messageEl,
+      contentEl: contentEl,
+      hintEl: hintEl,
+      resultPanelEl: resultPanelEl,
+      bodyEl: bodyEl,
+    };
+  }
+
+  function setExecutionHint(messageId, text, state) {
+    var messageEl = document.querySelector('[data-message-id="' + messageId + '"]');
+    if (!messageEl || !messageEl.classList.contains('assistant')) {
+      return;
+    }
+
+    var hintEl = messageEl.querySelector('.message-execution-hint');
+    if (!hintEl) {
+      return;
+    }
+
+    applyExecutionHintState(hintEl, text, state);
+  }
+
+  function clearProcessCollapseTimer(messageId) {
+    if (!processCollapseTimers[messageId]) {
+      return;
+    }
+
+    clearTimeout(processCollapseTimers[messageId]);
+    delete processCollapseTimers[messageId];
+  }
+
+  function setProcessPanelCollapsed(container, collapsed) {
     if (!container) { return; }
+
+    var bodyEl = container.querySelector('.process-panel-body');
+    var headerEl = container.querySelector('.process-panel-toggle');
+    var iconEl = container.querySelector('.process-panel-toggle-icon');
+
+    container.classList.toggle('process-panel-collapsed', collapsed);
+    if (bodyEl) {
+      bodyEl.classList.toggle('collapsed', collapsed);
+    }
+    if (headerEl) {
+      headerEl.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    }
+    if (iconEl) {
+      iconEl.textContent = collapsed ? '▶' : '▼';
+    }
+  }
+
+  function activateProcessPanel(messageId, sections) {
+    clearProcessCollapseTimer(messageId);
+    if (!sections) { return; }
+
+    ensureExecutionLayout(messageId, { preserveExistingContent: false, completed: false });
+
+    sections.container.classList.remove('process-panel-complete');
+    setProcessPanelCollapsed(sections.container, false);
+  }
+
+  function getProcessKindFromDescription(description) {
+    if (!description) { return ''; }
+    if (description.indexOf('Reading ') === 0) { return 'reading'; }
+    if (description.indexOf('Editing ') === 0) { return 'modifying'; }
+    if (description.indexOf('Creating ') === 0) { return 'creating'; }
+    if (description.indexOf('Listing ') === 0) { return 'listing'; }
+    return '';
+  }
+
+  function getProcessLabelFromDescription(processKind, description) {
+    var text = String(description || '').trim();
+    if (!text) { return ''; }
+    switch (processKind) {
+      case 'reading':
+        return text.replace(/^Reading\s+/, '').trim();
+      case 'modifying':
+        return text.replace(/^Editing\s+/, '').trim();
+      case 'creating':
+        return text.replace(/^Creating\s+/, '').trim();
+      case 'listing':
+        return text.replace(/^Listing\s+/, '').trim();
+      default:
+        return text;
+    }
+  }
+
+  function getThinkingLabelFromElement(thinkingEl) {
+    var descEl = thinkingEl.querySelector('.step-desc');
+    var text = descEl ? String(descEl.textContent || '').trim() : '';
+    return text.replace(/^Thought for\s+/, '').trim() || text;
+  }
+
+  function createProcessGroupsState() {
+    return {
+      thinking: { key: 'thinking', title: '思考', icon: '🧠', items: [], itemMap: {} },
+      listing: { key: 'listing', title: '列目录', icon: '📁', items: [], itemMap: {} },
+      reading: { key: 'reading', title: '读取', icon: '📖', items: [], itemMap: {} },
+      modifying: { key: 'modifying', title: '修改', icon: '✏️', items: [], itemMap: {} },
+      creating: { key: 'creating', title: '创建', icon: '🆕', items: [], itemMap: {} },
+      undoing: { key: 'undoing', title: '撤销', icon: '↩', items: [], itemMap: {} },
+      failed: { key: 'failed', title: '失败', icon: '⚠', items: [], itemMap: {} },
+    };
+  }
+
+  function getProcessItemStateWeight(state) {
+    switch (state) {
+      case 'error':
+        return 3;
+      case 'done':
+        return 2;
+      default:
+        return 1;
+    }
+  }
+
+  function addProcessGroupItem(group, label, state) {
+    var text = String(label || '').trim();
+    if (!text) { return; }
+
+    var item = group.itemMap[text];
+    if (!item) {
+      item = { text: text, state: state || 'done' };
+      group.itemMap[text] = item;
+      group.items.push(item);
+      return;
+    }
+
+    if (getProcessItemStateWeight(state) >= getProcessItemStateWeight(item.state)) {
+      item.state = state || item.state;
+    }
+  }
+
+  function getSummaryFileLabel(summaryId, filePath) {
+    var files = summaryFilesStore[summaryId] || [];
+    var matched = null;
+    var i;
+    for (i = 0; i < files.length; i += 1) {
+      if (files[i].path === filePath) {
+        matched = files[i];
+        break;
+      }
+    }
+
+    var label = matched ? (matched.displayPath || matched.path) : filePath;
+    return label.split(/[/\\]/).pop() || label;
+  }
+
+  function rememberUndoIntent(summaryId, filePath) {
+    if (!summaryUndoIntentStore[summaryId]) {
+      summaryUndoIntentStore[summaryId] = {
+        files: [],
+        fileMap: {},
+      };
+    }
+
+    var undoState = summaryUndoIntentStore[summaryId];
+    var files = [];
+    var i;
+
+    if (filePath) {
+      files.push(getSummaryFileLabel(summaryId, filePath));
+    } else {
+      var summaryFiles = summaryFilesStore[summaryId] || [];
+      for (i = 0; i < summaryFiles.length; i += 1) {
+        files.push(summaryFiles[i].displayPath || summaryFiles[i].path);
+      }
+    }
+
+    for (i = 0; i < files.length; i += 1) {
+      var label = String(files[i] || '').split(/[/\\]/).pop() || String(files[i] || '');
+      if (!label || undoState.fileMap[label]) { continue; }
+      undoState.fileMap[label] = true;
+      undoState.files.push(label);
+    }
+  }
+
+  function buildProcessGroupsForMessage(messageId, existingSections) {
+    var sections = existingSections || getStepSections(messageId);
+    if (!sections) { return null; }
+
+    var groups = createProcessGroupsState();
+    var thinkingEls = sections.linesEl.querySelectorAll('.step-thinking');
+    Array.prototype.forEach.call(thinkingEls, function (thinkingEl) {
+      addProcessGroupItem(groups.thinking, getThinkingLabelFromElement(thinkingEl), 'done');
+    });
+
+    var stepEls = sections.linesEl.querySelectorAll('.step-item');
+    Array.prototype.forEach.call(stepEls, function (stepEl) {
+      var descEl = stepEl.querySelector('.step-desc');
+      var description = descEl ? String(descEl.textContent || '').trim() : '';
+      var itemState = stepEl.classList.contains('step-error')
+        ? 'error'
+        : (stepEl.classList.contains('step-running') ? 'running' : 'done');
+
+      if (itemState === 'error') {
+        addProcessGroupItem(groups.failed, description, 'error');
+        return;
+      }
+
+      var processKind = getProcessKindFromDescription(description);
+      var processLabel = getProcessLabelFromDescription(processKind, description);
+      if (!processKind || !groups[processKind]) { return; }
+      addProcessGroupItem(groups[processKind], processLabel, itemState);
+    });
+
+    var summaryEls = sections.detailsEl.querySelectorAll('.change-summary');
+    Array.prototype.forEach.call(summaryEls, function (summaryEl) {
+      var summaryId = summaryEl.getAttribute('data-summary-id') || '';
+      var statusEl = summaryEl.querySelector('.summary-status');
+      var statusText = statusEl ? String(statusEl.textContent || '').trim() : '';
+      if (!statusText) { return; }
+
+      if (statusText.indexOf('↩') === 0) {
+        var undoState = summaryUndoIntentStore[summaryId];
+        if (undoState && undoState.files.length > 0) {
+          Array.prototype.forEach.call(undoState.files, function (fileLabel) {
+            addProcessGroupItem(groups.undoing, fileLabel, 'done');
+          });
+        } else {
+          addProcessGroupItem(groups.undoing, statusText, 'done');
+        }
+        return;
+      }
+
+      if (
+        statusEl.classList.contains('summary-failed') ||
+        statusEl.classList.contains('summary-partial')
+      ) {
+        addProcessGroupItem(groups.failed, statusText, 'error');
+      }
+    });
+
+    return {
+      sections: sections,
+      groups: groups,
+    };
+  }
+
+  function renderProcessGroups(groups) {
+    var groupOrder = ['thinking', 'listing', 'reading', 'modifying', 'creating', 'undoing', 'failed'];
+    var html = '';
+
+    Array.prototype.forEach.call(groupOrder, function (groupKey) {
+      var group = groups[groupKey];
+      if (!group || group.items.length === 0) { return; }
+
+      var itemsHtml = group.items.map(function (item) {
+        return '<span class="process-group-item" data-state="' + escapeHtml(item.state) + '">' + escapeHtml(item.text) + '</span>';
+      }).join('');
+
+      html +=
+        '<div class="process-group-card" data-group="' + escapeHtml(group.key) + '">' +
+          '<div class="process-group-header">' +
+            '<span class="process-group-icon">' + group.icon + '</span>' +
+            '<span class="process-group-title">' + escapeHtml(group.title) + '</span>' +
+            '<span class="process-group-count">' + group.items.length + '</span>' +
+          '</div>' +
+          '<div class="process-group-items">' + itemsHtml + '</div>' +
+        '</div>';
+    });
+
+    return html;
+  }
+
+  function buildHistoryProcessSummaryText(summary) {
+    var parts = [];
+
+    if (summary && typeof summary.thinkingElapsedMs === 'number' && summary.thinkingElapsedMs > 1000) {
+      parts.push('思考 ' + formatElapsed(summary.thinkingElapsedMs));
+    }
+    if (summary.totalSteps > 0) {
+      parts.push('已执行 ' + summary.totalSteps + ' 步');
+    }
+    if (summary.readCount > 0) {
+      parts.push('读取 ' + summary.readCount);
+    }
+    if (summary.listCount > 0) {
+      parts.push('列目录 ' + summary.listCount);
+    }
+    if (summary.modifyCount > 0) {
+      parts.push('修改 ' + summary.modifyCount);
+    }
+    if (summary.createCount > 0) {
+      parts.push('创建 ' + summary.createCount);
+    }
+    if (summary.changedFiles && summary.changedFiles.length > 0) {
+      parts.push('改动 ' + summary.changedFiles.length + ' 个文件');
+    }
+    if (summary.failedCount > 0) {
+      parts.push('失败 ' + summary.failedCount + ' 步');
+    }
+
+    return parts.join(' · ') || '查看过程摘要';
+  }
+
+  function buildHistoryProcessMetricItems(summary) {
+    var items = [];
+
+    if (summary && typeof summary.thinkingElapsedMs === 'number' && summary.thinkingElapsedMs > 1000) {
+      items.push({ label: '思考', value: formatElapsed(summary.thinkingElapsedMs) });
+    }
+    if (summary.readCount > 0) {
+      items.push({ label: '读取', value: summary.readCount });
+    }
+    if (summary.listCount > 0) {
+      items.push({ label: '列目录', value: summary.listCount });
+    }
+    if (summary.modifyCount > 0) {
+      items.push({ label: '修改', value: summary.modifyCount });
+    }
+    if (summary.createCount > 0) {
+      items.push({ label: '创建', value: summary.createCount });
+    }
+    if (summary.failedCount > 0) {
+      items.push({ label: '失败', value: summary.failedCount, danger: true });
+    }
+
+    return items;
+  }
+
+  function buildLiveProcessSummaryText(groups) {
+    var parts = [];
+
+    if (groups.thinking.items.length > 0) {
+      if (groups.thinking.items.length === 1) {
+        parts.push('思考 ' + groups.thinking.items[0].text);
+      } else {
+        parts.push('思考 ' + groups.thinking.items.length + ' 次');
+      }
+    }
+    if (groups.listing.items.length > 0) {
+      parts.push('列目录 ' + groups.listing.items.length);
+    }
+    if (groups.reading.items.length > 0) {
+      parts.push('读取 ' + groups.reading.items.length);
+    }
+    if (groups.modifying.items.length > 0) {
+      parts.push('修改 ' + groups.modifying.items.length);
+    }
+    if (groups.creating.items.length > 0) {
+      parts.push('创建 ' + groups.creating.items.length);
+    }
+    if (groups.undoing.items.length > 0) {
+      parts.push('撤销 ' + groups.undoing.items.length);
+    }
+    if (groups.failed.items.length > 0) {
+      parts.push('失败 ' + groups.failed.items.length);
+    }
+
+    return parts.join(' · ') || '执行过程';
+  }
+
+  function decorateProcessPanelSummaryText(summaryText, isComplete) {
+    var normalizedText = String(summaryText || '').trim();
+    if (!normalizedText || normalizedText === '执行过程') {
+      return isComplete ? '已完成' : '处理中';
+    }
+
+    return (isComplete ? '已完成 · ' : '处理中 · ') + normalizedText;
+  }
+
+  function refreshProcessPanel(messageId, processState) {
+    var resolvedState = processState || buildProcessGroupsForMessage(messageId);
+    var sections = resolvedState ? resolvedState.sections : getStepSections(messageId);
+    if (!sections) { return; }
+
+    var storedSummary = processSummaryStore[messageId];
+    var prefixEl = sections.headerEl.querySelector('.process-panel-toggle-prefix');
+    var summaryEl = sections.headerEl.querySelector('.process-panel-toggle-summary');
+    var rawSummaryText = storedSummary
+      ? buildHistoryProcessSummaryText(storedSummary)
+      : (resolvedState ? buildLiveProcessSummaryText(resolvedState.groups) : '执行过程');
+    var isComplete = !!storedSummary || sections.container.classList.contains('process-panel-complete');
+    var summaryText = decorateProcessPanelSummaryText(rawSummaryText, isComplete);
+    var hasContent = sections.linesEl.children.length > 0
+      || sections.groupsEl.children.length > 0
+      || sections.detailsEl.children.length > 0;
+
+    if (prefixEl) {
+      prefixEl.textContent = '执行过程';
+    }
+    if (summaryEl) {
+      summaryEl.textContent = summaryText;
+    }
+
+    sections.container.style.display = hasContent ? '' : 'none';
+    sections.container.classList.toggle('process-panel-history', !!storedSummary);
+  }
+
+  function refreshProcessGroups(messageId) {
+    var processState = buildProcessGroupsForMessage(messageId);
+    if (!processState) { return; }
+    processState.sections.groupsEl.innerHTML = renderProcessGroups(processState.groups);
+    refreshProcessPanel(messageId, processState);
+  }
+
+  function markProcessComplete(messageId) {
+    if (!messageId) {
+      return;
+    }
+
+    clearProcessCollapseTimer(messageId);
+    processCollapseTimers[messageId] = setTimeout(function () {
+      delete processCollapseTimers[messageId];
+      var existingSections = findStepSections(messageId);
+      if (!existingSections) { return; }
+
+      var processState = buildProcessGroupsForMessage(messageId, existingSections);
+      var sections = processState ? processState.sections : existingSections;
+      if (!sections) { return; }
+
+      ensureExecutionLayout(messageId, { preserveExistingContent: true, completed: true });
+      sections.container.classList.add('process-panel-complete');
+      refreshProcessPanel(messageId, processState);
+      if (sections.container.style.display === 'none') {
+        return;
+      }
+
+      setProcessPanelCollapsed(sections.container, false);
+    }, 140);
+  }
+
+  function showHistoryProcessSummary(data) {
+    if (!data || !data.summary) {
+      return;
+    }
+
+    var sections = getStepSections(data.messageId);
+    if (!sections) { return; }
+
+    ensureExecutionLayout(data.messageId, { preserveExistingContent: true, completed: true });
+
+    var existingSummaryEl = sections.detailsEl.querySelector('.history-process-card');
+    if (existingSummaryEl) {
+      existingSummaryEl.remove();
+    }
+
+    var metricItems = buildHistoryProcessMetricItems(data.summary);
+    var metricHtml = metricItems.map(function (item) {
+      return '<span class="history-process-chip' + (item.danger ? ' danger' : '') + '">' +
+        '<span class="history-process-chip-label">' + escapeHtml(item.label) + '</span>' +
+        '<span class="history-process-chip-value">' + escapeHtml(String(item.value)) + '</span>' +
+      '</span>';
+    }).join('');
+    var filesHtml = '';
+
+    if (data.summary.changedFiles && data.summary.changedFiles.length > 0) {
+      filesHtml =
+        '<div class="history-process-files">' +
+          '<div class="history-process-section-title">改动文件</div>' +
+          '<div class="history-process-file-list">' +
+            data.summary.changedFiles.map(function (filePath) {
+              return '<span class="history-process-file" title="' + escapeHtml(filePath) + '">' + escapeHtml(filePath) + '</span>';
+            }).join('') +
+          '</div>' +
+        '</div>';
+    }
+
+    var summaryEl = document.createElement('div');
+    summaryEl.className = 'history-process-card';
+    summaryEl.innerHTML =
+      '<div class="history-process-section">' +
+        '<div class="history-process-section-title">过程摘要</div>' +
+        '<div class="history-process-metrics">' + metricHtml + '</div>' +
+      '</div>' +
+      filesHtml;
+
+    sections.detailsEl.appendChild(summaryEl);
+    processSummaryStore[data.messageId] = data.summary;
+    refreshProcessPanel(data.messageId);
+    sections.container.classList.add('process-panel-complete');
+    setProcessPanelCollapsed(sections.container, true);
+    scrollToBottom();
+  }
+
+  function addStep(data) {
+    var sections = getStepSections(data.messageId);
+    if (!sections) { return; }
+    activateProcessPanel(data.messageId, sections);
 
     var stepEl = document.createElement('div');
     stepEl.className = 'step-item step-' + data.status;
@@ -71,7 +764,8 @@
       '<div class="step-desc">' + escapeHtml(data.description) + '</div>' +
       '<div class="step-elapsed"></div>';
 
-    container.appendChild(stepEl);
+    sections.linesEl.appendChild(stepEl);
+    refreshProcessGroups(data.messageId);
     scrollToBottom();
   }
 
@@ -111,6 +805,10 @@
       }
     }
 
+    var messageId = getMessageIdByElement(stepEl);
+    if (messageId) {
+      refreshProcessGroups(messageId);
+    }
     scrollToBottom();
   }
 
@@ -139,8 +837,13 @@
    * @param {object} data { messageId, elapsed }
    */
   function showThinkingComplete(data) {
-    var container = getOrCreateStepsContainer(data.messageId);
-    if (!container) { return; }
+    if (!data || data.isExecutionMessage !== true) {
+      return;
+    }
+
+    var sections = getStepSections(data.messageId);
+    if (!sections) { return; }
+    activateProcessPanel(data.messageId, sections);
 
     // 在步骤容器最前面插入 Thinking 行
     var thinkingEl = document.createElement('div');
@@ -153,7 +856,8 @@
       '<button class="step-toggle" title="展开/折叠">›</button>';
 
     // 插入到步骤容器的最前面
-    container.insertBefore(thinkingEl, container.firstChild);
+    sections.linesEl.insertBefore(thinkingEl, sections.linesEl.firstChild);
+    refreshProcessGroups(data.messageId);
     scrollToBottom();
   }
 
@@ -167,6 +871,12 @@
   function showDiff(data) {
     var stepEl = document.querySelector('[data-step-id="' + data.stepId + '"]');
     if (!stepEl) { return; }
+
+    var messageId = getMessageIdByElement(stepEl);
+    var sections = messageId ? getStepSections(messageId) : null;
+    if (messageId && sections) {
+      activateProcessPanel(messageId, sections);
+    }
 
     var existingDiffEl = document.querySelector('.diff-block[data-step-id="' + data.stepId + '"]');
     if (existingDiffEl) {
@@ -193,19 +903,6 @@
       : '';
 
     var actionsHtml = '';
-    if (data.needsConfirm) {
-      var readOnlyHintHtml = data.readOnly
-        ? '<span class="diff-readonly-hint">历史记录只读</span>'
-        : '';
-      var disabledAttr = data.readOnly ? ' disabled' : '';
-      actionsHtml =
-        '<div class="diff-actions">' +
-          '<span class="diff-summary">1 file ' + statsHtml + '</span>' +
-          readOnlyHintHtml +
-          '<button class="diff-btn diff-btn-reject" data-step-id="' + data.stepId + '"' + disabledAttr + '>Reject</button>' +
-          '<button class="diff-btn diff-btn-accept" data-step-id="' + data.stepId + '"' + disabledAttr + '>Accept</button>' +
-        '</div>';
-    }
 
     diffEl.innerHTML =
       '<div class="diff-header">' +
@@ -218,8 +915,11 @@
       '<div class="diff-content">' + diffContentHtml + '</div>' +
       actionsHtml;
 
-    // 插入到步骤元素后面
-    stepEl.parentNode.insertBefore(diffEl, stepEl.nextSibling);
+    if (sections) {
+      sections.detailsEl.appendChild(diffEl);
+    } else {
+      stepEl.parentNode.insertBefore(diffEl, stepEl.nextSibling);
+    }
 
     // 绑定折叠按钮事件
     var toggleBtn = diffEl.querySelector('.diff-toggle');
@@ -924,33 +1624,8 @@
    * 绑定 Diff 区域的 Accept/Reject 按钮事件
    */
   function bindDiffActions(diffEl, stepId) {
-    var acceptBtn = diffEl.querySelector('.diff-btn-accept');
-    var rejectBtn = diffEl.querySelector('.diff-btn-reject');
-
-    if (acceptBtn) {
-      acceptBtn.addEventListener('click', function () {
-        if (window.vscodeApi) {
-          window.vscodeApi.postMessage({ type: 'acceptChange', stepId: stepId });
-        }
-        // 更新 UI 状态
-        var actionsEl = diffEl.querySelector('.diff-actions');
-        if (actionsEl) {
-          actionsEl.innerHTML = '<span class="diff-accepted">✓ 已接受</span>';
-        }
-      });
-    }
-
-    if (rejectBtn) {
-      rejectBtn.addEventListener('click', function () {
-        if (window.vscodeApi) {
-          window.vscodeApi.postMessage({ type: 'rejectChange', stepId: stepId });
-        }
-        // 更新 UI 状态
-        var actionsEl = diffEl.querySelector('.diff-actions');
-        if (actionsEl) {
-          actionsEl.innerHTML = '<span class="diff-rejected">✗ 已拒绝</span>';
-        }
-      });
+    if (!diffEl || !stepId) {
+      return;
     }
   }
 
@@ -1029,38 +1704,64 @@
     }
 
     viewBtn.addEventListener('click', function () {
-      toggleSummaryDiffs(summaryId);
-      updateSummaryViewButtons(summaryId);
-      scrollToBottom();
+      // 待确认状态：用内联 diff 让用户审阅后再 Accept/Reject
+      // 已应用状态：在 IDE 中直接打开文件，体验更好
+      var isPending = summaryEl.classList.contains('change-summary-pending');
+
+      if (isPending) {
+        toggleSummaryDiffs(summaryId);
+        updateSummaryViewButtons(summaryId);
+        scrollToBottom();
+      } else {
+        var storedFiles = summaryFilesStore[summaryId] || [];
+        // 只打开写入/创建类文件，忽略只读和目录列举操作
+        var writeFiles = storedFiles.filter(function (f) {
+          return f.status === 'created' || f.status === 'modified';
+        });
+        if (writeFiles.length > 0 && window.vscodeApi) {
+          window.vscodeApi.postMessage({
+            type: 'openFilesInIde',
+            files: writeFiles.map(function (f) {
+              return { path: f.path, status: f.status };
+            })
+          });
+        }
+      }
     });
   }
 
   function setSummaryStatusState(summaryEl, summaryId, statusClass, statusText) {
-    var actionsEl = summaryEl.querySelector('.summary-actions');
-    if (!actionsEl) { return; }
-
-    actionsEl.innerHTML =
-      '<button class="summary-btn summary-btn-view">View all changes</button>' +
-      '<span class="' + statusClass + '">' + statusText + '</span>';
+    // 只更新专用的状态文字 span，不替换整个 .summary-actions
+    // 这样 [↩ Undo all] 按钮不会被覆盖掉
+    var statusEl = summaryEl.querySelector('.summary-status');
+    if (statusEl) {
+      statusEl.className = 'summary-status ' + statusClass;
+      statusEl.textContent = statusText;
+    }
 
     summaryEl.classList.remove('change-summary-pending');
     bindSummaryViewButton(summaryEl, summaryId);
     updateSummaryViewButtons(summaryId);
-  }
 
-  function setSummaryDecisionState(summaryEl, summaryId, accepted) {
-    var statusClass = accepted ? 'summary-applying' : 'summary-rejected';
-    var statusText = accepted ? 'Applying changes...' : 'Rejecting changes...';
-    setSummaryStatusState(summaryEl, summaryId, statusClass, statusText);
+    // 撤销完成后隐藏所有 Undo 入口，防止重复撤销
+    var isUndone = statusClass === 'summary-undone' || statusClass === 'summary-partial';
+    if (isUndone && statusText.indexOf('\u21a9') === 0) {
+      var undoAllBtn = summaryEl.querySelector('.summary-btn-undo');
+      if (undoAllBtn) { undoAllBtn.style.display = 'none'; }
+      var fileUndoBtns = summaryEl.querySelectorAll('.file-btn-undo');
+      Array.prototype.forEach.call(fileUndoBtns, function (btn) {
+        btn.style.display = 'none';
+      });
+    }
   }
 
   function getSummaryStatusClass(status) {
     switch (status) {
-      case 'applying': return 'summary-applying';
       case 'accepted': return 'summary-accepted';
       case 'partial': return 'summary-partial';
       case 'failed': return 'summary-failed';
-      case 'rejected': return 'summary-rejected';
+      case 'undone': return 'summary-undone';
+      case 'partial-undone': return 'summary-partial';
       case 'cancelled': return 'summary-cancelled';
       default: return 'summary-cancelled';
     }
@@ -1070,15 +1771,15 @@
     var summaryEls = document.querySelectorAll('.change-summary[data-summary-id="' + data.summaryId + '"]');
     Array.prototype.forEach.call(summaryEls, function (summaryEl) {
       setSummaryStatusState(summaryEl, data.summaryId, getSummaryStatusClass(data.status), data.text);
+      var messageId = getMessageIdByElement(summaryEl);
+      if (messageId) {
+        refreshProcessGroups(messageId);
+      }
     });
   }
 
   function cancelPendingChangeSummaries() {
-    var summaryEls = document.querySelectorAll('.change-summary.change-summary-pending[data-summary-id]');
-    Array.prototype.forEach.call(summaryEls, function (summaryEl) {
-      var summaryId = summaryEl.getAttribute('data-summary-id') || '';
-      setSummaryStatusState(summaryEl, summaryId, 'summary-cancelled', '✗ Cancelled');
-    });
+    // 新架构下不再有待确认的汇总面板，保留此函数是为了兼容 chat.js 调用
   }
 
   /**
@@ -1087,6 +1788,7 @@
    */
   function cancelAllRunningSteps() {
     var runningSteps = document.querySelectorAll('.step-item.step-running');
+    var completedMessageMap = {};
     Array.prototype.forEach.call(runningSteps, function (stepEl) {
       stepEl.className = 'step-item step-error';
       var iconEl = stepEl.querySelector('.step-icon');
@@ -1100,50 +1802,83 @@
           descEl.textContent = currentText + ' (已取消)';
         }
       }
+
+      var messageId = getMessageIdByElement(stepEl);
+      if (messageId) {
+        refreshProcessGroups(messageId);
+        completedMessageMap[messageId] = true;
+      }
+    });
+
+    Object.keys(completedMessageMap).forEach(function (messageId) {
+      markProcessComplete(messageId);
     });
   }
 
-  function bindBatchSummaryActions(summaryEl, data) {
-    bindSummaryViewButton(summaryEl, data.summaryId);
-
-    var acceptBtn = summaryEl.querySelector('.summary-btn-accept');
-    var rejectBtn = summaryEl.querySelector('.summary-btn-reject');
-
-    if (data.readOnly) {
-      if (acceptBtn) { acceptBtn.disabled = true; }
-      if (rejectBtn) { rejectBtn.disabled = true; }
-      return;
-    }
-
-    if (acceptBtn) {
-      acceptBtn.addEventListener('click', function () {
+  /**
+   * 绑定汇总面板的 Undo all 和单文件 ↩ 按钮
+   * Undo all → 通知后端撤销本轮所有写文件操作
+   * 单文件 ↩  → 通知后端撤销指定文件
+   */
+  function bindUndoButtons(summaryEl, summaryId) {
+    var undoAllBtn = summaryEl.querySelector('.summary-btn-undo');
+    var isReadOnly = summaryEl.getAttribute('data-read-only') === 'true';
+    if (undoAllBtn) {
+      if (isReadOnly) {
+        undoAllBtn.disabled = true;
+        undoAllBtn.title = '历史记录只读';
+      }
+      undoAllBtn.addEventListener('click', function () {
+        if (isReadOnly) { return; }
+        rememberUndoIntent(summaryId, '');
         if (window.vscodeApi) {
-          window.vscodeApi.postMessage({ type: 'acceptAllChanges', summaryId: data.summaryId });
+          window.vscodeApi.postMessage({ type: 'undoAllChanges', summaryId: summaryId });
         }
-        setSummaryDecisionState(summaryEl, data.summaryId, true);
       });
     }
 
-    if (rejectBtn) {
-      rejectBtn.addEventListener('click', function () {
-        if (window.vscodeApi) {
-          window.vscodeApi.postMessage({ type: 'rejectAllChanges', summaryId: data.summaryId });
+    var fileUndoBtns = summaryEl.querySelectorAll('.file-btn-undo');
+    Array.prototype.forEach.call(fileUndoBtns, function (btn) {
+      if (isReadOnly) {
+        btn.disabled = true;
+        btn.title = '历史记录只读';
+      }
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (isReadOnly) { return; }
+        var filePath = btn.getAttribute('data-file-path');
+        if (filePath) {
+          rememberUndoIntent(summaryId, filePath);
         }
-        setSummaryDecisionState(summaryEl, data.summaryId, false);
+        if (filePath && window.vscodeApi) {
+          window.vscodeApi.postMessage({ type: 'undoFileChange', filePath: filePath, summaryId: summaryId });
+        }
+        // 视觉反馈：按钮灰显，防止重复点击
+        btn.disabled = true;
+        btn.textContent = '↩…';
       });
-    }
+    });
   }
 
   // ==================== 变更汇总 ====================
 
   /**
-   * 显示文件变更汇总
-   * 
-   * @param {object} data { messageId, files: [{ path, additions, deletions, status }] }
+   * 显示文件变更汇总（只读面板 + Undo 入口）
+   * 文件已立即写入磁盘，此面板仅用于展示和撤销，不再需要 Accept/Reject
+   *
+   * @param {object} data { messageId, summaryId, needsConfirm, files: [{ path, displayPath, additions, deletions, status }] }
    */
   function showChangeSummary(data) {
-    var container = getOrCreateStepsContainer(data.messageId);
-    if (!container) { return; }
+    var sections = getStepSections(data.messageId);
+    if (!sections) { return; }
+    var keepCompletedState = sections.container.classList.contains('process-panel-complete');
+    if (keepCompletedState) {
+      ensureExecutionLayout(data.messageId, { preserveExistingContent: true, completed: true });
+    } else {
+      activateProcessPanel(data.messageId, sections);
+    }
+
+    summaryFilesStore[data.summaryId] = data.files;
 
     var existingSummaryEl = document.querySelector('.change-summary[data-summary-id="' + data.summaryId + '"]');
     if (existingSummaryEl) {
@@ -1151,7 +1886,7 @@
     }
 
     var summaryEl = document.createElement('div');
-    summaryEl.className = data.needsConfirm ? 'change-summary change-summary-pending' : 'change-summary';
+    summaryEl.className = 'change-summary';
     summaryEl.setAttribute('data-summary-id', data.summaryId);
     if (data.readOnly) {
       summaryEl.setAttribute('data-read-only', 'true');
@@ -1159,12 +1894,15 @@
 
     var totalAdd = 0;
     var totalDel = 0;
-    var fileRows = '';
-    var fileCountLabel = data.files.length + ' file' + (data.files.length > 1 ? 's' : '');
-
     data.files.forEach(function (file) {
       totalAdd += file.additions;
       totalDel += file.deletions;
+    });
+    var fileCountLabel = data.files.length + ' file' + (data.files.length > 1 ? 's' : '');
+
+    // 构建文件行 HTML：写操作文件带单文件 ↩ 撤销按钮
+    var fileRowsHtml = '';
+    data.files.forEach(function (file) {
       var fileName = file.displayPath || file.path;
       var statusIcon = getFileStatusIcon(file.status);
       var statsHtml = '';
@@ -1174,12 +1912,22 @@
       if (file.additions > 0) { statsHtml += '<span class="diff-add">+' + file.additions + '</span> '; }
       if (file.deletions > 0) { statsHtml += '<span class="diff-del">-' + file.deletions + '</span>'; }
 
-      fileRows +=
-        '<div class="summary-file">' +
+      var isWriteFile = file.status === 'created' || file.status === 'modified';
+      var pathAttr = ' data-file-path="' + escapeHtml(file.path) + '"';
+      var statusAttr = ' data-file-status="' + file.status + '"';
+
+      // 写操作文件右侧显示单文件 ↩ 撤销按钮
+      var fileActionsHtml = isWriteFile
+        ? '<span class="summary-file-actions"><button class="file-btn file-btn-undo" title="撤销此文件" data-file-path="' + escapeHtml(file.path) + '">↩</button></span>'
+        : '';
+
+      fileRowsHtml +=
+        '<div class="summary-file' + (isWriteFile ? ' summary-file-write' : '') + '"' + pathAttr + statusAttr + '>' +
           '<div class="summary-file-row">' +
             '<span class="summary-icon">' + statusIcon + '</span>' +
-            '<span class="summary-name" title="' + escapeHtml(fileName) + '">' + escapeHtml(fileName) + '</span>' +
+            '<span class="summary-name' + (isWriteFile ? ' summary-name-clickable' : '') + '" title="' + escapeHtml(fileName) + '">' + escapeHtml(fileName) + '</span>' +
             '<span class="summary-stats">' + statsHtml + '</span>' +
+            fileActionsHtml +
           '</div>' +
           issueHtml +
         '</div>';
@@ -1189,43 +1937,57 @@
     if (totalAdd > 0) { totalStats += '<span class="diff-add">+' + totalAdd + '</span> '; }
     if (totalDel > 0) { totalStats += '<span class="diff-del">-' + totalDel + '</span>'; }
 
-    if (data.needsConfirm) {
-      var summaryReadonlyHintHtml = data.readOnly
-        ? '<span class="summary-readonly-hint">历史记录只读</span>'
-        : '';
-      var summaryDisabledAttr = data.readOnly ? ' disabled' : '';
-      summaryEl.innerHTML =
-        '<div class="summary-bar">' +
-          '<div class="summary-primary">' +
-            '<span class="summary-count">' + fileCountLabel + '</span>' +
-            '<span class="summary-total-stats">' + totalStats + '</span>' +
-          '</div>' +
-          '<div class="summary-actions">' +
-            '<button class="summary-btn summary-btn-view" title="' + (data.readOnly ? '历史记录只读' : '查看全部变更') + '"' + (data.readOnly ? ' disabled' : '') + '>View all changes</button>' +
-            summaryReadonlyHintHtml +
-            '<button class="summary-btn summary-btn-reject"' + summaryDisabledAttr + '>Reject all</button>' +
-            '<button class="summary-btn summary-btn-accept"' + summaryDisabledAttr + '>Accept all</button>' +
-          '</div>' +
+    summaryEl.innerHTML =
+      '<div class="summary-bar">' +
+        '<div class="summary-primary">' +
+          '<span class="summary-count">' + fileCountLabel + '</span>' +
+          '<span class="summary-total-stats">' + totalStats + '</span>' +
+          '<span class="summary-status"></span>' +
         '</div>' +
-        '<div class="summary-files">' + fileRows + '</div>';
-
-      bindBatchSummaryActions(summaryEl, data);
-      updateSummaryViewButtons(data.summaryId);
-    } else {
-      summaryEl.innerHTML =
-        '<div class="summary-header">' +
-          '<span>' + fileCountLabel + '</span> ' +
-          totalStats +
+        '<div class="summary-actions">' +
+          '<button class="summary-btn summary-btn-view" title="' + (data.readOnly ? '历史记录只读' : '查看全部变更') + '"' + (data.readOnly ? ' disabled' : '') + '>View all changes</button>' +
+          '<button class="summary-btn summary-btn-undo"' + (data.readOnly ? ' title="历史记录只读" disabled' : '') + '>↩ Undo all</button>' +
         '</div>' +
-        '<div class="summary-files">' + fileRows + '</div>';
+      '</div>' +
+      '<div class="summary-files">' + fileRowsHtml + '</div>';
 
-      if (data.readOnly) {
-        bindSummaryViewButton(summaryEl, data.summaryId);
-      }
+    bindSummaryViewButton(summaryEl, data.summaryId);
+    bindUndoButtons(summaryEl, data.summaryId);
+    updateSummaryViewButtons(data.summaryId);
+    bindFileNameClicks(summaryEl);
+
+    sections.detailsEl.appendChild(summaryEl);
+    if (keepCompletedState) {
+      refreshProcessPanel(data.messageId);
+      setProcessPanelCollapsed(sections.container, true);
     }
-
-    container.appendChild(summaryEl);
     scrollToBottom();
+  }
+
+  /**
+   * 绑定文件名点击事件：在 IDE 中打开文件
+   */
+  function bindFileNameClicks(summaryEl) {
+    if (summaryEl.getAttribute('data-read-only') === 'true') {
+      return;
+    }
+    var nameEls = summaryEl.querySelectorAll('.summary-name-clickable');
+    Array.prototype.forEach.call(nameEls, function (nameEl) {
+      nameEl.addEventListener('click', function () {
+        var fileEl = nameEl.closest('.summary-file');
+        if (!fileEl) { return; }
+        var filePath = fileEl.getAttribute('data-file-path');
+        var status = fileEl.classList.contains('summary-file-write')
+          ? (fileEl.getAttribute('data-file-status') || 'modified')
+          : 'read';
+        if (filePath && window.vscodeApi) {
+          window.vscodeApi.postMessage({
+            type: 'openFilesInIde',
+            files: [{ path: filePath, status: status }],
+          });
+        }
+      });
+    });
   }
 
   /** 文件状态图标 */
@@ -1265,6 +2027,81 @@
 
   // ==================== 暴露给 chat.js 的接口 ====================
 
+  /**
+   * 清空 summaryFilesStore
+   * 应在清空对话或切换 session 时调用，防止内存泄漏
+   */
+  function clearStore() {
+    summaryFilesStore = {};
+    summaryUndoIntentStore = {};
+    processSummaryStore = {};
+    Object.keys(processCollapseTimers).forEach(function (messageId) {
+      clearTimeout(processCollapseTimers[messageId]);
+    });
+    processCollapseTimers = {};
+  }
+
+  function resetMessageState(messageId) {
+    if (!messageId) {
+      return;
+    }
+
+    clearProcessCollapseTimer(messageId);
+    delete processSummaryStore[messageId];
+
+    var messageEl = document.querySelector('[data-message-id="' + messageId + '"]');
+    if (!messageEl) {
+      return;
+    }
+
+    var contentEl = messageEl.querySelector('.message-content');
+    if (!contentEl) {
+      return;
+    }
+
+    var summaryEls = messageEl.querySelectorAll('.change-summary[data-summary-id]');
+    Array.prototype.forEach.call(summaryEls, function (summaryEl) {
+      var summaryId = summaryEl.getAttribute('data-summary-id') || '';
+      if (!summaryId) { return; }
+      delete summaryFilesStore[summaryId];
+      delete summaryUndoIntentStore[summaryId];
+    });
+
+    var resultPanelEl = contentEl.querySelector('.message-result-panel');
+    var bodyEl = contentEl.querySelector('.message-body');
+    if (!bodyEl && resultPanelEl) {
+      bodyEl = resultPanelEl.querySelector('.message-body');
+    }
+
+    if (bodyEl && bodyEl.parentNode !== contentEl) {
+      var referenceEl = contentEl.querySelector('.message-execution-hint')
+        || contentEl.querySelector('.history-process-summary')
+        || contentEl.querySelector('.steps-container')
+        || contentEl.querySelector('.stream-status')
+        || resultPanelEl;
+      if (referenceEl) {
+        contentEl.insertBefore(bodyEl, referenceEl);
+      } else {
+        contentEl.appendChild(bodyEl);
+      }
+    }
+
+    var removableSelectors = [
+      '.message-execution-hint',
+      '.message-result-panel',
+      '.steps-container',
+      '.history-process-summary'
+    ];
+    removableSelectors.forEach(function (selector) {
+      var nodes = contentEl.querySelectorAll(selector);
+      Array.prototype.forEach.call(nodes, function (node) {
+        node.remove();
+      });
+    });
+
+    messageEl.classList.remove('assistant-execution-layout');
+  }
+
   window.chatSteps = {
     addStep: addStep,
     updateStep: updateStep,
@@ -1274,7 +2111,11 @@
     updateChangeSummary: updateChangeSummary,
     cancelPendingChangeSummaries: cancelPendingChangeSummaries,
     cancelAllRunningSteps: cancelAllRunningSteps,
+    showHistoryProcessSummary: showHistoryProcessSummary,
+    markProcessComplete: markProcessComplete,
     getOrCreateStepsContainer: getOrCreateStepsContainer,
+    resetMessageState: resetMessageState,
+    clearStore: clearStore,
   };
 
 })();

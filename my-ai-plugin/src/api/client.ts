@@ -26,6 +26,8 @@ export interface ApiClientConfig {
   apiKey: string;
   /** 模型 ID，如 deepseek-chat */
   modelId: string;
+  /** 自定义 API 路径，默认 /v1/chat/completions */
+  apiPath: string;
   /** 最大回复 token 数 */
   maxTokens: number;
   /** 温度参数 */
@@ -95,7 +97,8 @@ export function sendStreamRequest(
   };
 
   const bodyStr = JSON.stringify(requestBody);
-  const url = new URL('/v1/chat/completions', config.baseUrl);
+  const apiPath = config.apiPath || '/v1/chat/completions';
+  const url = new URL(apiPath, config.baseUrl);
   const proxyUrl = getProxy();
 
   // 根据协议选择 http 或 https
@@ -106,6 +109,8 @@ export function sendStreamRequest(
     port: url.port || (url.protocol === 'https:' ? 443 : 80),
     path: url.pathname,
     method: 'POST',
+    // 绕过 VS Code 对 http.globalAgent 的 patch，避免代理干扰
+    agent: false as any,
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${config.apiKey}`,
@@ -116,16 +121,28 @@ export function sendStreamRequest(
 
   const proxyLabel = proxyUrl ? ` (代理: ${proxyUrl})` : '';
   info(`发起流式请求: ${config.modelId} → ${url.href}${proxyLabel}`);
+  info(`请求详情: hostname=${options.hostname}, port=${options.port}, path=${options.path}, protocol=${url.protocol}`);
 
   let fullContent = '';
   let aborted = false;
-  let done = false;
+  /**
+   * 终态互斥标志：onDone 和 onError 只有第一个调用生效
+   * 避免 req.destroy() 触发的 error 事件导致双重回调
+   */
+  let settled = false;
 
-  /** 确保 onDone 只被调用一次 */
+  /** 确保 onDone 只被调用一次，且不与 onError 并发 */
   function callOnDone(): void {
-    if (done) { return; }
-    done = true;
+    if (settled) { return; }
+    settled = true;
     onDone(fullContent);
+  }
+
+  /** 确保 onError 只被调用一次，且不与 onDone 并发 */
+  function callOnError(message: string): void {
+    if (settled) { return; }
+    settled = true;
+    onError(message);
   }
 
   /**
@@ -157,7 +174,9 @@ export function sendStreamRequest(
           errMsg = parseApiError(errorBody, statusCode);
         }
         logError(`API 请求失败 (${statusCode}): ${errMsg}`);
-        onError(errMsg);
+        logError(`响应体: ${errorBody || '(空)'}`);
+        logError(`请求目标: ${url.href}`);
+        callOnError(errMsg);
       });
       return;
     }
@@ -176,7 +195,7 @@ export function sendStreamRequest(
           if (fullContent) {
             callOnDone();
           } else {
-            onError('AI 响应超时（60 秒无数据），请重试');
+            callOnError('AI 响应超时（60 秒无数据），请重试');
           }
         }
       }, 60000);
@@ -257,19 +276,19 @@ export function sendStreamRequest(
 
     res.on('error', (err) => {
       logError('流式响应读取出错:', err.message);
-      onError(`流式响应读取出错: ${err.message}`);
+      callOnError(`流式响应读取出错: ${err.message}`);
     });
   });
 
   req.on('error', (err) => {
     logError('API 请求出错:', err.message);
-    onError(`连接 AI 服务失败: ${err.message}`);
+    callOnError(`连接 AI 服务失败: ${err.message}`);
   });
 
   // 设置超时（30 秒连接超时）
   req.setTimeout(30000, () => {
     req.destroy();
-    onError('连接 AI 服务超时（30 秒），请检查网络或 API 地址');
+    callOnError('连接 AI 服务超时（30 秒），请检查网络或 API 地址');
   });
 
   req.write(bodyStr);
@@ -325,7 +344,8 @@ function doHttpRequest(
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const bodyStr = JSON.stringify(body);
-    const url = new URL('/v1/chat/completions', config.baseUrl);
+    const apiPath = config.apiPath || '/v1/chat/completions';
+    const url = new URL(apiPath, config.baseUrl);
     const proxyUrl = getProxy();
     const transport = url.protocol === 'https:' ? https : http;
 
@@ -334,6 +354,8 @@ function doHttpRequest(
       port: url.port || (url.protocol === 'https:' ? 443 : 80),
       path: url.pathname,
       method: 'POST',
+      // 绕过 VS Code 对 http.globalAgent 的 patch，避免代理干扰
+      agent: false as any,
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${config.apiKey}`,
@@ -343,7 +365,7 @@ function doHttpRequest(
 
     function makeRequest(tunnelSocket?: Socket): void {
       const reqOptions = tunnelSocket
-        ? { ...options, socket: tunnelSocket, agent: false as any }
+        ? { ...options, socket: tunnelSocket }
         : options;
 
       const req = transport.request(reqOptions, (res) => {
@@ -432,8 +454,10 @@ function connectThroughProxy(
 function parseApiError(body: string, statusCode: number): string {
   try {
     const parsed = JSON.parse(body);
-    if (parsed.error?.message) {
-      return `API 错误 (${statusCode}): ${parsed.error.message}`;
+    // 兼容 OpenAI 格式 {error: {message}} 和 FastAPI 格式 {detail}
+    const msg = parsed.error?.message || parsed.detail || parsed.message;
+    if (msg) {
+      return `API 错误 (${statusCode}): ${msg}`;
     }
   } catch {
     // JSON 解析失败，使用原始文本

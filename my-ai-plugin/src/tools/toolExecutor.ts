@@ -19,8 +19,16 @@ export interface ToolExecutionResult {
 }
 
 /**
+ * 判断工具调用是否为只读操作（无副作用，可并行）
+ */
+function isReadOnlyToolCall(toolCall: ParsedToolCall): boolean {
+  return toolCall.type === 'read_file' || toolCall.type === 'list_dir';
+}
+
+/**
  * 批量执行工具调用
- * 按顺序依次执行，收集所有结果
+ * 策略：连续的只读操作（read_file/list_dir）并行执行，写操作串行执行
+ * 按原始顺序返回结果，保证结果与输入一一对应
  * 
  * @param toolCalls 解析后的工具调用数组
  * @param mode 当前工作模式，用于权限控制
@@ -30,11 +38,37 @@ export async function executeToolCalls(
   toolCalls: ParsedToolCall[],
   mode: WorkMode,
 ): Promise<ToolExecutionResult[]> {
-  const results: ToolExecutionResult[] = [];
+  const results: ToolExecutionResult[] = new Array(toolCalls.length);
 
-  for (const toolCall of toolCalls) {
-    const result = await executeSingleToolCall(toolCall, mode);
-    results.push({ toolCall, result });
+  // 将工具调用按"连续只读批次"和"单个写操作"分组，保留原始索引
+  let i = 0;
+  while (i < toolCalls.length) {
+    // 收集连续的只读操作，组成一个可并行的批次
+    const readBatchIndices: number[] = [];
+    while (i < toolCalls.length && isReadOnlyToolCall(toolCalls[i])) {
+      readBatchIndices.push(i);
+      i++;
+    }
+
+    // 并行执行这批只读操作
+    if (readBatchIndices.length > 0) {
+      const readPromises = readBatchIndices.map(async (idx) => {
+        const result = await executeSingleToolCall(toolCalls[idx], mode);
+        return { idx, result };
+      });
+      const readResults = await Promise.all(readPromises);
+      for (const { idx, result } of readResults) {
+        results[idx] = { toolCall: toolCalls[idx], result };
+      }
+      info(`并行执行 ${readBatchIndices.length} 个只读工具调用`);
+    }
+
+    // 串行执行下一个写操作（如果有的话）
+    if (i < toolCalls.length && !isReadOnlyToolCall(toolCalls[i])) {
+      const result = await executeSingleToolCall(toolCalls[i], mode);
+      results[i] = { toolCall: toolCalls[i], result };
+      i++;
+    }
   }
 
   return results;
@@ -97,10 +131,25 @@ export function formatToolResults(results: ToolExecutionResult[]): string {
   const lines = results.map(({ toolCall, result }) => {
     const status = result.success ? '✅ 成功' : '❌ 失败';
     const typeLabel = getToolTypeLabel(toolCall.type);
-    return `### ${typeLabel} ${toolCall.path}\n**${status}**\n\`\`\`\n${result.content}\n\`\`\``;
+    const safeContent = formatToolResultContent(toolCall, result.content);
+    return `### ${typeLabel} ${toolCall.path}\n**${status}**\n\`\`\`\n${safeContent}\n\`\`\``;
   });
 
   return lines.join('\n\n');
+}
+
+function formatToolResultContent(toolCall: ParsedToolCall, content: string): string {
+  const maxChars = toolCall.type === 'read_file'
+    ? 6000
+    : toolCall.type === 'list_dir'
+      ? 4000
+      : 2000;
+
+  if (content.length <= maxChars) {
+    return content;
+  }
+
+  return `${content.slice(0, maxChars)}\n...(工具结果已截断，原始长度 ${content.length} 字符)`;
 }
 
 /** 工具类型的中文标签 */

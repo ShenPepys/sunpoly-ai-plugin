@@ -1,8 +1,13 @@
 /**
  * 工具调用解析器
  * 
- * 解析 AI 回复中的 <tool_call>...</tool_call> XML 标签，
+ * 解析 AI 回复中的工具调用标签，
  * 提取出文件操作指令（read_file, write_file, edit_file, list_dir）。
+ * 
+ * 支持两种格式：
+ * 1. 带包裹：<tool_call><read_file path="..." /></tool_call>
+ * 2. 裸标签：<read_file path="..." />
+ * 兼容不同模型对格式指令的遵循程度差异。
  */
 
 /** 工具调用类型 */
@@ -27,27 +32,51 @@ export interface ParsedToolCall {
 /**
  * 从 AI 回复文本中解析所有工具调用
  * 
- * 支持的格式：
- * - <tool_call><read_file path="路径" /></tool_call>
- * - <tool_call><write_file path="路径">内容</write_file></tool_call>
- * - <tool_call><edit_file path="路径"><old>旧内容</old><new>新内容</new></edit_file></tool_call>
- * - <tool_call><list_dir path="路径" /></tool_call>
+ * 同时支持两种格式：
+ * 1. 带包裹：<tool_call><read_file path="路径" /></tool_call>
+ * 2. 裸标签：<read_file path="路径" />
+ * 
+ * 解析顺序：先匹配带包裹的，再匹配裸标签，避免重复
  * 
  * @param text AI 回复的完整文本
  * @returns 解析出的工具调用数组
  */
 export function parseToolCalls(text: string): ParsedToolCall[] {
   const results: ParsedToolCall[] = [];
+  // 记录已匹配的区间，避免裸标签与包裹标签重复匹配
+  const matchedRanges: Array<[number, number]> = [];
 
-  // 匹配所有 <tool_call>...</tool_call> 块
-  const toolCallRegex = /<tool_call>([\s\S]*?)<\/tool_call>/g;
+  // 第一轮：匹配带 <tool_call> 包裹的格式
+  const wrappedRegex = /<tool_call>([\s\S]*?)<\/tool_call>/g;
   let match: RegExpExecArray | null;
-
-  while ((match = toolCallRegex.exec(text)) !== null) {
+  while ((match = wrappedRegex.exec(text)) !== null) {
     const rawMatch = match[0];
     const inner = match[1].trim();
-
     const parsed = parseSingleToolCall(inner, rawMatch);
+    if (parsed) {
+      results.push(parsed);
+      matchedRanges.push([match.index, match.index + rawMatch.length]);
+    }
+  }
+
+  // 第二轮：匹配裸标签（不带 <tool_call> 包裹）
+  // 兼容部分模型不输出外层包裹的情况
+  const bareToolNames = ['read_file', 'write_file', 'edit_file', 'list_dir'];
+  const bareRegex = new RegExp(
+    `<(${bareToolNames.join('|')})[\\s>][\\s\\S]*?(?:\\/>|<\\/\\1>)`,
+    'g',
+  );
+  while ((match = bareRegex.exec(text)) !== null) {
+    const start = match.index;
+    const end = start + match[0].length;
+    // 跳过已被包裹格式匹配过的区间
+    const isAlreadyMatched = matchedRanges.some(
+      ([rStart, rEnd]) => start >= rStart && end <= rEnd,
+    );
+    if (isAlreadyMatched) { continue; }
+
+    const rawMatch = match[0];
+    const parsed = parseSingleToolCall(rawMatch, rawMatch);
     if (parsed) {
       results.push(parsed);
     }
@@ -100,16 +129,23 @@ function parseSingleToolCall(inner: string, rawMatch: string): ParsedToolCall | 
 
 /**
  * 检查文本中是否包含工具调用
- * 用于快速判断是否需要解析（避免不必要的正则匹配）
+ * 同时检测带包裹和裸标签两种格式
  */
 export function hasToolCalls(text: string): boolean {
-  return text.includes('<tool_call>');
+  if (text.includes('<tool_call>')) { return true; }
+  // 裸标签快速检测
+  return /<(?:read_file|write_file|edit_file|list_dir)\s/.test(text);
 }
 
 /**
- * 从文本中移除所有 <tool_call>...</tool_call> 标签
+ * 从文本中移除所有工具调用标签（包含包裹和裸标签）
  * 用于在界面上只显示 AI 的文字部分，不暴露原始 XML 给用户
  */
 export function stripToolCalls(text: string): string {
-  return text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '').trim();
+  let result = text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '');
+  // 移除裸标签
+  result = result.replace(/<(?:read_file|list_dir)\s+path\s*=\s*"[^"]+"\s*\/>/g, '');
+  result = result.replace(/<write_file\s+path\s*=\s*"[^"]+">[\s\S]*?<\/write_file>/g, '');
+  result = result.replace(/<edit_file\s+path\s*=\s*"[^"]+">[\s\S]*?<\/edit_file>/g, '');
+  return result.trim();
 }

@@ -10,6 +10,11 @@
   box-sizing: border-box;
 }
 
+html {
+  height: 100%;
+  overflow: hidden;
+}
+
 body {
   font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, sans-serif);
   font-size: var(--vscode-font-size, 13px);
@@ -25,128 +30,327 @@ body {
   flex-direction: column;
   height: 100vh;
   min-height: 0;
+  overflow: hidden;
 }
 
 
-/* ==================== 会话 Tab 标签条 ==================== */
+/* ==================== 内部子标签栏 ==================== */
 
-.session-tabs-bar {
+.internal-tabs-bar {
+  display: none;
+  flex-shrink: 0;
+  background: transparent;
+  padding: 6px 10px 2px;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  min-height: 38px;
+}
+
+.internal-tabs-bar.visible {
+  display: flex;
+}
+
+.internal-tabs-list {
   display: flex;
   align-items: center;
-  background: var(--vscode-editorGroupHeader-tabsBackground, #2d2d2d);
-  border-bottom: 1px solid var(--vscode-widget-border, #454545);
-  min-height: 32px;
-  flex-shrink: 0;
+  gap: 6px;
+  overflow-x: auto;
+  flex: 1;
+  min-width: 0;
+  padding: 2px 0 4px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.internal-tabs-list::-webkit-scrollbar {
+  display: none;
+}
+
+.internal-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px 0 12px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  color: var(--vscode-descriptionForeground, rgba(255,255,255,0.65));
+  border: 1px solid transparent;
+  background: transparent;
+  height: 28px;
+  min-width: 72px;
+  max-width: 200px;
+  transition: color 0.15s, border-color 0.15s, background 0.15s, box-shadow 0.15s;
+  user-select: none;
+}
+
+.internal-tab:hover {
+  color: var(--vscode-foreground, #fff);
+  background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.06));
+}
+
+.internal-tab.active {
+  color: var(--vscode-foreground, #fff);
+  background: var(--vscode-editorWidget-background, rgba(255,255,255,0.08));
+  border-color: var(--vscode-panel-border, rgba(255,255,255,0.12));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+}
+
+.internal-tab-label {
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.internal-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 12px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 999px;
+  opacity: 0;
+  flex-shrink: 0;
+  margin-right: -2px;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.internal-tab:hover .internal-tab-close,
+.internal-tab.active .internal-tab-close {
+  opacity: 0.65;
+}
+
+.internal-tab-close:hover {
+  opacity: 1 !important;
+  background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.1));
+}
+
+.internal-tab-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-left: 0;
+  font-size: 16px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--vscode-descriptionForeground, rgba(255,255,255,0.72));
+  cursor: pointer;
+  border-radius: 999px;
+  flex-shrink: 0;
+  align-self: center;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.internal-tab-add:hover {
+  color: var(--vscode-foreground, #fff);
+  background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.1));
+  border-color: var(--vscode-panel-border, rgba(255,255,255,0.08));
+}
+
+/* ==================== 会话启动器（历史会话列表） ==================== */
+
+.session-tabs-bar {
+  display: none;
+  flex-shrink: 0;
+}
+
+.session-tabs-bar.hidden {
+  display: none;
 }
 
 .session-tabs {
   display: flex;
-  flex: 1;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: none;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 40vh;
+  overflow-y: auto;
 }
 
-.session-tabs::-webkit-scrollbar {
-  display: none;
+.session-launcher-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 0 0;
 }
 
-.session-tab {
+.session-launcher-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 4px;
+}
+
+.session-launcher-heading {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--vscode-foreground);
+}
+
+.session-launcher-subtitle {
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground, #888);
+}
+
+.session-launcher-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.session-launcher-item {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 0 10px;
-  height: 32px;
-  min-width: 60px;
-  max-width: 140px;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--vscode-panel-border, #333);
+  background: var(--vscode-textBlockQuote-background, rgba(255, 255, 255, 0.05));
   cursor: pointer;
-  font-size: 12px;
-  color: var(--vscode-tab-inactiveForeground, #969696);
-  border-right: 1px solid var(--vscode-widget-border, #454545);
-  white-space: nowrap;
-  flex-shrink: 0;
-  transition: background 0.1s;
+  transition: border-color 0.15s, background 0.15s;
 }
 
-.session-tab:hover {
-  background: var(--vscode-tab-hoverBackground, rgba(255,255,255,0.06));
-  color: var(--vscode-tab-activeForeground, #fff);
+.session-launcher-item:hover {
+  border-color: var(--vscode-focusBorder, #007acc);
+  background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.06));
 }
 
-.session-tab.active {
-  background: var(--vscode-tab-activeBackground, #1e1e1e);
-  color: var(--vscode-tab-activeForeground, #fff);
-  border-bottom: 2px solid var(--vscode-tab-activeBorderTop, #007acc);
+.session-launcher-item.active {
+  border-color: var(--vscode-focusBorder, #007acc);
 }
 
-.session-tab-name {
+.session-launcher-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.session-launcher-title {
   overflow: hidden;
   text-overflow: ellipsis;
-  flex: 1;
-  min-width: 0;
-  user-select: none;
-}
-
-/* 删除按钮（小 × ） */
-.session-tab-close {
-  flex-shrink: 0;
-  width: 14px;
-  height: 14px;
-  border-radius: 2px;
-  border: none;
-  background: transparent;
-  color: var(--vscode-tab-inactiveForeground, #969696);
+  white-space: nowrap;
   font-size: 14px;
-  line-height: 14px;
-  text-align: center;
-  padding: 0;
-  cursor: pointer;
-  opacity: 0.5;
+  color: var(--vscode-foreground);
 }
 
-.session-tab:hover .session-tab-close,
-.session-tab.active .session-tab-close {
-  opacity: 0.8;
-}
-
-.session-tab-close:hover {
-  opacity: 1 !important;
-  background: rgba(255, 255, 255, 0.12);
-}
-
-/* 双击重命名时的内联 input */
-.session-tab-rename-input {
-  flex: 1;
-  min-width: 0;
-  background: var(--vscode-input-background, #3c3c3c);
-  color: var(--vscode-input-foreground, #ccc);
-  border: 1px solid var(--vscode-focusBorder, #007acc);
-  border-radius: 2px;
+.session-launcher-meta {
   font-size: 12px;
-  padding: 1px 4px;
-  outline: none;
+  color: var(--vscode-descriptionForeground, #888);
 }
 
-/* 新建会话按钮 + */
-.session-new-btn {
+.session-launcher-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   flex-shrink: 0;
-  width: 32px;
-  height: 32px;
-  border: none;
-  background: transparent;
-  color: var(--vscode-tab-inactiveForeground, #969696);
-  font-size: 18px;
-  line-height: 32px;
-  text-align: center;
-  cursor: pointer;
-  padding: 0;
-  border-left: 1px solid var(--vscode-widget-border, #454545);
 }
 
-.session-new-btn:hover {
-  background: var(--vscode-tab-hoverBackground, rgba(255,255,255,0.06));
-  color: var(--vscode-tab-activeForeground, #fff);
+.session-launcher-time {
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground, #888);
+  min-width: 32px;
+  text-align: right;
+}
+
+.session-launcher-actions {
+  display: flex;
+  gap: 6px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.session-launcher-item:hover .session-launcher-actions,
+.session-launcher-item.active .session-launcher-actions {
+  opacity: 1;
+}
+
+.session-launcher-btn {
+  border: 1px solid var(--vscode-panel-border, #454545);
+  background: var(--vscode-editorGroupHeader-tabsBackground, #252526);
+  color: var(--vscode-foreground);
+  border-radius: 999px;
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.session-launcher-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground, #444);
+}
+
+.session-launcher-btn.danger {
+  color: var(--vscode-errorForeground, #f14c4c);
+}
+
+.session-launcher-btn.ghost {
+  color: var(--vscode-descriptionForeground, #999);
+}
+
+.session-launcher-confirm {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
+
+.session-launcher-confirm-text {
+  font-size: 13px;
+  color: var(--vscode-foreground);
+}
+
+.session-launcher-confirm-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.session-launcher-empty {
+  padding: 14px 12px;
+  border-radius: 12px;
+  border: 1px dashed var(--vscode-panel-border, #454545);
+  color: var(--vscode-descriptionForeground, #888);
+  font-size: 13px;
+}
+
+/* 历史会话列表分页"显示更多"按钮 */
+.session-launcher-show-more {
+  display: block;
+  width: 100%;
+  padding: 10px 0;
+  border: 1px dashed var(--vscode-panel-border, #454545);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--vscode-textLink-foreground, #3794ff);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: center;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.session-launcher-show-more:hover {
+  background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.06));
+  border-color: var(--vscode-focusBorder, #007acc);
+}
+
+.session-new-btn {
+  min-width: auto;
+  padding: 0 10px;
+  font-size: 12px;
+  line-height: 28px;
 }
 
 /* ==================== 消息列表区域 ==================== */
@@ -154,14 +358,17 @@ body {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 12px 12px 16px;
   scroll-behavior: auto;
   overscroll-behavior-y: contain;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 
 /* 滚动条样式 */
 #messages::-webkit-scrollbar {
-  width: 6px;
+  display: none;
 }
 
 #messages::-webkit-scrollbar-thumb {
@@ -392,24 +599,48 @@ body {
   user-select: none;
 }
 
-.btn-copy-msg {
+.msg-action-btn {
   background: var(--vscode-editorGroupHeader-tabsBackground, #252526);
   border: 1px solid var(--vscode-panel-border, #454545);
   color: var(--vscode-descriptionForeground, #888);
-  padding: 2px 8px;
-  border-radius: 3px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 6px;
   cursor: pointer;
-  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
 }
 
-.btn-copy-msg:disabled {
+.msg-action-btn svg {
+  vertical-align: middle;
+}
+
+.btn-copy-msg:disabled,
+.msg-action-btn:disabled {
   opacity: 0.5;
   cursor: default;
 }
 
-.btn-copy-msg:hover:not(:disabled) {
+.msg-action-btn:hover:not(:disabled) {
   background: var(--vscode-button-secondaryHoverBackground, #444);
   color: var(--vscode-foreground);
+}
+
+.msg-action-btn:active {
+  transform: scale(0.96);
+}
+
+.btn-copy-msg.is-copied {
+  color: var(--vscode-testing-iconPassed, #73c991);
+  border-color: var(--vscode-testing-iconPassed, #73c991);
+}
+
+.btn-regen:hover:not(:disabled) {
+  color: var(--vscode-textLink-foreground, #4daafc);
+  border-color: var(--vscode-textLink-foreground, #4daafc);
 }
 
 .message[data-read-only="true"] .message-body a {
@@ -434,7 +665,9 @@ body {
   border-radius: 12px;
   line-height: 1.6;
   word-wrap: break-word;
-  overflow-wrap: break-word;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  overflow-x: hidden;
 }
 
 /* 用户气泡：蓝色系 */
@@ -449,6 +682,135 @@ body {
   background: var(--vscode-textBlockQuote-background, rgba(255, 255, 255, 0.05));
   border: 1px solid var(--vscode-panel-border, #333);
   border-radius: 12px 12px 12px 4px;
+}
+
+.message-execution-hint {
+  margin-bottom: 10px;
+  padding: 8px 72px 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--vscode-panel-border, rgba(255, 255, 255, 0.08));
+  background: var(--vscode-editorWidget-background, rgba(255, 255, 255, 0.03));
+  color: var(--vscode-descriptionForeground, #9aa0a6);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.message-execution-hint.is-running {
+  color: var(--vscode-descriptionForeground, #9aa0a6);
+}
+
+.message-execution-hint.is-complete {
+  color: var(--vscode-foreground);
+  border-color: rgba(115, 201, 145, 0.18);
+  background: rgba(115, 201, 145, 0.08);
+}
+
+.message-result-panel {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.message-result-title {
+  padding: 0 2px;
+  color: var(--vscode-descriptionForeground, #8b8f98);
+  font-size: 11px;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+}
+
+.assistant-execution-layout .message-result-panel .message-body {
+  margin: 0;
+}
+
+.history-process-summary {
+  margin-top: 8px;
+  border: 1px solid var(--vscode-panel-border, #333);
+  border-radius: 10px;
+  background: var(--vscode-editorWidget-background, rgba(255, 255, 255, 0.03));
+  overflow: hidden;
+}
+
+.history-process-toggle {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--vscode-foreground);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.history-process-toggle:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.05));
+}
+
+.history-process-toggle-text {
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground, #aaa);
+  line-height: 1.5;
+}
+
+.history-process-toggle-icon {
+  flex-shrink: 0;
+  color: var(--vscode-descriptionForeground, #999);
+  font-size: 11px;
+}
+
+.history-process-details {
+  padding: 0 10px 10px;
+}
+
+.history-process-details.collapsed {
+  display: none;
+}
+
+.history-process-section + .history-process-files {
+  margin-top: 10px;
+}
+
+.history-process-section-title {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground, #888);
+  margin-bottom: 6px;
+}
+
+.history-process-metrics,
+.history-process-file-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.history-process-chip,
+.history-process-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--vscode-panel-border, #444);
+  background: var(--vscode-editor-background, rgba(255, 255, 255, 0.04));
+  font-size: 11px;
+}
+
+.history-process-chip-label {
+  color: var(--vscode-descriptionForeground, #999);
+}
+
+.history-process-chip-value,
+.history-process-file {
+  color: var(--vscode-foreground);
+}
+
+.history-process-chip.danger {
+  border-color: var(--vscode-errorForeground, #f44);
+  color: var(--vscode-errorForeground, #f44);
 }
 
 /* ==================== Markdown 渲染样式 ==================== */
@@ -532,21 +894,26 @@ body {
   margin: 0;
   padding: 12px;
   background: var(--vscode-editor-background, #1e1e1e);
-  overflow-x: auto;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 .code-block-wrapper pre code {
+  display: block;
   font-family: var(--vscode-editor-font-family, 'Consolas', 'Courier New', monospace);
   font-size: var(--vscode-editor-font-size, 13px);
   line-height: 1.5;
   color: var(--vscode-editor-foreground);
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* 带行号的代码块布局 */
 .code-with-lines {
   display: flex;
   gap: 0;
+  max-width: 100%;
 }
 
 .line-numbers {
@@ -565,6 +932,11 @@ body {
   pointer-events: none;
 }
 
+.code-with-lines code {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 /* 语法高亮颜色（匹配 VS Code Dark+ 主题） */
 .hl-keyword { color: #569cd6; }
 .hl-string { color: #ce9178; }
@@ -577,12 +949,15 @@ body {
   border-collapse: collapse;
   margin: 10px 0;
   font-size: 13px;
+  table-layout: fixed;
 }
 
 .md-table th,
 .md-table td {
   border: 1px solid var(--vscode-panel-border, #333);
   padding: 6px 10px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .md-table th {
@@ -671,6 +1046,59 @@ body {
 }
 
 /* ==================== 输入区域 ==================== */
+.message-queue-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding: 7px 8px;
+  border: 1px solid var(--vscode-panel-border, rgba(255, 255, 255, 0.08));
+  border-radius: 8px;
+  background: var(--vscode-editorWidget-background, rgba(255, 255, 255, 0.03));
+}
+
+.message-queue-bar.hidden {
+  display: none;
+}
+
+.message-queue-text {
+  min-width: 0;
+  color: var(--vscode-descriptionForeground, #9aa0a6);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.message-queue-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.message-queue-btn {
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--vscode-foreground);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.message-queue-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.08));
+}
+
+.message-queue-btn.hidden {
+  display: none;
+}
+
+.message-queue-btn.ghost {
+  color: var(--vscode-descriptionForeground, #9aa0a6);
+}
+
 #input-area {
   position: relative;
   display: flex;
@@ -679,6 +1107,7 @@ body {
   flex-shrink: 0;
   background: var(--vscode-input-background, #2a2a2a);
   border: 1px solid var(--vscode-input-border, #3a3a3a);
+  border-top-color: transparent;
   border-radius: 10px;
   margin: 8px 10px 10px;
   transition: border-color 0.15s;
@@ -686,6 +1115,7 @@ body {
 
 #input-area:focus-within {
   border-color: var(--vscode-focusBorder, #007fd4);
+  border-top-color: transparent;
 }
 
 #user-input {
@@ -1217,16 +1647,28 @@ body {
   color: var(--vscode-errorForeground, #f44);
 }
 
-/* Token 计数显示 */
-.token-count {
-  font-size: 11px;
-  color: var(--vscode-descriptionForeground, #888);
-  white-space: nowrap;
-  user-select: none;
-}
+ /* Token 计数显示 */
+ .token-count {
+   font-size: 11px;
+   color: var(--vscode-descriptionForeground, #888);
+   white-space: nowrap;
+   user-select: none;
+   max-width: 180px;
+   overflow: hidden;
+   text-overflow: ellipsis;
+   font-variant-numeric: tabular-nums;
+ }
 
-/* 发送按钮（圆形） */
-.send-btn {
+ .token-count.token-count-warn {
+   color: var(--vscode-editorWarning-foreground, #cca700);
+ }
+
+ .token-count.token-count-danger {
+   color: var(--vscode-errorForeground, #f44);
+  }
+
+  /* 发送按钮（圆形） */
+  .send-btn {
   width: 28px;
   height: 28px;
   border-radius: 50%;
@@ -1320,43 +1762,22 @@ body {
 
 .image-attachment-tag {
   position: relative;
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 6px;
-  background: var(--vscode-badge-background, rgba(255,255,255,0.08));
-  border: 1px solid var(--vscode-widget-border, rgba(255,255,255,0.12));
-  border-radius: 6px;
-  max-width: 180px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  max-width: none;
   animation: fadeIn 0.2s ease-in;
 }
 
 .image-attachment-tag .img-thumb {
-  width: 36px;
-  height: 36px;
+  width: 56px;
+  height: 56px;
   object-fit: cover;
-  border-radius: 3px;
+  border-radius: 8px;
   flex-shrink: 0;
-}
-
-.image-attachment-tag .img-info {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  flex: 1;
-}
-
-.image-attachment-tag .img-name {
-  font-size: 11px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--vscode-foreground, #ccc);
-}
-
-.image-attachment-tag .img-size {
-  font-size: 10px;
-  color: var(--vscode-descriptionForeground, #999);
 }
 
 .image-attachment-tag .img-remove {
@@ -1379,6 +1800,35 @@ body {
 
 .image-attachment-tag .img-remove:hover {
   opacity: 1;
+}
+
+/* 缩略图可点击的指针样式 */
+.image-attachment-tag .img-thumb {
+  cursor: pointer;
+}
+
+/* 图片预览弹层：全屏遮罩 + 居中大图 */
+.image-preview-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  cursor: pointer;
+  animation: fadeIn 0.15s ease-in;
+}
+
+.image-preview-overlay img {
+  max-width: 90%;
+  max-height: 90%;
+  border-radius: 6px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+  object-fit: contain;
 }
 
 /* 输入框拖拽图片时高亮边框 */
@@ -1459,10 +1909,215 @@ body {
 .steps-container {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 8px;
   margin-top: 8px;
   padding-top: 8px;
   border-top: 1px solid var(--vscode-widget-border, rgba(255,255,255,0.08));
+}
+
+.process-panel-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--vscode-foreground);
+  text-align: left;
+  cursor: pointer;
+}
+
+.process-panel-toggle:hover .process-panel-toggle-summary {
+  color: var(--vscode-foreground);
+}
+
+.process-panel-toggle-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.process-panel-toggle-prefix {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground, #888);
+}
+
+.process-panel-toggle-summary {
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground, #aaa);
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.process-panel-toggle-icon {
+  flex-shrink: 0;
+  color: var(--vscode-descriptionForeground, #999);
+  font-size: 11px;
+}
+
+.process-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.process-panel-body.collapsed {
+  display: none;
+}
+
+.steps-container.process-panel-complete {
+  opacity: 0.98;
+}
+
+.steps-container.process-panel-complete .process-panel-toggle-prefix {
+  color: var(--vscode-testing-iconPassed, #73c991);
+}
+
+.steps-container.process-panel-complete .process-panel-toggle-summary {
+  color: var(--vscode-foreground);
+}
+
+.steps-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.step-process-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.steps-details {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.process-group-card {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--vscode-widget-border, rgba(255,255,255,0.08));
+  background: color-mix(in srgb, var(--vscode-editorWidget-background, rgba(255,255,255,0.04)) 88%, transparent);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+}
+
+.process-group-card[data-group="thinking"] {
+  background: rgba(151, 117, 250, 0.10);
+}
+
+.process-group-card[data-group="listing"] {
+  background: rgba(64, 156, 255, 0.10);
+}
+
+.process-group-card[data-group="reading"] {
+  background: rgba(57, 148, 255, 0.10);
+}
+
+.process-group-card[data-group="modifying"] {
+  background: rgba(255, 193, 7, 0.10);
+}
+
+.process-group-card[data-group="creating"] {
+  background: rgba(115, 201, 145, 0.10);
+}
+
+.process-group-card[data-group="undoing"] {
+  background: rgba(162, 124, 250, 0.10);
+}
+
+.process-group-card[data-group="failed"] {
+  background: rgba(244, 68, 68, 0.10);
+}
+
+.process-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.process-group-icon {
+  width: 18px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.process-group-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--vscode-foreground);
+}
+
+.process-group-count {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--vscode-badge-foreground, #fff);
+  background: var(--vscode-badge-background, rgba(255,255,255,0.14));
+}
+
+.process-group-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.process-group-item {
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--vscode-foreground);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.process-group-item[data-state="running"] {
+  border-color: rgba(255, 193, 7, 0.28);
+  background: rgba(255, 193, 7, 0.14);
+}
+
+.process-group-item[data-state="done"] {
+  border-color: rgba(115, 201, 145, 0.20);
+  background: rgba(115, 201, 145, 0.12);
+}
+
+.process-group-item[data-state="error"] {
+  border-color: rgba(244, 68, 68, 0.28);
+  background: rgba(244, 68, 68, 0.12);
+}
+
+.history-process-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--vscode-widget-border, rgba(255,255,255,0.08));
+  background: rgba(255, 255, 255, 0.03);
 }
 
 /* 单个步骤行 */
@@ -1650,13 +2305,13 @@ body {
   display: none;
 }
 
-.diff-content::-webkit-scrollbar {
-  width: 4px;
+.diff-content {
+  scrollbar-width: none;       /* Firefox */
+  -ms-overflow-style: none;    /* IE / Edge */
 }
 
-.diff-content::-webkit-scrollbar-thumb {
-  background: var(--vscode-scrollbarSlider-background, rgba(255,255,255,0.15));
-  border-radius: 2px;
+.diff-content::-webkit-scrollbar {
+  display: none;               /* Chrome / Safari / WebView */
 }
 
 /* Diff 行 */
@@ -1842,8 +2497,85 @@ body {
   white-space: nowrap;
 }
 
+/* 写操作文件名可点击，显示下划线和手型指针 */
+.summary-name-clickable {
+  cursor: pointer;
+}
+
+.summary-name-clickable:hover {
+  text-decoration: underline;
+  color: var(--vscode-textLink-foreground, #3794ff);
+}
+
 .summary-stats {
   flex-shrink: 0;
+}
+
+/* ---- 文件行级操作按钮（hover 时显示） ---- */
+.summary-file-actions {
+  display: none;
+  flex-shrink: 0;
+  gap: 2px;
+}
+
+.summary-file-write:hover .summary-file-actions {
+  display: inline-flex;
+}
+
+.file-btn {
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 20px;
+  text-align: center;
+  padding: 0;
+  color: var(--vscode-foreground, #ccc);
+  background: transparent;
+}
+
+.file-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.12));
+}
+
+.file-btn-accept:hover {
+  color: var(--vscode-testing-iconPassed, #73c991);
+}
+
+.file-btn-reject:hover {
+  color: var(--vscode-testing-iconFailed, #f48771);
+}
+
+/* ---- 文件行决策后的状态标签 ---- */
+.summary-file-status {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.file-accepted-label {
+  color: var(--vscode-testing-iconPassed, #73c991);
+  font-weight: 600;
+}
+
+.file-rejected-label {
+  color: var(--vscode-testing-iconFailed, #f48771);
+  font-weight: 600;
+}
+
+/* 已接受的文件行降低透明度 */
+.summary-file-accepted {
+  opacity: 0.6;
+}
+
+/* 已拒绝的文件行用删除线 + 降低透明度 */
+.summary-file-rejected .summary-name {
+  text-decoration: line-through;
+}
+
+.summary-file-rejected {
+  opacity: 0.5;
 }
 
 .summary-issue {
@@ -1930,13 +2662,41 @@ body {
   background: rgba(255, 255, 255, 0.08);
 }
 
-.summary-btn-accept {
-  background: var(--vscode-button-background, #0078d4);
-  color: var(--vscode-button-foreground, #fff);
+/* ↩ Undo all 按钮：中性色调 */
+.summary-btn-undo {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--vscode-foreground, #ccc);
+  border: 1px solid rgba(255, 255, 255, 0.15);
 }
 
-.summary-btn-accept:hover:not(:disabled) {
-  background: var(--vscode-button-hoverBackground, #1a8cff);
+.summary-btn-undo:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* 单文件 ↩ 撤销按钮 */
+.file-btn-undo {
+  opacity: 0;
+  background: transparent;
+  border: none;
+  color: var(--vscode-foreground, #ccc);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.summary-file:hover .file-btn-undo {
+  opacity: 1;
+}
+
+.file-btn-undo:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.file-btn-undo:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .summary-accepted {
@@ -1945,8 +2705,8 @@ body {
   white-space: nowrap;
 }
 
-.summary-applying {
-  color: var(--vscode-charts-blue, #4fc1ff);
+.summary-undone {
+  color: var(--vscode-descriptionForeground, #999);
   font-size: 12px;
   white-space: nowrap;
 }
@@ -1959,12 +2719,6 @@ body {
 
 .summary-failed {
   color: var(--vscode-errorForeground, #f44);
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.summary-rejected {
-  color: var(--vscode-descriptionForeground, #999);
   font-size: 12px;
   white-space: nowrap;
 }
