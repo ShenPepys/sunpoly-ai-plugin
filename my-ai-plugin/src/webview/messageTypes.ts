@@ -23,6 +23,7 @@ export interface ChatSession {
   createdAt: number;
   /** 对话历史（OpenAI 消息格式） */
   history: Array<{ role: string; content: unknown }>;
+  uiTranscript?: PersistedUiEntry[];
 }
 
 // ==================== Webview → Extension ====================
@@ -179,6 +180,9 @@ export interface AddMessageResponse {
   content: string;
   /** 消息唯一 ID，用于流式更新时定位 */
   messageId: string;
+  createdAt?: number;
+  partial?: boolean;
+  readOnly?: boolean;
 }
 
 /** 流式追加内容到最后一条 AI 消息 */
@@ -188,6 +192,7 @@ export interface StreamChunkResponse {
   chunk: string;
   /** 对应的消息 ID */
   messageId: string;
+  createdAt?: number;
 }
 
 /** 流式传输结束 */
@@ -200,6 +205,9 @@ export interface StreamDoneResponse {
 export interface ShowErrorResponse {
   type: 'showError';
   message: string;
+  retryable?: boolean;
+  createdAt?: number;
+  readOnly?: boolean;
 }
 
 /** 设置加载状态 */
@@ -279,6 +287,82 @@ export interface GenerationStoppedResponse {
 /** 工具步骤状态 */
 export type StepStatus = 'running' | 'done' | 'error';
 
+export type PersistedUiChangeSummaryStatus = 'applying' | 'accepted' | 'partial' | 'failed' | 'rejected' | 'cancelled';
+
+export interface PersistedUiChangeSummaryFile {
+  path: string;
+  displayPath: string;
+  additions: number;
+  deletions: number;
+  status: 'created' | 'modified' | 'read' | 'listed';
+  issueText?: string;
+}
+
+export type PersistedUiEvent =
+  | {
+    type: 'thinkingComplete';
+    elapsed: number;
+  }
+  | {
+    type: 'addStep';
+    stepId: string;
+    icon: string;
+    description: string;
+    status: StepStatus;
+  }
+  | {
+    type: 'updateStep';
+    stepId: string;
+    status: StepStatus;
+    description?: string;
+    elapsed?: number;
+  }
+  | {
+    type: 'showDiff';
+    stepId: string;
+    summaryId?: string;
+    filePath: string;
+    language: string;
+    additions: number;
+    deletions: number;
+    oldContent: string;
+    newContent: string;
+    noticeText?: string;
+    needsConfirm: boolean;
+    collapsed?: boolean;
+  }
+  | {
+    type: 'showChangeSummary';
+    summaryId: string;
+    needsConfirm: boolean;
+    files: PersistedUiChangeSummaryFile[];
+  }
+  | {
+    type: 'updateChangeSummary';
+    summaryId: string;
+    status: PersistedUiChangeSummaryStatus;
+    text: string;
+  };
+
+export interface PersistedUiMessageEntry {
+  type: 'message';
+  messageId: string;
+  role: 'user' | 'assistant';
+  createdAt: number;
+  content: string;
+  partial?: boolean;
+  events?: PersistedUiEvent[];
+}
+
+export interface PersistedUiErrorEntry {
+  type: 'error';
+  createdAt: number;
+  message: string;
+  retryable?: boolean;
+}
+
+export type PersistedUiEntry = PersistedUiMessageEntry | PersistedUiErrorEntry;
+
 /** 添加一个进度步骤到消息气泡（工具调用开始时发送） */
 export interface AddStepResponse {
   type: 'addStep';
@@ -321,6 +405,7 @@ export interface ShowDiffResponse {
   /** 是否需要用户确认（Accept/Reject），false 表示已自动执行 */
   needsConfirm: boolean;
   collapsed?: boolean;
+  readOnly?: boolean;
 }
 
 /** 显示文件变更汇总（所有工具执行完成后发送） */
@@ -329,21 +414,15 @@ export interface ShowChangeSummaryResponse {
   messageId: string;
   summaryId: string;
   needsConfirm: boolean;
-  files: Array<{
-    path: string;
-    displayPath: string;
-    additions: number;
-    deletions: number;
-    status: 'created' | 'modified' | 'read' | 'listed';
-    issueText?: string;
-  }>;
+  files: PersistedUiChangeSummaryFile[];
+  readOnly?: boolean;
 }
 
 /** 更新批量变更汇总的状态 */
 export interface UpdateChangeSummaryResponse {
   type: 'updateChangeSummary';
   summaryId: string;
-  status: 'applying' | 'accepted' | 'partial' | 'failed' | 'rejected' | 'cancelled';
+  status: PersistedUiChangeSummaryStatus;
   text: string;
 }
 

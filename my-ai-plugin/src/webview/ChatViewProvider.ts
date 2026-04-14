@@ -16,7 +16,7 @@ import type { ChatMessageParam } from '../api/types';
 import { buildSystemPrompt } from '../prompts/system';
 import { getEditorContext } from '../utils/editor';
 import { getEnvContext, detectProjectType, getGitStatus, getProjectContext } from '../utils/context';
-import type { ExtensionMessage, WebviewMessage, WorkMode, ChatSession } from './messageTypes';
+import type { ExtensionMessage, WebviewMessage, WorkMode, ChatSession, PersistedUiEntry, PersistedUiEvent, PersistedUiMessageEntry } from './messageTypes';
 import { parseToolCalls, hasToolCalls, stripToolCalls, executeToolCalls, formatToolResults, readFile } from '../tools';
 import { readErrorFromClipboard, buildErrorAnalysisPrompt } from '../terminal/terminalCapture';
 import type { ToolExecutionResult, ParsedToolCall, ToolCallType } from '../tools';
@@ -78,6 +78,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private get uiTranscript(): PersistedUiEntry[] {
+    const session = this.sessions.find(s => s.id === this.activeSessionId);
+    if (!session) {
+      return [];
+    }
+    if (!session.uiTranscript) {
+      session.uiTranscript = [];
+    }
+    return session.uiTranscript;
+  }
+
+  private set uiTranscript(value: PersistedUiEntry[]) {
+    const session = this.sessions.find(s => s.id === this.activeSessionId);
+    if (session) {
+      session.uiTranscript = value;
+    }
+  }
+
   /** 当前工作模式：code（可修改文件）、ask（只读对话）、plan（先规划后执行） */
   private currentMode: WorkMode = 'code';
 
@@ -99,6 +117,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private stepSequence = 0;
 
+  private stepToMessageId: Map<string, string> = new Map();
+
+  private summaryToMessageId: Map<string, string> = new Map();
+
+  private stoppedRunIds: Set<string> = new Set();
+
   /** 模型切换回调，外部设置后在切换模型时触发 */
   public onModelSwitch?: (modelName: string) => void;
 
@@ -113,6 +137,425 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.extensionUri = context.extensionUri;
     // 从 globalState 加载会话数据（与旧单会话数据兼容）
     this.loadSessions();
+  }
+
+  private ensureUiMessageEntry(
+    messageId: string,
+    role: 'user' | 'assistant',
+    createdAt: number,
+  ): PersistedUiMessageEntry | null {
+    const transcript = this.uiTranscript;
+    const existing = transcript.find((entry): entry is PersistedUiMessageEntry => {
+      return entry.type === 'message' && entry.messageId === messageId;
+    });
+
+    if (existing) {
+      existing.role = role;
+      if (!existing.events) {
+        existing.events = [];
+      }
+      return existing;
+    }
+
+    const entry: PersistedUiMessageEntry = {
+      type: 'message',
+      messageId,
+      role,
+      createdAt,
+      content: '',
+      events: [],
+    };
+    transcript.push(entry);
+    return entry;
+  }
+
+  private findUiMessageEntry(messageId: string): PersistedUiMessageEntry | null {
+    const entry = this.uiTranscript.find((item): item is PersistedUiMessageEntry => {
+      return item.type === 'message' && item.messageId === messageId;
+    });
+    return entry ?? null;
+  }
+
+  private setUiMessageContent(
+    messageId: string,
+    role: 'user' | 'assistant',
+    createdAt: number,
+    content: string,
+    partial = false,
+  ): void {
+    const entry = this.ensureUiMessageEntry(messageId, role, createdAt);
+    if (!entry) {
+      return;
+    }
+
+    entry.content = content;
+    if (partial) {
+      entry.partial = true;
+    } else {
+      delete entry.partial;
+    }
+  }
+
+  private appendUiError(message: string, retryable = true, createdAt = Date.now()): void {
+    this.uiTranscript.push({
+      type: 'error',
+      createdAt,
+      message,
+      retryable: retryable ? true : undefined,
+    });
+  }
+
+  private appendUiEvent(messageId: string, event: PersistedUiEvent): void {
+    const entry = this.ensureUiMessageEntry(messageId, 'assistant', Date.now());
+    if (!entry) {
+      return;
+    }
+
+    if (!entry.events) {
+      entry.events = [];
+    }
+    entry.events.push(event);
+
+    if (event.type === 'addStep') {
+      this.stepToMessageId.set(event.stepId, messageId);
+    }
+    if (event.type === 'showDiff' && event.summaryId) {
+      this.summaryToMessageId.set(event.summaryId, messageId);
+    }
+    if (event.type === 'showChangeSummary') {
+      this.summaryToMessageId.set(event.summaryId, messageId);
+    }
+  }
+
+  private resetUiRuntimeState(): void {
+    this.stepToMessageId.clear();
+    this.summaryToMessageId.clear();
+    for (const resolve of this.pendingConfirms.values()) {
+      resolve(false);
+    }
+    this.pendingConfirms.clear();
+    for (const resolve of this.pendingBatchConfirms.values()) {
+      resolve(false);
+    }
+    this.pendingBatchConfirms.clear();
+    this.stoppedRunIds.clear();
+    this.stepSequence = 0;
+  }
+
+  private findMessageIdByStepId(stepId: string): string | null {
+    const mappedMessageId = this.stepToMessageId.get(stepId);
+    if (mappedMessageId) {
+      return mappedMessageId;
+    }
+
+    for (const entry of this.uiTranscript) {
+      if (entry.type !== 'message' || !entry.events) {
+        continue;
+      }
+
+      const hasStep = entry.events.some(event => {
+        if (event.type === 'addStep' || event.type === 'updateStep' || event.type === 'showDiff') {
+          return event.stepId === stepId;
+        }
+        return false;
+      });
+
+      if (hasStep) {
+        return entry.messageId;
+      }
+    }
+
+    return null;
+  }
+
+  private findMessageIdBySummaryId(summaryId: string): string | null {
+    const mappedMessageId = this.summaryToMessageId.get(summaryId);
+    if (mappedMessageId) {
+      return mappedMessageId;
+    }
+
+    for (const entry of this.uiTranscript) {
+      if (entry.type !== 'message' || !entry.events) {
+        continue;
+      }
+
+      const hasSummary = entry.events.some(event => {
+        if (event.type === 'showDiff') {
+          return event.summaryId === summaryId;
+        }
+        if (event.type === 'showChangeSummary' || event.type === 'updateChangeSummary') {
+          return event.summaryId === summaryId;
+        }
+        return false;
+      });
+
+      if (hasSummary) {
+        return entry.messageId;
+      }
+    }
+
+    return null;
+  }
+
+  private removeLastAssistantUiMessage(): void {
+    const transcript = this.uiTranscript;
+    for (let i = transcript.length - 1; i >= 0; i--) {
+      const entry = transcript[i];
+      if (entry.type === 'message' && entry.role === 'assistant') {
+        transcript.splice(i, 1);
+        return;
+      }
+    }
+  }
+
+  private markUiMessageStopped(messageId: string): void {
+    const entry = this.findUiMessageEntry(messageId);
+    if (!entry) {
+      return;
+    }
+
+    entry.partial = true;
+    const events = entry.events ?? [];
+    const stepStates = new Map<string, { status: 'running' | 'done' | 'error'; description: string }>();
+    const pendingSummaryIds = new Set<string>();
+
+    for (const event of events) {
+      if (event.type === 'addStep') {
+        stepStates.set(event.stepId, { status: event.status, description: event.description });
+        continue;
+      }
+      if (event.type === 'updateStep') {
+        const current = stepStates.get(event.stepId);
+        stepStates.set(event.stepId, {
+          status: event.status,
+          description: event.description ?? current?.description ?? '',
+        });
+        continue;
+      }
+      if (event.type === 'showChangeSummary' && event.needsConfirm) {
+        pendingSummaryIds.add(event.summaryId);
+        continue;
+      }
+      if (event.type === 'updateChangeSummary') {
+        pendingSummaryIds.delete(event.summaryId);
+      }
+    }
+
+    for (const [stepId, stepState] of stepStates.entries()) {
+      if (stepState.status !== 'running') {
+        continue;
+      }
+
+      const cancelledDescription = stepState.description.includes('(已取消)')
+        ? stepState.description
+        : `${stepState.description} (已取消)`;
+
+      this.appendUiEvent(messageId, {
+        type: 'updateStep',
+        stepId,
+        status: 'error',
+        description: cancelledDescription,
+      });
+    }
+
+    for (const summaryId of pendingSummaryIds) {
+      this.appendUiEvent(messageId, {
+        type: 'updateChangeSummary',
+        summaryId,
+        status: 'cancelled',
+        text: '✗ Cancelled',
+      });
+    }
+  }
+
+  private getUiMessageCreatedAt(messageId: string, fallback = Date.now()): number {
+    const entry = this.findUiMessageEntry(messageId);
+    return entry?.createdAt ?? fallback;
+  }
+
+  private postUiThinkingComplete(messageId: string, elapsed: number): void {
+    this.appendUiEvent(messageId, { type: 'thinkingComplete', elapsed });
+    this.saveSessions();
+    this.postMessage({ type: 'thinkingComplete', messageId, elapsed });
+  }
+
+  private postUiStepStart(
+    messageId: string,
+    stepId: string,
+    icon: string,
+    description: string,
+    status: 'running' | 'done' | 'error',
+  ): void {
+    this.appendUiEvent(messageId, { type: 'addStep', stepId, icon, description, status });
+    this.saveSessions();
+    this.postMessage({ type: 'addStep', messageId, stepId, icon, description, status });
+  }
+
+  private postUiStepUpdate(
+    stepId: string,
+    status: 'running' | 'done' | 'error',
+    description?: string,
+    elapsed?: number,
+  ): void {
+    const messageId = this.findMessageIdByStepId(stepId);
+    if (messageId) {
+      this.appendUiEvent(messageId, { type: 'updateStep', stepId, status, description, elapsed });
+      this.saveSessions();
+    }
+    this.postMessage({ type: 'updateStep', stepId, status, description, elapsed });
+  }
+
+  private postUiDiff(
+    messageId: string,
+    data: {
+      stepId: string;
+      summaryId?: string;
+      filePath: string;
+      language: string;
+      additions: number;
+      deletions: number;
+      oldContent: string;
+      newContent: string;
+      noticeText?: string;
+      needsConfirm: boolean;
+      collapsed?: boolean;
+    },
+  ): void {
+    this.appendUiEvent(messageId, { type: 'showDiff', ...data });
+    this.saveSessions();
+    this.postMessage({ type: 'showDiff', messageId, ...data });
+  }
+
+  private postUiChangeSummary(
+    messageId: string,
+    summaryId: string,
+    needsConfirm: boolean,
+    files: ChangeSummaryFile[],
+  ): void {
+    this.appendUiEvent(messageId, { type: 'showChangeSummary', summaryId, needsConfirm, files });
+    this.saveSessions();
+    this.postMessage({ type: 'showChangeSummary', messageId, summaryId, needsConfirm, files });
+  }
+
+  private postUiChangeSummaryUpdate(
+    summaryId: string,
+    status: 'applying' | 'accepted' | 'partial' | 'failed' | 'rejected' | 'cancelled',
+    text: string,
+  ): void {
+    const messageId = this.findMessageIdBySummaryId(summaryId);
+    if (messageId) {
+      this.appendUiEvent(messageId, { type: 'updateChangeSummary', summaryId, status, text });
+      this.saveSessions();
+    }
+    this.postMessage({ type: 'updateChangeSummary', summaryId, status, text });
+  }
+
+  private postChatError(message: string, retryable = true, createdAt = Date.now()): void {
+    this.appendUiError(message, retryable, createdAt);
+    this.saveSessions();
+    this.postMessage({ type: 'showError', message, retryable, createdAt });
+  }
+
+  private restoreUiTranscriptToWebview(): void {
+    if (this.uiTranscript.length === 0) {
+      return;
+    }
+
+    info(`恢复 ${this.uiTranscript.length} 条 UI 历史到界面`);
+
+    for (const entry of this.uiTranscript) {
+      if (entry.type === 'error') {
+        this.postMessage({
+          type: 'showError',
+          message: entry.message,
+          retryable: entry.retryable,
+          createdAt: entry.createdAt,
+          readOnly: true,
+        });
+        continue;
+      }
+
+      this.postMessage({
+        type: 'addMessage',
+        role: entry.role,
+        content: entry.content,
+        messageId: entry.messageId,
+        createdAt: entry.createdAt,
+        partial: entry.partial,
+        readOnly: true,
+      });
+
+      if (entry.role === 'assistant') {
+        this.postMessage({ type: 'streamDone', messageId: entry.messageId });
+      }
+
+      for (const event of entry.events ?? []) {
+        switch (event.type) {
+          case 'thinkingComplete':
+            this.postMessage({
+              type: 'thinkingComplete',
+              messageId: entry.messageId,
+              elapsed: event.elapsed,
+            });
+            break;
+          case 'addStep':
+            this.postMessage({
+              type: 'addStep',
+              messageId: entry.messageId,
+              stepId: event.stepId,
+              icon: event.icon,
+              description: event.description,
+              status: event.status,
+            });
+            break;
+          case 'updateStep':
+            this.postMessage({
+              type: 'updateStep',
+              stepId: event.stepId,
+              status: event.status,
+              description: event.description,
+              elapsed: event.elapsed,
+            });
+            break;
+          case 'showDiff':
+            this.postMessage({
+              type: 'showDiff',
+              messageId: entry.messageId,
+              stepId: event.stepId,
+              summaryId: event.summaryId,
+              filePath: event.filePath,
+              language: event.language,
+              additions: event.additions,
+              deletions: event.deletions,
+              oldContent: event.oldContent,
+              newContent: event.newContent,
+              noticeText: event.noticeText,
+              needsConfirm: event.needsConfirm,
+              collapsed: event.collapsed,
+              readOnly: true,
+            });
+            break;
+          case 'showChangeSummary':
+            this.postMessage({
+              type: 'showChangeSummary',
+              messageId: entry.messageId,
+              summaryId: event.summaryId,
+              needsConfirm: event.needsConfirm,
+              files: event.files,
+              readOnly: true,
+            });
+            break;
+          case 'updateChangeSummary':
+            this.postMessage({
+              type: 'updateChangeSummary',
+              summaryId: event.summaryId,
+              status: event.status,
+              text: event.text,
+            });
+            break;
+        }
+      }
+    }
   }
 
   /**
@@ -303,7 +746,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'stopGeneration':
-        this.activeRunId = null;
+        const stoppedRunId = this.activeRunId;
+        if (stoppedRunId) {
+          this.stoppedRunIds.add(stoppedRunId);
+        }
         this.stepSequence = 0;
         this.toolCallsInProgress = false;
         if (this.abortStream) {
@@ -311,6 +757,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this.abortStream();
           this.abortStream = null;
         }
+        if (stoppedRunId) {
+          this.markUiMessageStopped(stoppedRunId);
+          this.saveSessions();
+          this.stoppedRunIds.delete(stoppedRunId);
+        }
+        this.activeRunId = null;
         if (this.pendingConfirms.size > 0) {
           info(`停止生成：清理 ${this.pendingConfirms.size} 个待确认变更`);
           for (const resolve of this.pendingConfirms.values()) {
@@ -418,13 +870,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     images?: Array<{ id: string; dataUrl: string; fileName: string; mimeType: string; sizeKB: number }>
   ): Promise<void> {
     // 先在界面上显示用户消息
-    const userMsgId = `user-${Date.now()}`;
+    const userCreatedAt = Date.now();
+    const userMsgId = `user-${userCreatedAt}`;
     this.postMessage({
       type: 'addMessage',
       role: 'user',
       content: text,
       messageId: userMsgId,
+      createdAt: userCreatedAt,
     });
+    this.setUiMessageContent(userMsgId, 'user', userCreatedAt, text);
+    this.saveSessions();
 
     // 显示加载状态
     this.postMessage({ type: 'setLoading', loading: true });
@@ -433,10 +889,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const apiKey = await ensureApiKey();
     if (!apiKey) {
       this.postMessage({ type: 'setLoading', loading: false });
-      this.postMessage({
-        type: 'showError',
-        message: '未配置 API Key，请在设置中配置 myAiPlugin.apiKey',
-      });
+      this.postChatError('未配置 API Key，请在设置中配置 myAiPlugin.apiKey', false);
       return;
     }
 
@@ -531,8 +984,9 @@ ${projectCtx}` : baseSystemPrompt;
     this.toolCallsInProgress = false;
 
     // 发起流式请求，保存 abort 句柄用于停止生成
-    const assistantMsgId = `assistant-${Date.now()}`;
-    const streamStartTime = Date.now();
+    const assistantCreatedAt = Date.now();
+    const assistantMsgId = `assistant-${assistantCreatedAt}`;
+    const streamStartTime = assistantCreatedAt;
     this.activeRunId = assistantMsgId;
     this.stepSequence = 0;
 
@@ -548,39 +1002,55 @@ ${projectCtx}` : baseSystemPrompt;
           type: 'streamChunk',
           chunk,
           messageId: assistantMsgId,
+          createdAt: assistantCreatedAt,
         });
       },
       // onDone：流式传输完成，检测并执行工具调用
       (fullContent) => {
-        if (this.activeRunId !== assistantMsgId) {
+        const stopped = this.stoppedRunIds.has(assistantMsgId);
+        if (this.activeRunId !== assistantMsgId && !stopped) {
           return;
         }
         this.abortStream = null;
         const thinkingElapsed = Date.now() - streamStartTime;
+        const displayContent = hasToolCalls(fullContent) ? stripToolCalls(fullContent) : fullContent;
 
         // 将 AI 回复加入对话历史并持久化
         this.chatHistory.push({ role: 'assistant', content: fullContent });
         this.saveChatHistory();
+        this.setUiMessageContent(assistantMsgId, 'assistant', assistantCreatedAt, displayContent, stopped);
+        this.saveSessions();
         info(`AI 回复完成，长度: ${fullContent.length}，耗时: ${thinkingElapsed}ms`);
+
+        if (stopped) {
+          if (displayContent !== fullContent) {
+            this.postMessage({
+              type: 'updateMessage',
+              messageId: assistantMsgId,
+              content: displayContent,
+            });
+          }
+          this.postMessage({ type: 'streamDone', messageId: assistantMsgId });
+          return;
+        }
 
         if (hasToolCalls(fullContent)) {
           // 剥离 tool_call 标签后更新界面显示（用户看不到原始 XML）
-          const cleanContent = stripToolCalls(fullContent);
           this.postMessage({
             type: 'updateMessage',
             messageId: assistantMsgId,
-            content: cleanContent,
+            content: displayContent,
           });
           this.postMessage({ type: 'streamDone', messageId: assistantMsgId });
           if (thinkingElapsed > 1000) {
-            this.postMessage({ type: 'thinkingComplete', messageId: assistantMsgId, elapsed: thinkingElapsed });
+            this.postUiThinkingComplete(assistantMsgId, thinkingElapsed);
           }
           this.postMessage({ type: 'setLoading', loading: true });
           this.handleToolCalls(fullContent, apiConfig, assistantMsgId);
         } else {
           this.postMessage({ type: 'streamDone', messageId: assistantMsgId });
           if (thinkingElapsed > 1000) {
-            this.postMessage({ type: 'thinkingComplete', messageId: assistantMsgId, elapsed: thinkingElapsed });
+            this.postUiThinkingComplete(assistantMsgId, thinkingElapsed);
           }
           this.activeRunId = null;
           this.stepSequence = 0;
@@ -595,10 +1065,7 @@ ${projectCtx}` : baseSystemPrompt;
         this.activeRunId = null;
         this.stepSequence = 0;
         this.postMessage({ type: 'setLoading', loading: false });
-        this.postMessage({
-          type: 'showError',
-          message: errorMessage,
-        });
+        this.postChatError(errorMessage);
         error('AI API 调用失败:', errorMessage);
       },
     );
@@ -653,7 +1120,7 @@ ${projectCtx}` : baseSystemPrompt;
         const stepIcon = this.getToolStepIcon(tc.type);
 
         // 发送步骤开始（前端显示 spinner）
-        this.postMessage({ type: 'addStep', messageId: reuseMsgId, stepId, icon: stepIcon, description: stepDesc, status: 'running' });
+        this.postUiStepStart(reuseMsgId, stepId, stepIcon, stepDesc, 'running');
 
         const startTime = Date.now();
 
@@ -699,9 +1166,7 @@ ${projectCtx}` : baseSystemPrompt;
             const { additions, deletions } = this.calculateDiffStats(diffOldContent, nextPreviewState.content);
             const lang = this.detectLanguage(tc.path);
 
-            this.postMessage({
-              type: 'showDiff',
-              messageId: reuseMsgId,
+            this.postUiDiff(reuseMsgId, {
               stepId,
               summaryId,
               filePath: tc.path,
@@ -724,7 +1189,7 @@ ${projectCtx}` : baseSystemPrompt;
         results.push(singleResult);
         const elapsed = Date.now() - startTime;
         const status = singleResult.result.success ? 'done' : 'error';
-        this.postMessage({ type: 'updateStep', stepId, status, elapsed });
+        this.postUiStepUpdate(stepId, status, undefined, elapsed);
       }
 
       if (this.activeRunId !== reuseMsgId) {
@@ -733,13 +1198,7 @@ ${projectCtx}` : baseSystemPrompt;
 
       if (deferredSteps.length > 0) {
         const summaryFiles = this.buildPreviewSummaryFiles(previewBaseStates, previewCurrentStates, writeFilePaths, previewIssues);
-        this.postMessage({
-          type: 'showChangeSummary',
-          messageId: reuseMsgId,
-          summaryId,
-          needsConfirm: true,
-          files: summaryFiles,
-        });
+        this.postUiChangeSummary(reuseMsgId, summaryId, true, summaryFiles);
 
         const accepted = await new Promise<boolean>((resolve) => {
           this.pendingBatchConfirms.set(summaryId, resolve);
@@ -748,12 +1207,11 @@ ${projectCtx}` : baseSystemPrompt;
 
         if (!accepted) {
           const isCancelled = this.activeRunId !== reuseMsgId;
-          this.postMessage({
-            type: 'updateChangeSummary',
+          this.postUiChangeSummaryUpdate(
             summaryId,
-            status: isCancelled ? 'cancelled' : 'rejected',
-            text: isCancelled ? '✗ Cancelled' : '✗ Rejected all changes',
-          });
+            isCancelled ? 'cancelled' : 'rejected',
+            isCancelled ? '✗ Cancelled' : '✗ Rejected all changes',
+          );
 
           for (const deferredStep of deferredSteps) {
             const deferredIsWriteOp = deferredStep.toolCall.type === 'write_file' || deferredStep.toolCall.type === 'edit_file';
@@ -767,13 +1225,12 @@ ${projectCtx}` : baseSystemPrompt;
               result: { success: false, content: message },
             });
 
-            this.postMessage({
-              type: 'updateStep',
-              stepId: deferredStep.stepId,
-              status: 'error',
-              elapsed: Date.now() - deferredStep.startedAt,
-              description: `${deferredStep.stepDesc} ${suffix}`,
-            });
+            this.postUiStepUpdate(
+              deferredStep.stepId,
+              'error',
+              `${deferredStep.stepDesc} ${suffix}`,
+              Date.now() - deferredStep.startedAt,
+            );
           }
 
           if (isCancelled) {
@@ -782,36 +1239,25 @@ ${projectCtx}` : baseSystemPrompt;
         }
 
         if (this.activeRunId !== reuseMsgId) {
-          this.postMessage({
-            type: 'updateChangeSummary',
-            summaryId,
-            status: 'cancelled',
-            text: '✗ Cancelled',
-          });
+          this.postUiChangeSummaryUpdate(summaryId, 'cancelled', '✗ Cancelled');
           return;
         }
 
         if (accepted) {
-          this.postMessage({
-            type: 'updateChangeSummary',
-            summaryId,
-            status: 'applying',
-            text: 'Applying changes...',
-          });
+          this.postUiChangeSummaryUpdate(summaryId, 'applying', 'Applying changes...');
 
           let successCount = 0;
           let failureCount = 0;
 
           for (const deferredStep of deferredSteps) {
             if (this.activeRunId !== reuseMsgId) {
-              this.postMessage({
-                type: 'updateChangeSummary',
+              this.postUiChangeSummaryUpdate(
                 summaryId,
-                status: successCount > 0 || failureCount > 0 ? 'partial' : 'cancelled',
-                text: successCount > 0 || failureCount > 0
+                successCount > 0 || failureCount > 0 ? 'partial' : 'cancelled',
+                successCount > 0 || failureCount > 0
                   ? `⚠ Cancelled after applying ${successCount}/${deferredSteps.length} changes`
                   : '✗ Cancelled',
-              });
+              );
               return;
             }
 
@@ -826,35 +1272,24 @@ ${projectCtx}` : baseSystemPrompt;
             }
 
             const status = singleResult.result.success ? 'done' : 'error';
-            this.postMessage({
-              type: 'updateStep',
-              stepId: deferredStep.stepId,
+            this.postUiStepUpdate(
+              deferredStep.stepId,
               status,
-              elapsed: Date.now() - deferredStep.startedAt,
-            });
+              undefined,
+              Date.now() - deferredStep.startedAt,
+            );
           }
 
           if (failureCount === 0) {
-            this.postMessage({
-              type: 'updateChangeSummary',
-              summaryId,
-              status: 'accepted',
-              text: `✓ Applied all ${successCount} changes`,
-            });
+            this.postUiChangeSummaryUpdate(summaryId, 'accepted', `✓ Applied all ${successCount} changes`);
           } else if (successCount === 0) {
-            this.postMessage({
-              type: 'updateChangeSummary',
-              summaryId,
-              status: 'failed',
-              text: `✗ Failed to apply ${failureCount} changes`,
-            });
+            this.postUiChangeSummaryUpdate(summaryId, 'failed', `✗ Failed to apply ${failureCount} changes`);
           } else {
-            this.postMessage({
-              type: 'updateChangeSummary',
+            this.postUiChangeSummaryUpdate(
               summaryId,
-              status: 'partial',
-              text: `⚠ Applied ${successCount}/${deferredSteps.length} changes, ${failureCount} failed`,
-            });
+              'partial',
+              `⚠ Applied ${successCount}/${deferredSteps.length} changes, ${failureCount} failed`,
+            );
           }
         }
       }
@@ -895,17 +1330,34 @@ ${projectCtx}` : baseSystemPrompt;
           this.postMessage({ type: 'streamChunk', chunk, messageId: reuseMsgId });
         },
         (fullContent) => {
-          if (this.activeRunId !== reuseMsgId) {
+          const stopped = this.stoppedRunIds.has(reuseMsgId);
+          if (this.activeRunId !== reuseMsgId && !stopped) {
             return;
           }
           this.abortStream = null;
+          const cleanContent = hasToolCalls(fullContent) ? stripToolCalls(fullContent) : fullContent;
           this.chatHistory.push({ role: 'assistant', content: fullContent });
           this.saveChatHistory();
+          this.setUiMessageContent(
+            reuseMsgId,
+            'assistant',
+            this.getUiMessageCreatedAt(reuseMsgId),
+            cleanContent,
+            stopped,
+          );
+          this.saveSessions();
           info(`续轮回复完成，长度: ${fullContent.length}`);
+
+          if (stopped) {
+            if (cleanContent !== fullContent) {
+              this.postMessage({ type: 'updateMessage', messageId: reuseMsgId, content: cleanContent });
+            }
+            this.postMessage({ type: 'streamDone', messageId: reuseMsgId });
+            return;
+          }
 
           if (hasToolCalls(fullContent)) {
             this.postMessage({ type: 'streamDone', messageId: reuseMsgId });
-            const cleanContent = stripToolCalls(fullContent);
             this.postMessage({ type: 'updateMessage', messageId: reuseMsgId, content: cleanContent });
             this.postMessage({ type: 'setLoading', loading: true });
             if (this.chatHistory.length < 30) {
@@ -929,7 +1381,14 @@ ${projectCtx}` : baseSystemPrompt;
           this.stepSequence = 0;
           this.postMessage({ type: 'streamDone', messageId: reuseMsgId });
           this.postMessage({ type: 'updateMessage', messageId: reuseMsgId, content: '⚠️ 工具执行出错，请重试。' });
-          this.postMessage({ type: 'showError', message: errorMessage });
+          this.setUiMessageContent(
+            reuseMsgId,
+            'assistant',
+            this.getUiMessageCreatedAt(reuseMsgId),
+            '⚠️ 工具执行出错，请重试。',
+          );
+          this.saveSessions();
+          this.postChatError(errorMessage);
           error('续轮 AI 调用失败:', errorMessage);
         },
       );
@@ -1705,6 +2164,8 @@ ${projectCtx}` : baseSystemPrompt;
    */
   public clearHistory(): void {
     this.chatHistory = [];
+    this.uiTranscript = [];
+    this.resetUiRuntimeState();
     this.saveChatHistory();
     info('对话历史已清空');
   }
@@ -1811,6 +2272,7 @@ ${projectCtx}` : baseSystemPrompt;
     const newSession = this.createSessionObject(name);
     this.sessions.push(newSession);
     this.activeSessionId = newSession.id;
+    this.resetUiRuntimeState();
     this.saveSessions();
     // 清空界面并确保不显示旧内容
     this.postMessage({ type: 'clearChat' });
@@ -1827,6 +2289,7 @@ ${projectCtx}` : baseSystemPrompt;
     const session = this.sessions.find(s => s.id === sessionId);
     if (!session) { return; }
     this.activeSessionId = sessionId;
+    this.resetUiRuntimeState();
     this.saveSessions();
     // 先清空界面，再还原新会话历史
     this.postMessage({ type: 'clearChat' });
@@ -1852,6 +2315,7 @@ ${projectCtx}` : baseSystemPrompt;
     if (this.activeSessionId === sessionId) {
       const newIndex = Math.min(index, this.sessions.length - 1);
       this.activeSessionId = this.sessions[newIndex].id;
+      this.resetUiRuntimeState();
       this.postMessage({ type: 'clearChat' });
       this.restoreHistoryToWebview();
     }
@@ -1970,6 +2434,13 @@ ${projectCtx}` : baseSystemPrompt;
    * 只显示用户消息和 AI 最终回复（过滤掉工具调用中间消息）
    */
   private restoreHistoryToWebview(): void {
+    this.resetUiRuntimeState();
+
+    if (this.uiTranscript.length > 0) {
+      this.restoreUiTranscriptToWebview();
+      return;
+    }
+
     if (this.chatHistory.length === 0) {
       return;
     }
@@ -2009,6 +2480,7 @@ ${projectCtx}` : baseSystemPrompt;
         role: msg.role as 'user' | 'assistant',
         content: displayContent,
         messageId: msgId,
+        readOnly: true,
       });
     }
   }

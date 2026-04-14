@@ -178,6 +178,9 @@
     var diffEl = document.createElement('div');
     diffEl.className = 'diff-block';
     diffEl.setAttribute('data-step-id', data.stepId);
+    if (data.readOnly) {
+      diffEl.setAttribute('data-read-only', 'true');
+    }
     if (data.summaryId) {
       diffEl.setAttribute('data-summary-id', data.summaryId);
     }
@@ -191,11 +194,16 @@
 
     var actionsHtml = '';
     if (data.needsConfirm) {
+      var readOnlyHintHtml = data.readOnly
+        ? '<span class="diff-readonly-hint">历史记录只读</span>'
+        : '';
+      var disabledAttr = data.readOnly ? ' disabled' : '';
       actionsHtml =
         '<div class="diff-actions">' +
           '<span class="diff-summary">1 file ' + statsHtml + '</span>' +
-          '<button class="diff-btn diff-btn-reject" data-step-id="' + data.stepId + '">Reject</button>' +
-          '<button class="diff-btn diff-btn-accept" data-step-id="' + data.stepId + '">Accept</button>' +
+          readOnlyHintHtml +
+          '<button class="diff-btn diff-btn-reject" data-step-id="' + data.stepId + '"' + disabledAttr + '>Reject</button>' +
+          '<button class="diff-btn diff-btn-accept" data-step-id="' + data.stepId + '"' + disabledAttr + '>Accept</button>' +
         '</div>';
     }
 
@@ -204,7 +212,7 @@
         '<span class="diff-lang">' + (data.language || 'text').toUpperCase() + '</span>' +
         '<span class="diff-filename">' + escapeHtml(fileName) + '</span>' +
         statsHtml +
-        '<button class="diff-toggle" title="展开/折叠">▼</button>' +
+        '<button class="diff-toggle" title="' + (data.readOnly ? '历史记录只读' : '展开/折叠') + '"' + (data.readOnly ? ' disabled' : '') + '>▼</button>' +
       '</div>' +
       noticeHtml +
       '<div class="diff-content">' + diffContentHtml + '</div>' +
@@ -215,7 +223,7 @@
 
     // 绑定折叠按钮事件
     var toggleBtn = diffEl.querySelector('.diff-toggle');
-    if (toggleBtn) {
+    if (toggleBtn && !data.readOnly) {
       toggleBtn.addEventListener('click', function () {
         setDiffCollapsed(diffEl, !isDiffCollapsed(diffEl));
         updateSummaryViewButtons(data.summaryId);
@@ -225,7 +233,9 @@
     setDiffCollapsed(diffEl, !!data.collapsed);
 
     // 绑定 Accept/Reject 事件
-    bindDiffActions(diffEl, data.stepId);
+    if (!data.readOnly) {
+      bindDiffActions(diffEl, data.stepId);
+    }
     updateSummaryViewButtons(data.summaryId);
 
     scrollToBottom();
@@ -986,6 +996,11 @@
       if (!viewBtn) { return; }
 
       viewBtn.textContent = hasCollapsedDiff ? 'View all changes' : 'Hide all changes';
+      if (summaryEl.getAttribute('data-read-only') === 'true') {
+        viewBtn.disabled = true;
+        viewBtn.title = '历史记录只读';
+        return;
+      }
       viewBtn.disabled = !hasDiffs;
     });
   }
@@ -1006,6 +1021,12 @@
   function bindSummaryViewButton(summaryEl, summaryId) {
     var viewBtn = summaryEl.querySelector('.summary-btn-view');
     if (!viewBtn) { return; }
+
+    if (summaryEl.getAttribute('data-read-only') === 'true') {
+      viewBtn.disabled = true;
+      viewBtn.title = '历史记录只读';
+      return;
+    }
 
     viewBtn.addEventListener('click', function () {
       toggleSummaryDiffs(summaryId);
@@ -1088,6 +1109,12 @@
     var acceptBtn = summaryEl.querySelector('.summary-btn-accept');
     var rejectBtn = summaryEl.querySelector('.summary-btn-reject');
 
+    if (data.readOnly) {
+      if (acceptBtn) { acceptBtn.disabled = true; }
+      if (rejectBtn) { rejectBtn.disabled = true; }
+      return;
+    }
+
     if (acceptBtn) {
       acceptBtn.addEventListener('click', function () {
         if (window.vscodeApi) {
@@ -1126,6 +1153,9 @@
     var summaryEl = document.createElement('div');
     summaryEl.className = data.needsConfirm ? 'change-summary change-summary-pending' : 'change-summary';
     summaryEl.setAttribute('data-summary-id', data.summaryId);
+    if (data.readOnly) {
+      summaryEl.setAttribute('data-read-only', 'true');
+    }
 
     var totalAdd = 0;
     var totalDel = 0;
@@ -1160,6 +1190,10 @@
     if (totalDel > 0) { totalStats += '<span class="diff-del">-' + totalDel + '</span>'; }
 
     if (data.needsConfirm) {
+      var summaryReadonlyHintHtml = data.readOnly
+        ? '<span class="summary-readonly-hint">历史记录只读</span>'
+        : '';
+      var summaryDisabledAttr = data.readOnly ? ' disabled' : '';
       summaryEl.innerHTML =
         '<div class="summary-bar">' +
           '<div class="summary-primary">' +
@@ -1167,9 +1201,10 @@
             '<span class="summary-total-stats">' + totalStats + '</span>' +
           '</div>' +
           '<div class="summary-actions">' +
-            '<button class="summary-btn summary-btn-view">View all changes</button>' +
-            '<button class="summary-btn summary-btn-reject">Reject all</button>' +
-            '<button class="summary-btn summary-btn-accept">Accept all</button>' +
+            '<button class="summary-btn summary-btn-view" title="' + (data.readOnly ? '历史记录只读' : '查看全部变更') + '"' + (data.readOnly ? ' disabled' : '') + '>View all changes</button>' +
+            summaryReadonlyHintHtml +
+            '<button class="summary-btn summary-btn-reject"' + summaryDisabledAttr + '>Reject all</button>' +
+            '<button class="summary-btn summary-btn-accept"' + summaryDisabledAttr + '>Accept all</button>' +
           '</div>' +
         '</div>' +
         '<div class="summary-files">' + fileRows + '</div>';
@@ -1183,6 +1218,10 @@
           totalStats +
         '</div>' +
         '<div class="summary-files">' + fileRows + '</div>';
+
+      if (data.readOnly) {
+        bindSummaryViewButton(summaryEl, data.summaryId);
+      }
     }
 
     container.appendChild(summaryEl);

@@ -518,11 +518,14 @@
 
     switch (message.type) {
       case 'addMessage':
-        addMessageToUI(message.role, message.content, message.messageId);
+        addMessageToUI(message.role, message.content, message.messageId, message.createdAt, {
+          partial: message.partial,
+          readOnly: message.readOnly,
+        });
         break;
 
       case 'streamChunk':
-        handleStreamChunk(message.messageId, message.chunk);
+        handleStreamChunk(message.messageId, message.chunk, message.createdAt);
         break;
 
       case 'streamDone':
@@ -530,7 +533,11 @@
         break;
 
       case 'showError':
-        showError(message.message);
+        showError(message.message, {
+          retryable: message.retryable,
+          createdAt: message.createdAt,
+          readOnly: message.readOnly,
+        });
         break;
 
       case 'setLoading':
@@ -651,7 +658,7 @@
    * @param {string} content 消息内容（Markdown 格式）
    * @param {string} messageId 消息唯一 ID
    */
-  function addMessageToUI(role, content, messageId) {
+  function addMessageToUI(role, content, messageId, createdAt, options) {
     // 新消息出现时移除旧的重新生成按钮（保持界面整洁）
     removeAllRegenButtons();
     // 移除欢迎消息（只在第一条消息时）
@@ -660,18 +667,26 @@
       welcome.remove();
     }
 
+    var safeOptions = options || {};
+
     const messageEl = document.createElement('div');
     messageEl.className = 'message ' + role;
     messageEl.setAttribute('data-message-id', messageId);
+    if (safeOptions.readOnly) {
+      messageEl.setAttribute('data-read-only', 'true');
+    }
+    if (safeOptions.partial) {
+      messageEl.setAttribute('data-partial', 'true');
+    }
 
     const roleLabel = role === 'user' ? '你' : 'AI';
     const roleIcon = role === 'user' ? '👤' : '🤖';
     // 时间戳（HH:MM 格式）
-    var now = new Date();
-    var timeStr = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+    var timeStr = formatMessageTime(createdAt);
     // AI 消息在消息体右上角添加悬浮操作栏（含复制按钮和时间戳）
+    var copyDisabledAttr = safeOptions.readOnly ? ' disabled title="历史记录只读"' : ' title="复制全文"';
     var msgActionsHtml = role === 'assistant'
-      ? '<div class="msg-actions"><span class="msg-time">' + timeStr + '</span><button class="btn-copy-msg" title="复制全文">复制</button></div>'
+      ? '<div class="msg-actions"><span class="msg-time">' + timeStr + '</span><button class="btn-copy-msg"' + copyDisabledAttr + '>复制</button></div>'
       : '<div class="msg-actions"><span class="msg-time">' + timeStr + '</span></div>';
 
     messageEl.innerHTML =
@@ -682,8 +697,15 @@
         '<div class="message-body">' + window.chatRender.renderMarkdown(content) + '</div>' +
       '</div>';
 
+    bindCodeBlockButtons(messageEl.querySelector('.message-body'));
     messagesContainer.appendChild(messageEl);
     scrollToBottom();
+  }
+
+  function formatMessageTime(createdAt) {
+    var safeTimestamp = Number.isFinite(createdAt) ? createdAt : Date.now();
+    var date = new Date(safeTimestamp);
+    return String(date.getHours()).padStart(2, '0') + ':' + String(date.getMinutes()).padStart(2, '0');
   }
 
   /**
@@ -695,6 +717,7 @@
       const bodyEl = messageEl.querySelector('.message-body');
       if (bodyEl) {
         bodyEl.innerHTML = window.chatRender.renderMarkdown(content);
+        bindCodeBlockButtons(bodyEl);
       }
     }
     // 同步更新流缓冲区（防止 streamDone 时回退到旧内容）
@@ -1130,7 +1153,7 @@
    * 处理流式追加的文本片段
    * 节流渲染：每 50ms 最多渲染一次，减少 DOM 更新频率
    */
-  function handleStreamChunk(messageId, chunk) {
+  function handleStreamChunk(messageId, chunk, createdAt) {
     // 用 hasOwnProperty 判断是否已初始化（避免空字符串 falsy 导致重复初始化）
     if (!streamBuffers.hasOwnProperty(messageId)) {
       streamBuffers[messageId] = '';
@@ -1138,7 +1161,7 @@
       // 创建消息容器（如果不存在）
       var messageEl = messagesContainer.querySelector('[data-message-id="' + messageId + '"]');
       if (!messageEl) {
-        addMessageToUI('assistant', '', messageId);
+        addMessageToUI('assistant', '', messageId, createdAt);
         messageEl = messagesContainer.querySelector('[data-message-id="' + messageId + '"]');
       }
       if (messageEl) {
@@ -1228,7 +1251,9 @@
     removeAllRegenButtons();
     var doneEl = messagesContainer.querySelector('[data-message-id="' + messageId + '"]');
     if (doneEl && doneEl.classList.contains('assistant')) {
-      addRegenButton(doneEl);
+      addRegenButton(doneEl, {
+        readOnly: doneEl.getAttribute('data-read-only') === 'true',
+      });
     }
   }
 
@@ -1236,14 +1261,20 @@
    * 在指定 AI 消息气泡底部添加「↺ 重新生成」按钮
    * @param {Element} messageEl 消息气泡 DOM 元素
    */
-  function addRegenButton(messageEl) {
+  function addRegenButton(messageEl, options) {
+    var safeOptions = options || {};
     var btn = document.createElement('button');
     btn.className = 'btn-regen';
     btn.title = '重新生成此回复';
     btn.textContent = '↺ 重新生成';
-    btn.addEventListener('click', function () {
-      vscode.postMessage({ type: 'regenerate' });
-    });
+    if (safeOptions.readOnly) {
+      btn.disabled = true;
+      btn.title = '历史记录只读';
+    } else {
+      btn.addEventListener('click', function () {
+        vscode.postMessage({ type: 'regenerate' });
+      });
+    }
     messageEl.appendChild(btn);
   }
 
@@ -1261,7 +1292,7 @@
   var lastUserMessage = '';
 
   /** 显示错误消息（带重试按钮） */
-  function showError(errorMessage) {
+  function showError(errorMessage, options) {
     // 清理所有残留的流式指示器（出错时 streamDone 可能未被调用）
     messagesContainer.querySelectorAll('.message-body.streaming').forEach(function (el) {
       el.classList.remove('streaming');
@@ -1270,12 +1301,26 @@
       el.remove();
     });
 
+    var safeOptions = options || {};
+    var timeStr = formatMessageTime(safeOptions.createdAt);
+    var retryButtonHtml = safeOptions.retryable
+      ? ' <button class="btn-retry" title="' + (safeOptions.readOnly ? '历史记录只读' : '重新发送') + '"' + (safeOptions.readOnly ? ' disabled' : '') + '>重试</button>'
+      : '';
+
     var errorEl = document.createElement('div');
     errorEl.className = 'message assistant error-message';
+    if (safeOptions.readOnly) {
+      errorEl.setAttribute('data-read-only', 'true');
+    }
     errorEl.innerHTML =
-      '<div class="message-body" style="color: var(--vscode-errorForeground, #f44);">' +
-        '⚠️ ' + escapeHtml(errorMessage) +
-        '<button class="btn-retry" title="重新发送">重试</button>' +
+      '<div class="role-icon">⚠️</div>' +
+      '<div class="message-content">' +
+        '<div class="message-header">系统</div>' +
+        '<div class="msg-actions"><span class="msg-time">' + timeStr + '</span></div>' +
+        '<div class="message-body" style="color: var(--vscode-errorForeground, #f44);">' +
+          escapeHtml(errorMessage) +
+          retryButtonHtml +
+        '</div>' +
       '</div>';
 
     messagesContainer.appendChild(errorEl);
@@ -1470,6 +1515,9 @@
 
     // 复制代码按钮
     if (target.classList.contains('btn-copy-code')) {
+      if (target.disabled || target.closest('.message[data-read-only="true"]')) {
+        return;
+      }
       var wrapper = target.closest('.code-block-wrapper');
       if (wrapper) {
         var codeEl = wrapper.querySelector('pre code');
@@ -1486,6 +1534,9 @@
 
     // 重试按钮：重新发送最后一条消息
     if (target.classList.contains('btn-retry')) {
+      if (target.disabled || target.closest('.error-message[data-read-only="true"]')) {
+        return;
+      }
       // 移除错误消息元素
       var errorMsg = target.closest('.error-message');
       if (errorMsg) { errorMsg.remove(); }
@@ -1498,6 +1549,9 @@
 
     // 复制整条 AI 回复按钮
     if (target.classList.contains('btn-copy-msg')) {
+      if (target.disabled || target.closest('.message[data-read-only="true"]')) {
+        return;
+      }
       var msgContent = target.closest('.message-content');
       if (msgContent) {
         var bodyEl = msgContent.querySelector('.message-body');
@@ -1511,6 +1565,9 @@
 
     // 插入代码按钮
     if (target.classList.contains('btn-insert-code')) {
+      if (target.disabled || target.closest('.message[data-read-only="true"]')) {
+        return;
+      }
       var wrapper = target.closest('.code-block-wrapper');
       if (wrapper) {
         var codeEl = wrapper.querySelector('pre code');
@@ -1531,7 +1588,30 @@
    * 流式传输完成后调用，确保新渲染的代码块也有事件
    */
   function bindCodeBlockButtons(container) {
-    // 事件已通过委托处理，此函数保留用于未来扩展
+    if (!container) { return; }
+
+    var messageEl = container.closest('.message[data-read-only="true"]');
+    if (!messageEl) {
+      return;
+    }
+
+    var insertButtons = container.querySelectorAll('.btn-insert-code');
+    insertButtons.forEach(function (button) {
+      button.disabled = true;
+      button.title = '历史记录只读';
+    });
+
+    var copyButtons = container.querySelectorAll('.btn-copy-code');
+    copyButtons.forEach(function (button) {
+      button.disabled = true;
+      button.title = '历史记录只读';
+    });
+
+    var links = container.querySelectorAll('a[href]');
+    links.forEach(function (link) {
+      link.setAttribute('tabindex', '-1');
+      link.setAttribute('aria-disabled', 'true');
+    });
   }
 
   // ==================== 模型切换 ====================
