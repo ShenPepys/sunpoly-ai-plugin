@@ -258,6 +258,8 @@ export function buildRestoreSessionHistoryMessages(
       role: restoredMessage.role,
       content: restoredMessage.content,
       messageId,
+      createdAt: restoredMessage.timestamp,
+      readOnly: true,
     });
 
     if (restoredMessage.role === 'assistant' && restoredMessage.processSummary) {
