@@ -39,8 +39,7 @@ export class SessionStore {
   /** 是否已完成首次加载 */
   private _loaded = false;
 
-  /** 当前全局运行锁：第一阶段禁止多个会话并发执行 */
-  private _runLock: SessionRunLock | null = null;
+  private _runLocks: Map<string, SessionRunLock> = new Map();
 
   /** 持久化串行队列，避免多次 update 并发写入互相覆盖 */
   private _persistQueue: Promise<void> = Promise.resolve();
@@ -64,34 +63,54 @@ export class SessionStore {
     return this._loaded;
   }
 
-  /** 获取当前全局运行锁快照 */
+  /** 获取任意一个运行锁快照，兼容旧调用方 */
   get runLock(): SessionRunLock | null {
-    if (!this._runLock) {
+    const firstLock = this._runLocks.values().next().value;
+    if (!firstLock) {
       return null;
     }
 
     return {
-      ...this._runLock,
+      ...firstLock,
     };
+  }
+
+  get runLocks(): SessionRunLock[] {
+    return [...this._runLocks.values()].map(lock => ({ ...lock }));
   }
 
   /** 是否存在任意会话正在生成 */
   public hasAnyRunningSession(): boolean {
-    return this._runLock !== null;
+    return this._runLocks.size > 0;
   }
 
   /** 指定会话是否处于全局运行中 */
   public isSessionRunning(sessionId: string): boolean {
-    if (!sessionId || !this._runLock) {
+    if (!sessionId) {
       return false;
     }
 
-    return this._runLock.sessionId === sessionId;
+    return this._runLocks.has(sessionId);
+  }
+
+  public getRunLock(sessionId: string): SessionRunLock | null {
+    if (!sessionId) {
+      return null;
+    }
+
+    const lock = this._runLocks.get(sessionId);
+    if (!lock) {
+      return null;
+    }
+
+    return {
+      ...lock,
+    };
   }
 
   /**
-   * 尝试获取全局运行锁。
-   * 第一阶段允许同一引擎替换自己已有的运行锁，但不允许其他引擎并发进入新会话运行。
+   * 尝试获取指定会话的运行锁。
+   * 允许不同会话并发运行；仅阻止同一 sessionId 被不同 owner 并发占用。
    */
   public tryAcquireRunLock(options: {
     ownerId: string;
@@ -101,48 +120,71 @@ export class SessionStore {
     if (!options.sessionId) {
       return {
         acquired: false,
-        lock: this.runLock,
+        lock: null,
       };
     }
 
-    if (this._runLock && this._runLock.ownerId !== options.ownerId) {
+    const currentLock = this._runLocks.get(options.sessionId);
+    if (currentLock && currentLock.runId !== options.runId) {
       return {
         acquired: false,
-        lock: this.runLock,
+        lock: { ...currentLock },
       };
     }
 
-    this._runLock = {
+    const nextLock: SessionRunLock = {
       ownerId: options.ownerId,
       sessionId: options.sessionId,
       runId: options.runId,
       startedAt: Date.now(),
     };
+    this._runLocks.set(options.sessionId, nextLock);
 
     return {
       acquired: true,
-      lock: this.runLock!,
+      lock: { ...nextLock },
     };
   }
 
   /** 释放当前引擎持有的运行锁；若 runId 不匹配则忽略，避免旧回调误清新锁。 */
   public releaseRunLock(options: {
     ownerId: string;
+    sessionId?: string;
     runId?: string;
   }): void {
-    if (!this._runLock) {
+    if (this._runLocks.size === 0) {
       return;
     }
 
-    if (this._runLock.ownerId !== options.ownerId) {
+    if (options.sessionId) {
+      const lock = this._runLocks.get(options.sessionId);
+      if (!lock) {
+        return;
+      }
+
+      if (lock.ownerId !== options.ownerId) {
+        return;
+      }
+
+      if (options.runId && lock.runId !== options.runId) {
+        return;
+      }
+
+      this._runLocks.delete(options.sessionId);
       return;
     }
 
-    if (options.runId && this._runLock.runId !== options.runId) {
-      return;
-    }
+    for (const [sessionId, lock] of this._runLocks.entries()) {
+      if (lock.ownerId !== options.ownerId) {
+        continue;
+      }
 
-    this._runLock = null;
+      if (options.runId && lock.runId !== options.runId) {
+        continue;
+      }
+
+      this._runLocks.delete(sessionId);
+    }
   }
 
   /**

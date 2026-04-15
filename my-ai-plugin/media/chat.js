@@ -343,6 +343,7 @@
       draftText: typeof tab.draftText === 'string' ? tab.draftText : '',
       scrollTop: typeof tab.scrollTop === 'number' ? tab.scrollTop : 0,
       awaitingSessionBind: Boolean(tab.awaitingSessionBind),
+      launcherActivated: Boolean(tab.launcherActivated),
     };
   }
 
@@ -645,17 +646,13 @@
     activeTab.sessionId = '';
     activeTab.title = '新对话';
     activeTab.awaitingSessionBind = true;
+    activeTab.launcherActivated = true;
     activeTab.scrollTop = 0;
     renderInternalTabBar();
     renderMessageQueueBar();
   }
 
   function createInternalTab() {
-    if (isGenerating) {
-      showError('当前仍在生成，请先停止当前任务后再新建标签。');
-      return;
-    }
-
     captureActiveInternalTabViewState();
 
     var currentTab = getActiveInternalTab();
@@ -673,12 +670,14 @@
       draftText: '',
       scrollTop: 0,
       awaitingSessionBind: true,
+      launcherActivated: false,
     });
     internalTabs.push(newTab);
     activeInternalTabId = newTab.id;
     pendingInternalTabId = '';
     shouldRestoreInternalTabViewState = false;
     renderInternalTabBar();
+    clearChat();
     restoreActiveInternalTabViewState();
     saveWebviewState();
     requestSessionLauncherOpen();
@@ -690,11 +689,6 @@
       return;
     }
 
-    if (isGenerating) {
-      showError('当前仍在生成，请先停止当前任务后再切换标签。');
-      return;
-    }
-
     var hadActiveTab = Boolean(activeInternalTabId);
     captureActiveInternalTabViewState();
 
@@ -703,6 +697,7 @@
       pendingInternalTabId = '';
       shouldRestoreInternalTabViewState = false;
       renderInternalTabBar();
+      clearChat();
       restoreActiveInternalTabViewState();
       saveWebviewState();
       requestSessionLauncherOpen();
@@ -826,6 +821,7 @@
         nextTab.sessionId = '';
         nextTab.title = '新对话';
         nextTab.awaitingSessionBind = true;
+        nextTab.launcherActivated = false;
         nextTab.scrollTop = 0;
       }
 
@@ -850,9 +846,10 @@
     }
 
     var activeTab = getActiveInternalTab();
-    if (activeTab && activeTab.awaitingSessionBind && !sessionLauncherVisible && !sessionLauncherRequestInFlight && activeSessionId) {
+    if (activeTab && activeTab.awaitingSessionBind && activeTab.launcherActivated && !sessionLauncherVisible && !sessionLauncherRequestInFlight && activeSessionId) {
       activeTab.sessionId = activeSessionId;
       activeTab.awaitingSessionBind = false;
+      activeTab.launcherActivated = false;
     }
 
     activeTab = getActiveInternalTab();
@@ -994,22 +991,12 @@
   }
 
   function requestSessionLauncherOpen() {
-    if (isGenerating) {
-      showError('当前仍在生成，请先停止当前任务后再新建对话。');
-      return;
-    }
-
     captureActiveInternalTabViewState();
-    prepareActiveInternalTabForSessionLauncher();
-    restoreActiveInternalTabViewState();
     clearSessionLauncherRequestTimer();
     sessionLauncherRequestInFlight = true;
     sessionLauncherRequestTimer = window.setTimeout(function () {
       sessionLauncherRequestTimer = 0;
       sessionLauncherRequestInFlight = false;
-      if (!sessionLauncherVisible) {
-        setSessionLauncherVisible(true);
-      }
     }, 150);
 
     saveWebviewState();
@@ -1248,6 +1235,12 @@
       return false;
     }
 
+    if (activeTab.awaitingSessionBind && !sessionLauncherVisible) {
+      requestSessionLauncherOpen();
+      showError('新对话尚未准备完成，请等待会话启动器打开后再发送。');
+      return false;
+    }
+
     recordSentInputHistory(request.text);
 
     if (isGenerating || getQueuedMessages(activeTab.id).length > 0) {
@@ -1326,6 +1319,9 @@
         break;
 
       case 'setSessionLauncher':
+        if (message.visible) {
+          prepareActiveInternalTabForSessionLauncher();
+        }
         clearSessionLauncherRequestTimer();
         setSessionLauncherVisible(message.visible);
         break;

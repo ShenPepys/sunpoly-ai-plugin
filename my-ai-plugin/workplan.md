@@ -698,6 +698,7 @@
 - [x] `src/webview/SessionStore.ts`：增加共享运行锁与串行持久化队列，修复多 Tab 运行态串扰和 `globalState` 高并发写入竞争
 - [x] `src/webview/ChatEngine.ts`：接入共享运行锁，补齐清空/删除/切换会话与 `regenerate` 的跨 Tab 运行保护，并修复流式启动异常后的运行态残留
 - [x] `src/webview/ChatTabManager.ts`：命令路由优先回到最近聚焦的聊天 Tab，避免误落到旧 Tab
+
 - [x] `src/api/client.ts`：保留 `apiPath` 中的 query 参数，覆盖流式与非流式请求链路
 - [x] `src/config.ts`、`src/webview/ChatViewProvider_l_webviewDispatch.ts`：补齐模型索引越界与异常数值兜底
 - [x] 完成本轮静态校验：`npx tsc --noEmit`、`node --check .\media\chat.js`、`node --check .\media\chat_b_steps.js`
@@ -710,6 +711,48 @@
 - [ ] 历史恢复内容是否为只读，不会误触发当前会话的确认 / Undo / 重试操作
 - [ ] 旧会话缺少 `uiTranscript` 时，是否仍能通过 `displayHistory` 正常恢复
 - [ ] 多 Tab 打开同一批会话时，恢复内容是否稳定且不会互相串扰
+
+---
+
+## 下一轮修复：内部标签真实多会话并发
+
+### 目标
+
+- [ ] 将 `Alt+T` 创建的内部标签从“共享同一活动会话的 UI 页签”升级为“真正独立的会话运行单元”
+- [ ] 每个内部标签默认绑定一条独立会话记录；新建标签时进入空白新对话态，不复用当前标签内容
+- [ ] 切换内部标签时恢复该标签绑定会话的 `uiTranscript` / `displayHistory`，保证历史、过程摘要、diff、错误态都各自独立
+- [ ] 允许同一原生聊天面板内的不同内部标签并发对话；`A` 生成时 `B` 可以继续发送和生成，且两边互不串屏、互不串记录
+- [ ] 继续保留“同一 `sessionId` 不得在多个位置同时运行”的保护，避免同一会话被重复并发执行
+
+### 实现清单
+
+- [ ] `src/webview/SessionStore.ts`：将第一阶段“全局单运行锁”升级为“按 `sessionId` 管理的多运行锁”，保留 `ownerId + runId` 精确释放能力
+- [ ] `src/webview/ChatEngine.ts`：将 `activeRunId`、`abortStream`、`toolCallsInProgress`、`stepSequence`、`toolCallRound`、`activeHistoryProcessSummary`、`turnWriteFiles`、`turnWriteRounds`、`pendingRegenerateState` 等运行态收口为“按会话维护”的 runtime 映射
+- [ ] `src/webview/ChatEngine.ts`：为流式首轮、工具续轮、重新生成、停止生成、异常回滚建立“绑定 `sessionId` 的消息桥”，确保后台运行中的会话仍写回自己的 `uiTranscript`
+- [ ] `src/webview/ChatEngine.ts`：放开内部标签切换 / 新建时对“当前引擎存在运行任务”的全局阻断，改为只阻止会影响同一会话一致性的操作
+- [ ] `src/webview/messageTypes.ts`：为需要落到特定会话的前后端消息补充 `sessionId` 或等价的会话定向字段，避免共享面板内消息误投到当前活动标签
+- [ ] `src/webview/ChatViewProvider_f_sessions.ts`、`src/webview/ChatViewProvider_m_webviewRouting.ts`：调整切换会话、重试、删除、清空等计划函数与路由判断，改为按目标会话判断是否允许执行
+- [ ] `media/chat.js`：内部标签状态改为“标签绑定固定 `sessionId`，前端只渲染当前活动标签对应会话的消息流”，后台会话只更新状态，不抢占当前 `messagesContainer`
+- [ ] `media/chat.js`：新建内部标签时默认进入空白新对话；切换标签时主动请求恢复该会话 transcript；非当前标签收到后台运行更新时仅更新标签标题/状态，不污染当前界面
+- [ ] `media/chat.js`：补齐内部标签与会话解绑、删除会话后回退、恢复前端状态、排队消息与草稿文本的按标签隔离
+
+### 分批执行建议
+
+- [ ] 第一批：先改 `SessionStore` 锁粒度与 `ChatEngine` 会话级 runtime 容器，打通“不同会话可并发运行”的后端基础
+- [ ] 第二批：补会话定向消息桥与 transcript 写回，确保后台运行的会话不会把消息写到当前活动标签或错误会话
+- [ ] 第三批：重做 `media/chat.js` 内部标签绑定 / 恢复 / 新建逻辑，保证新标签空白、切换恢复独立历史、活动界面不串屏
+- [ ] 第四批：收口重试 / 重生成 / 删除 / 清空 / 关闭标签 / 面板恢复等边界，并执行静态校验与人工回归
+
+### 回归验证清单
+
+- [ ] `Alt+T` 新建内部标签时，是否默认进入空白新对话而不是复用当前标签内容
+- [ ] `A` 正在生成时切到 `B`，`B` 是否不显示 `A` 的流式内容、步骤流、错误消息和变更汇总
+- [ ] `A` 正在生成时，`B` 是否可以正常发送消息并独立生成结果
+- [ ] `A` 与 `B` 同时生成时，停止 / 出错 / 工具调用 / 重生成是否都只影响各自会话
+- [ ] 切回历史标签时，是否恢复该标签绑定会话自己的 `uiTranscript`、`displayHistory`、草稿文本和滚动位置
+- [ ] 删除或清空某个会话后，是否只影响绑定该会话的内部标签，不破坏其他标签的运行态
+- [ ] 同一 `sessionId` 在两个内部标签或两个原生面板中是否仍被正确阻止重复并发运行
+- [ ] `npx tsc --noEmit`、`node --check .\media\chat.js`、`npm run build` 是否通过
 
 ---
 
