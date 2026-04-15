@@ -251,6 +251,7 @@ export type RollbackPendingRegenerateStateOptions = {
   pendingState: PendingRegenerateState | null;
   runId: string;
   cloneDisplayHistoryMessages: (displayHistory: PendingRegenerateState['displayHistory']) => PendingRegenerateState['displayHistory'];
+  cloneUiTranscript: (uiTranscript: PendingRegenerateState['uiTranscript']) => PendingRegenerateState['uiTranscript'];
   cloneHistoryProcessSummary: (summary: HistoryProcessSummary) => HistoryProcessSummary;
 };
 
@@ -264,6 +265,7 @@ export type RollbackPendingRegenerateStateResult =
     nextPendingState: null;
     restoredHistory: ChatMessageParam[];
     restoredDisplayHistory: PendingRegenerateState['displayHistory'];
+    restoredUiTranscript: PendingRegenerateState['uiTranscript'];
     messageId: string;
     restoreContent: string;
     restoreProcessSummary?: HistoryProcessSummary;
@@ -285,6 +287,7 @@ export function rollbackPendingRegenerateState(
     nextPendingState: null,
     restoredHistory: consumeResult.consumedState.history as ChatMessageParam[],
     restoredDisplayHistory: options.cloneDisplayHistoryMessages(consumeResult.consumedState.displayHistory),
+    restoredUiTranscript: options.cloneUiTranscript(consumeResult.consumedState.uiTranscript),
     messageId: consumeResult.consumedState.messageId,
     restoreContent: consumeResult.consumedState.restoreContent,
     restoreProcessSummary: consumeResult.consumedState.restoreProcessSummary

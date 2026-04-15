@@ -370,6 +370,7 @@ export interface UpdateModeResponse {
 /** 通知 Webview 用户主动停止了生成（保留已接收的部分内容） */
 export interface GenerationStoppedResponse {
   type: 'generationStopped';
+  messageId?: string;
 }
 
 export interface FocusInputResponse {
@@ -402,6 +403,10 @@ export type PersistedUiEvent =
   | {
     type: 'thinkingComplete';
     elapsed: number;
+  }
+  | {
+    type: 'showHistoryProcessSummary';
+    summary: HistoryProcessSummary;
   }
   | {
     type: 'addStep';

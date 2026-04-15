@@ -35,13 +35,20 @@ export async function tryHandleLightweightWebviewMessage(
       return true;
 
     case 'switchModel': {
-      info(`用户切换模型到索引: ${message.index}`);
-      await setActiveModelIndex(message.index);
+      const models = getAllModels();
+      const normalizedIndex = Number.isFinite(message.index) ? Math.trunc(message.index) : 0;
+      const safeIndex = Math.max(0, Math.min(normalizedIndex, models.length - 1));
+      if (safeIndex !== message.index) {
+        info(`用户切换模型索引越界，已修正: ${message.index} -> ${safeIndex}`);
+      } else {
+        info(`用户切换模型到索引: ${safeIndex}`);
+      }
+
+      await setActiveModelIndex(safeIndex);
       options.sendModelList();
       options.pushTokenCount();
-      const models = getAllModels();
-      if (options.onModelSwitch && models[message.index]) {
-        options.onModelSwitch(models[message.index].name);
+      if (options.onModelSwitch && models[safeIndex]) {
+        options.onModelSwitch(models[safeIndex].name);
       }
       return true;
     }

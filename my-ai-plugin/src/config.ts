@@ -108,7 +108,12 @@ function get<T>(key: string, defaultValue: T, envKey?: string): T {
     const envValue = env[envName];
     // 根据默认值类型自动转换
     if (typeof defaultValue === 'number') {
-      return Number(envValue) as T;
+      const parsedNumber = Number(envValue);
+      if (Number.isFinite(parsedNumber)) {
+        return parsedNumber as T;
+      }
+
+      return defaultValue;
     }
     return envValue as T;
   }
@@ -259,9 +264,14 @@ export function getActiveModelIndex(): number {
 
 /** 设置当前活跃模型的序号（保存到用户级设置） */
 export async function setActiveModelIndex(index: number): Promise<void> {
+  const models = getAllModels();
+  const maxIndex = Math.max(0, models.length - 1);
+  const normalizedIndex = Number.isFinite(index) ? Math.trunc(index) : 0;
+  const safeIndex = Math.min(Math.max(normalizedIndex, 0), maxIndex);
+
   await vscode.workspace
     .getConfiguration(CONFIG_PREFIX)
-    .update('activeModelIndex', index, true);
+    .update('activeModelIndex', safeIndex, true);
 }
 
 /**
@@ -272,7 +282,7 @@ export function getModelConfig(): ModelConfig {
   const models = getAllModels();
   const activeIndex = getActiveModelIndex();
   // 确保 index 不越界
-  const safeIndex = Math.min(activeIndex, models.length - 1);
+  const safeIndex = Math.max(0, Math.min(activeIndex, models.length - 1));
   const model = models[safeIndex] ?? DEFAULT_MODEL;
 
   return {
@@ -324,7 +334,7 @@ export async function ensureApiKey(): Promise<string | undefined> {
 
   if (input) {
     const allModels = getAllModels();
-    const activeIndex = Math.min(getActiveModelIndex(), allModels.length - 1);
+    const activeIndex = Math.max(0, Math.min(getActiveModelIndex(), allModels.length - 1));
     const settingsModels = getStoredModels();
     const modelsToSave = settingsModels.length > 0
       ? settingsModels.map(model => ({ ...model }))

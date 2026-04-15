@@ -2,6 +2,7 @@ import type {
   ChatSessionDisplayMessage,
   ChatSessionHistoryMessage,
   HistoryProcessSummary,
+  PersistedUiEntry,
 } from './messageTypes';
 import { getAssistantDisplayContent } from './ChatViewProvider_c_displayHistory';
 
@@ -10,6 +11,7 @@ export type PendingRegenerateState = {
   messageId: string;
   history: ChatSessionHistoryMessage[];
   displayHistory: ChatSessionDisplayMessage[];
+  uiTranscript: PersistedUiEntry[];
   restoreContent: string;
   restoreProcessSummary?: HistoryProcessSummary;
 };
@@ -17,6 +19,7 @@ export type PendingRegenerateState = {
 export type PrepareRegenerateRequestOptions = {
   history: ChatSessionHistoryMessage[];
   displayHistory: ChatSessionDisplayMessage[];
+  uiTranscript: PersistedUiEntry[];
   targetAssistantMessageId: string;
   isToolFeedbackMessage: (message: { role: string; content: unknown }) => boolean;
   getDisplayHistoryMessageById: (
@@ -27,6 +30,7 @@ export type PrepareRegenerateRequestOptions = {
     displayHistory: ChatSessionDisplayMessage[],
   ) => ChatSessionDisplayMessage | undefined;
   cloneDisplayHistoryMessages: (displayHistory: ChatSessionDisplayMessage[]) => ChatSessionDisplayMessage[];
+  cloneUiTranscript: (uiTranscript: PersistedUiEntry[]) => PersistedUiEntry[];
   cloneHistoryProcessSummary: (summary: HistoryProcessSummary) => HistoryProcessSummary;
 };
 
@@ -115,6 +119,7 @@ export function prepareRegenerateRequest(
       messageId: options.targetAssistantMessageId,
       history: options.history.slice(),
       displayHistory: displayHistoryBackup,
+      uiTranscript: options.cloneUiTranscript(options.uiTranscript),
       restoreContent: targetAssistantDisplay.content ?? getAssistantDisplayContent(options.history[lastAssistantIndex].content),
       restoreProcessSummary: targetAssistantDisplay.processSummary
         ? options.cloneHistoryProcessSummary(targetAssistantDisplay.processSummary)

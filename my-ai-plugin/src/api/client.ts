@@ -43,6 +43,11 @@ export type OnDoneCallback = (fullContent: string) => void;
 /** 错误回调 */
 export type OnErrorCallback = (errorMessage: string) => void;
 
+function buildRequestPath(url: URL): string {
+  const requestPath = `${url.pathname}${url.search}`;
+  return requestPath || '/';
+}
+
 /**
  * 发送非流式 Chat Completion 请求
  * 等待 AI 完整回复后一次性返回
@@ -107,7 +112,7 @@ export function sendStreamRequest(
   const options: https.RequestOptions = {
     hostname: url.hostname,
     port: url.port || (url.protocol === 'https:' ? 443 : 80),
-    path: url.pathname,
+    path: buildRequestPath(url),
     method: 'POST',
     // 绕过 VS Code 对 http.globalAgent 的 patch，避免代理干扰
     agent: false as any,
@@ -352,7 +357,7 @@ function doHttpRequest(
     const options: https.RequestOptions = {
       hostname: url.hostname,
       port: url.port || (url.protocol === 'https:' ? 443 : 80),
-      path: url.pathname,
+      path: buildRequestPath(url),
       method: 'POST',
       // 绕过 VS Code 对 http.globalAgent 的 patch，避免代理干扰
       agent: false as any,

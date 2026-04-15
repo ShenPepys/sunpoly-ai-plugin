@@ -14,6 +14,9 @@ export class ChatTabManager {
   /** 所有打开的 Tab 实例，key 为 tabId */
   private readonly tabs = new Map<string, ChatTabPanel>();
 
+  /** 最近一次获得焦点的 Tab ID，用于命令回退路由 */
+  private lastFocusedTabId: string | null = null;
+
   /** 各 Tab 关联的事件监听（Tab 关闭时需一并清理） */
   private readonly disposables = new Map<string, vscode.Disposable>();
 
@@ -44,6 +47,9 @@ export class ChatTabManager {
       this.disposables.get(tab.tabId)?.dispose();
       this.disposables.delete(tab.tabId);
       this.tabs.delete(tab.tabId);
+      if (this.lastFocusedTabId === tab.tabId) {
+        this.lastFocusedTabId = this.getActiveTab()?.tabId ?? [...this.tabs.keys()].pop() ?? null;
+      }
       info(`Tab 管理器：移除已关闭的 Tab ${tab.tabId}，剩余 ${this.tabs.size} 个`);
     };
 
@@ -55,13 +61,20 @@ export class ChatTabManager {
     // 监听 Tab 获得焦点时同步状态栏模型名
     const viewStateDisposable = tab.onDidChangeViewState(active => {
       if (active && this.onModelSwitch) {
+        this.lastFocusedTabId = tab.tabId;
         this.onModelSwitch(tab.getActiveModelName());
+        return;
+      }
+
+      if (active) {
+        this.lastFocusedTabId = tab.tabId;
       }
     });
     // Tab 关闭时自动清理事件监听
     this.disposables.set(tab.tabId, viewStateDisposable);
 
     this.tabs.set(tab.tabId, tab);
+    this.lastFocusedTabId = tab.tabId;
     info(`Tab 管理器：新建 Tab ${tab.tabId}，当前共 ${this.tabs.size} 个`);
 
     return tab;
@@ -78,9 +91,17 @@ export class ChatTabManager {
       return activeTab;
     }
 
-    // 没有活跃 Tab 时，返回最后一个打开的 Tab
+    if (this.lastFocusedTabId) {
+      const lastFocusedTab = this.tabs.get(this.lastFocusedTabId);
+      if (lastFocusedTab) {
+        return lastFocusedTab;
+      }
+    }
+
+    // 没有活跃 Tab 时，回退到当前仍存在的最后一个打开的 Tab
     const lastTab = [...this.tabs.values()].pop();
     if (lastTab) {
+      this.lastFocusedTabId = lastTab.tabId;
       return lastTab;
     }
 

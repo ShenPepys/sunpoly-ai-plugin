@@ -387,6 +387,7 @@ export function clearSessionConversation(session: ChatSession | undefined, now: 
 
   session.history = [];
   session.displayHistory = [];
+  session.uiTranscript = [];
   session.updatedAt = now;
 }
 

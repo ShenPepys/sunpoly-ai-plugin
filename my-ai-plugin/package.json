@@ -2,7 +2,7 @@
   "name": "my-ai-plugin",
   "displayName": "AI 助理",
   "description": "VS Code AI 助理插件，支持代码解释、Bug 修复、代码优化、续写和单测生成",
-  "version": "0.1.22",
+  "version": "0.3.1",
   "publisher": "my-ai-plugin",
   "license": "MIT",
   "repository": {
@@ -213,7 +213,7 @@
         "myAiPlugin.panelTitle": {
           "type": "string",
           "default": "Sunploy",
-          "description": "侧边栏面板标题，可自定义为企业名称（如 SUERY AI、XXX 智能助手）"
+          "description": "聊天面板标题，可自定义为企业名称（如 SUERY AI、XXX 智能助手）"
         },
         "myAiPlugin.systemPrompt": {
           "type": "string",

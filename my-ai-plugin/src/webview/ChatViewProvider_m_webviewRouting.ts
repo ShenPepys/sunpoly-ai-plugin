@@ -311,7 +311,13 @@ export async function handleRemainingWebviewMessage(
         if (turnWriteRounds >= 2) {
           options.postMessage(buildFinalTurnChangeSummaryResponse(stopResult.stoppedRunId, options.getTurnWriteFiles()));
         }
-        options.rollbackPendingRegenerateState(stopResult.stoppedRunId);
+        const rolledBack = options.rollbackPendingRegenerateState(stopResult.stoppedRunId);
+        options.postMessage({
+          type: 'generationStopped',
+          messageId: rolledBack ? undefined : stopResult.stoppedRunId,
+        });
+        options.postMessage({ type: 'setLoading', loading: false });
+        return;
       }
       options.postMessage({ type: 'generationStopped' });
       options.postMessage({ type: 'setLoading', loading: false });
