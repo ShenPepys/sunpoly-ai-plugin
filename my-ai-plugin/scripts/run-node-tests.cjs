@@ -33,7 +33,8 @@ if (testFiles.length === 0) {
   process.exit(1);
 }
 
-const runResult = spawnSync(process.execPath, ['--test', ...testFiles], {
+const vscodeMockPath = path.resolve(__dirname, 'vscode-mock.cjs');
+const runResult = spawnSync(process.execPath, ['--require', vscodeMockPath, '--test', ...testFiles], {
   stdio: 'inherit',
 });
 

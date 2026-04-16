@@ -1429,6 +1429,7 @@ export class ChatEngine {
     requestOptions?: UserMessageRequestOptions,
   ): Promise<void> {
     const initialSessionId = this.activeSessionId;
+    info(`[锁诊断] handleUserMessage 入口: engineId=${this.engineId}, initialSessionId=${initialSessionId}, launcherVisible=${this.sessionLauncherVisible}`);
     if (this.hasRunningTask(initialSessionId)) {
       const message = '当前仍在生成，请先停止当前任务后再发送新的消息。';
       this.postSessionMessage(initialSessionId, { type: 'showError', message });
@@ -1436,10 +1437,12 @@ export class ChatEngine {
     }
 
     if (initialSessionId && this.hasRunningTaskElsewhere(initialSessionId)) {
+      info(`[锁诊断] hasRunningTaskElsewhere 命中: engineId=${this.engineId}, sessionId=${initialSessionId}`);
       const message = this.getCrossTabRunConflictMessage(initialSessionId);
       this.postSessionMessage(initialSessionId, { type: 'showError', message });
       return;
     }
+    info(`[锁诊断] hasRunningTaskElsewhere 未命中: engineId=${this.engineId}, sessionId=${initialSessionId}, 全局锁快照=${JSON.stringify(this.store.runLocks)}`);
 
     if (this.sessionLauncherVisible || !getActiveSessionHelper(this.sessions, initialSessionId)) {
       const createSessionPlan = planCreateSession({
@@ -1465,11 +1468,14 @@ export class ChatEngine {
     const sessionDisplayHistory = this.getDisplayHistoryForSession(sessionId);
 
     const assistantMsgId = `assistant-${Date.now()}`;
+    info(`[锁诊断] tryAcquireSessionRunLock: engineId=${this.engineId}, sessionId=${sessionId}, runId=${assistantMsgId}`);
     const runLockError = this.tryAcquireSessionRunLock(sessionId, assistantMsgId);
     if (runLockError) {
+      info(`[锁诊断] tryAcquireSessionRunLock 被拒: engineId=${this.engineId}, sessionId=${sessionId}, error=${runLockError}`);
       this.postSessionMessage(sessionId, { type: 'showError', message: runLockError });
       return;
     }
+    info(`[锁诊断] tryAcquireSessionRunLock 成功: engineId=${this.engineId}, sessionId=${sessionId}, 当前全局锁=${JSON.stringify(this.store.runLocks)}`);
 
     sessionRuntime.turnWriteFiles = [];
     sessionRuntime.turnWriteRounds = 0;
@@ -2163,6 +2169,7 @@ export class ChatEngine {
   }
 
   private switchSession(sessionId: string): void {
+    info(`[锁诊断] switchSession: engineId=${this.engineId}, targetSessionId=${sessionId}, 全局锁快照=${JSON.stringify(this.store.runLocks)}`);
     if (this.isSessionRunningInOtherTab(sessionId)) {
       this.postMessage({
         type: 'showError',
