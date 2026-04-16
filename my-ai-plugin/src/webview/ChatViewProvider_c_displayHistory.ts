@@ -1,5 +1,5 @@
-import { hasToolCalls, parseToolCalls, stripToolCalls } from '../tools';
-import type { ParsedToolCall } from '../tools';
+import { hasToolCalls, parseToolCalls, stripToolCalls } from '../tools/toolParser';
+import type { ParsedToolCall } from '../tools/toolParser';
 import type {
   ChatSessionDisplayMessage,
   ChatSessionHistoryMessage,

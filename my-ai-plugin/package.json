@@ -2,7 +2,7 @@
   "name": "sunploy-ai-plugin",
   "displayName": "sunploy-ai-助理",
   "description": "VS Code AI 助理插件，支持代码解释、Bug 修复、代码优化、续写和单测生成",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "publisher": "sunploy-ai-plugin",
   "license": "MIT",
   "repository": {
@@ -228,6 +228,8 @@
     "vscode:prepublish": "npm run build",
     "build": "node esbuild.js --production",
     "watch": "node esbuild.js --watch",
+    "test:build": "tsc -p tsconfig.test.json",
+    "test": "npm run test:build && node .\\scripts\\run-node-tests.cjs",
     "lint": "eslint src --ext ts",
     "package": "vsce package"
   },
