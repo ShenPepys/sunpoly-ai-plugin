@@ -104,6 +104,10 @@
           "command": "my-ai-plugin.test",
           "group": "ai-plugin@4",
           "when": "editorHasSelection"
+        },
+        {
+          "command": "my-ai-plugin.complete",
+          "group": "ai-plugin@5"
         }
       ],
       "editor/title": [
@@ -123,6 +127,20 @@
       {
         "command": "my-ai-plugin.fix",
         "key": "alt+f",
+        "when": "editorHasSelection"
+      },
+      {
+        "command": "my-ai-plugin.complete",
+        "key": "alt+i"
+      },
+      {
+        "command": "my-ai-plugin.optimize",
+        "key": "alt+o",
+        "when": "editorHasSelection"
+      },
+      {
+        "command": "my-ai-plugin.test",
+        "key": "alt+g",
         "when": "editorHasSelection"
       },
       {
