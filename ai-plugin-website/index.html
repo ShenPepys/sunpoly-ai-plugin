@@ -46,7 +46,7 @@
       </div>
       <div class="hero-stats">
         <div class="stat-item">
-          <span class="stat-value">5+</span>
+          <span class="stat-value">8+</span>
           <span class="stat-label">核心工具</span>
         </div>
         <div class="stat-item">
@@ -105,6 +105,24 @@
           <div class="feature-icon">📁</div>
           <h3 class="feature-title">文件操作</h3>
           <p class="feature-desc">AI 直接读写项目文件，执行完整的修改操作，支持一键撤销。</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">📋</div>
+          <h3 class="feature-title">Plan 模式</h3>
+          <p class="feature-desc">先规划再执行，AI 会分析需求并给出完整方案，确认后再动手修改代码。</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">🖱️</div>
+          <h3 class="feature-title">右键快捷命令</h3>
+          <p class="feature-desc">选中代码后右键即可解释、修复、优化、生成单测，也可用快捷键 Alt+E/F/O/G/I 快速触发。</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">↩️</div>
+          <h3 class="feature-title">Diff 预览与撤销</h3>
+          <p class="feature-desc">每次文件修改都展示 Diff 对比，支持单文件撤销和一键 Undo All，改动完全可控。</p>
         </div>
 
       </div>
@@ -237,6 +255,111 @@
           </div>
         </div>
 
+        <!-- 卡片 4：Plan 模式 · 规划设计 -->
+        <div class="mock-card">
+          <div class="mock-card-label">Plan 模式 · 规划设计</div>
+          <div class="mock-mini">
+            <div class="mock-modebar">
+              <span class="mock-mode">Ask</span>
+              <span class="mock-mode">Code</span>
+              <span class="mock-mode active">Plan</span>
+            </div>
+            <div class="mock-chat-mini">
+              <div class="mock-bubble user">重构用户模块，把认证逻辑抽成独立服务</div>
+              <div class="mock-bubble ai-exec">
+                <div class="mock-steps-mini">
+                  <div class="mock-step done"><span class="mock-step-icon">✓</span> Thought for 4.1s</div>
+                  <div class="mock-step done"><span class="mock-step-icon">✓</span> Reading src/user/auth.ts</div>
+                  <div class="mock-step done"><span class="mock-step-icon">✓</span> Reading src/user/service.ts</div>
+                </div>
+                <div class="mock-bubble ai" style="padding:8px 12px;margin:0">
+                  <strong>重构方案：</strong><br>
+                  1. 新建 <code>src/services/authService.ts</code>，抽离认证逻辑<br>
+                  2. <code>user/service.ts</code> 改为调用 authService<br>
+                  3. 补充接口类型定义<br><br>
+                  预计修改 <strong>3 个文件</strong>，确认后我开始执行。
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 卡片 5：右键快捷命令 -->
+        <div class="mock-card">
+          <div class="mock-card-label">右键菜单 · 快捷命令</div>
+          <div class="mock-mini">
+            <div class="mock-editor-mini">
+              <div class="mock-editor-bar">
+                <span class="mock-editor-file">utils/auth.ts</span>
+                <span class="mock-editor-lang">TypeScript</span>
+              </div>
+              <div class="mock-editor-code">
+                <div class="mock-code-line selected"><span class="mock-ln">8</span>  export async function login(username: string,</div>
+                <div class="mock-code-line selected"><span class="mock-ln">9</span>    password: string) {</div>
+                <div class="mock-code-line selected"><span class="mock-ln">10</span>    const token = await authenticate(username, password);</div>
+                <div class="mock-code-line selected"><span class="mock-ln">11</span>    return { token, user: await getUser(token) };</div>
+                <div class="mock-code-line selected"><span class="mock-ln">12</span>  }</div>
+              </div>
+            </div>
+            <div class="mock-ctx-menu">
+              <div class="mock-ctx-item">✂️ 剪切</div>
+              <div class="mock-ctx-item">📋 复制</div>
+              <div class="mock-ctx-sep"></div>
+              <div class="mock-ctx-item highlight">💡 AI: 解释代码 <span class="mock-ctx-key">Alt+E</span></div>
+              <div class="mock-ctx-item highlight">🔧 AI: 修复代码 <span class="mock-ctx-key">Alt+F</span></div>
+              <div class="mock-ctx-item highlight">⚡ AI: 优化代码 <span class="mock-ctx-key">Alt+O</span></div>
+              <div class="mock-ctx-item highlight">🧪 AI: 生成单测 <span class="mock-ctx-key">Alt+G</span></div>
+              <div class="mock-ctx-item highlight">✏️ AI: 续写代码 <span class="mock-ctx-key">Alt+I</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 卡片 6：Diff 预览与撤销 -->
+        <div class="mock-card">
+          <div class="mock-card-label">Diff 预览 · 一键撤销</div>
+          <div class="mock-mini">
+            <div class="mock-modebar">
+              <span class="mock-mode">Ask</span>
+              <span class="mock-mode active">Code</span>
+              <span class="mock-mode">Plan</span>
+              <span class="mock-context">约 56K / 128K · 44%</span>
+            </div>
+            <div class="mock-chat-mini">
+              <div class="mock-bubble user">给 login 函数添加参数校验和错误处理</div>
+              <div class="mock-bubble ai-exec">
+                <div class="mock-summary-mini">
+                  <span class="mock-summary-stat">2 files</span>
+                  <span class="mock-summary-added">+28</span>
+                  <span class="mock-summary-removed">-3</span>
+                  <span class="mock-summary-info">✓ Applied</span>
+                  <span class="mock-btn-undo">↩ Undo all</span>
+                </div>
+                <div class="mock-diff-mini">
+                  <div class="mock-diff-header">utils/auth.ts</div>
+                  <div class="mock-diff-line ctx"><span class="mock-ln">7</span>  export async function login(</div>
+                  <div class="mock-diff-line del"><span class="mock-ln">8</span>    username: string, password: string) {</div>
+                  <div class="mock-diff-line add"><span class="mock-ln">8</span>    username: string, password: string) {</div>
+                  <div class="mock-diff-line add"><span class="mock-ln">9</span>    if (!username || !username.trim()) {</div>
+                  <div class="mock-diff-line add"><span class="mock-ln">10</span>      throw new Error('用户名不能为空');</div>
+                  <div class="mock-diff-line add"><span class="mock-ln">11</span>    }</div>
+                  <div class="mock-diff-line add"><span class="mock-ln">12</span>    if (password.length &lt; 8) {</div>
+                  <div class="mock-diff-line add"><span class="mock-ln">13</span>      throw new Error('密码长度至少8位');</div>
+                  <div class="mock-diff-line add"><span class="mock-ln">14</span>    }</div>
+                  <div class="mock-diff-line ctx"><span class="mock-ln">15</span>    const token = await authenticate(</div>
+                </div>
+                <div class="mock-diff-mini" style="margin-top:6px">
+                  <div class="mock-diff-header">tests/auth.test.ts <span class="mock-diff-badge">new</span></div>
+                  <div class="mock-diff-line add"><span class="mock-ln">1</span>  import { login } from '../utils/auth';</div>
+                  <div class="mock-diff-line add"><span class="mock-ln">2</span>  describe('login', () => {</div>
+                  <div class="mock-diff-line add"><span class="mock-ln">3</span>    it('should reject empty username', async () => {</div>
+                  <div class="mock-diff-line add"><span class="mock-ln">4</span>      await expect(login('', '12345678'))).rejects.toThrow();</div>
+                  <div class="mock-diff-line add"><span class="mock-ln">5</span>    });</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- 卡片 4：多模型 + 上下文监控 -->
         <div class="mock-card">
           <div class="mock-card-label">多模型 · 上下文监控</div>
@@ -301,8 +424,8 @@
             <strong>扩展 → ⋯ → 从 VSIX 安装</strong> 即可使用。
           </p>
           <div class="download-meta">
-            <span class="meta-item">📦 当前版本：<strong>v0.1.2</strong></span>
-            <span class="meta-item">📐 文件大小：<strong>~176 KB</strong></span>
+            <span class="meta-item">📦 当前版本：<strong>v0.3.5</strong></span>
+            <span class="meta-item">📐 文件大小：<strong>~200 KB</strong></span>
             <span class="meta-item">🖥️ 要求：<strong>VS Code 1.85+</strong></span>
           </div>
           <!-- 
@@ -311,7 +434,7 @@
           -->
           <a href="#" class="btn btn-primary btn-lg download-btn" id="downloadBtn">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            下载 my-ai-plugin-0.1.2.vsix
+            下载 my-ai-plugin-0.3.5.vsix
           </a>
         </div>
 

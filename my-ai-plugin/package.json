@@ -2,7 +2,7 @@
   "name": "sunploy-ai-plugin",
   "displayName": "sunploy-ai-助理",
   "description": "VS Code AI 助理插件，支持代码解释、Bug 修复、代码优化、续写和单测生成",
-  "version": "0.3.5",
+  "version": "0.1.0",
   "publisher": "sunploy-ai-plugin",
   "author": {
     "name": "Mr.shen",

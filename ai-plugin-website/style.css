@@ -305,7 +305,7 @@ code {
 .features-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 24px;
+  gap: 20px;
 }
 
 .feature-card {
@@ -668,6 +668,129 @@ code {
   padding: 8px 12px;
   font-size: 11px;
   color: rgba(255, 255, 255, 0.2);
+}
+
+/* 编辑器模拟（右键菜单卡片） */
+.mock-editor-mini {
+  position: relative;
+}
+
+.mock-editor-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 12px;
+  background: #181825;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.mock-editor-file {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+}
+
+.mock-editor-lang {
+  font-size: 10px;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.mock-editor-code {
+  padding: 6px 0;
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.mock-code-line {
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.mock-code-line.selected {
+  background: rgba(99, 102, 241, 0.12);
+}
+
+/* 右键菜单 */
+.mock-ctx-menu {
+  position: absolute;
+  top: 50px;
+  right: 24px;
+  background: #252536;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 4px 0;
+  min-width: 200px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  z-index: 10;
+}
+
+.mock-ctx-item {
+  padding: 5px 14px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: default;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mock-ctx-item.highlight {
+  color: var(--accent-light);
+  font-weight: 500;
+}
+
+.mock-ctx-key {
+  margin-left: auto;
+  font-size: 9px;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: monospace;
+}
+
+.mock-ctx-sep {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.06);
+  margin: 4px 0;
+}
+
+/* Diff header */
+.mock-diff-header {
+  padding: 3px 10px;
+  font-size: 10px;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+}
+
+.mock-diff-badge {
+  font-size: 9px;
+  background: rgba(74, 222, 128, 0.15);
+  color: #4ade80;
+  padding: 0 4px;
+  border-radius: 3px;
+  margin-left: 6px;
+}
+
+.mock-diff-line.del {
+  background: rgba(239, 68, 68, 0.08);
+  color: #fca5a5;
+}
+
+.mock-diff-line.ctx {
+  color: rgba(255, 255, 255, 0.25);
+}
+
+.mock-summary-removed {
+  color: #f87171;
+  font-family: monospace;
+  font-weight: 600;
 }
 
 /* 模型列表 */
