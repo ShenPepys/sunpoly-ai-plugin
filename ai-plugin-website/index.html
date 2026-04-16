@@ -301,16 +301,6 @@
                 <div class="mock-code-line selected"><span class="mock-ln">12</span>  }</div>
               </div>
             </div>
-            <div class="mock-ctx-menu">
-              <div class="mock-ctx-item">✂️ 剪切</div>
-              <div class="mock-ctx-item">📋 复制</div>
-              <div class="mock-ctx-sep"></div>
-              <div class="mock-ctx-item highlight">💡 AI: 解释代码 <span class="mock-ctx-key">Alt+E</span></div>
-              <div class="mock-ctx-item highlight">🔧 AI: 修复代码 <span class="mock-ctx-key">Alt+F</span></div>
-              <div class="mock-ctx-item highlight">⚡ AI: 优化代码 <span class="mock-ctx-key">Alt+O</span></div>
-              <div class="mock-ctx-item highlight">🧪 AI: 生成单测 <span class="mock-ctx-key">Alt+G</span></div>
-              <div class="mock-ctx-item highlight">✏️ AI: 续写代码 <span class="mock-ctx-key">Alt+I</span></div>
-            </div>
           </div>
         </div>
 
@@ -360,54 +350,6 @@
           </div>
         </div>
 
-        <!-- 卡片 4：多模型 + 上下文监控 -->
-        <div class="mock-card">
-          <div class="mock-card-label">多模型 · 上下文监控</div>
-          <div class="mock-mini">
-            <div class="mock-model-list">
-              <div class="mock-model-item active">
-                <span class="mock-model-dot"></span>
-                <span class="mock-model-name">DeepSeek Chat</span>
-                <span class="mock-model-id">deepseek-chat</span>
-              </div>
-              <div class="mock-model-item">
-                <span class="mock-model-dot"></span>
-                <span class="mock-model-name">GPT-4o</span>
-                <span class="mock-model-id">gpt-4o</span>
-              </div>
-              <div class="mock-model-item">
-                <span class="mock-model-dot"></span>
-                <span class="mock-model-name">Claude 3.5</span>
-                <span class="mock-model-id">claude-3.5-sonnet</span>
-              </div>
-            </div>
-            <div class="mock-context-panel">
-              <div class="mock-context-title">上下文使用量</div>
-              <div class="mock-context-bar">
-                <div class="mock-context-fill" style="width: 37%"></div>
-              </div>
-              <div class="mock-context-info">
-                <span>约 48K / 128K</span>
-                <span class="mock-context-pct green">37%</span>
-              </div>
-              <div class="mock-context-bar warn">
-                <div class="mock-context-fill" style="width: 72%; background: #fb923c;"></div>
-              </div>
-              <div class="mock-context-info">
-                <span>约 92K / 128K</span>
-                <span class="mock-context-pct orange">72%</span>
-              </div>
-              <div class="mock-context-bar danger">
-                <div class="mock-context-fill" style="width: 95%; background: #ef4444;"></div>
-              </div>
-              <div class="mock-context-info">
-                <span>约 122K / 128K</span>
-                <span class="mock-context-pct red">95%</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
       </div>
       <p class="preview-hint">模拟界面仅供展示，实际效果以安装后为准</p>
     </div>
@@ -424,37 +366,29 @@
             <strong>扩展 → ⋯ → 从 VSIX 安装</strong> 即可使用。
           </p>
           <div class="download-meta">
-            <span class="meta-item">📦 当前版本：<strong>v0.3.5</strong></span>
-            <span class="meta-item">📐 文件大小：<strong>~200 KB</strong></span>
+            <span class="meta-item">📦 当前版本：<strong>v0.1.0</strong></span>
+            <span class="meta-item">📐 文件大小：<strong>~312 KB</strong></span>
             <span class="meta-item">🖥️ 要求：<strong>VS Code 1.85+</strong></span>
           </div>
           <!-- 
             ⬇️ 修改下面的 href 为你实际的 VSIX 下载地址
             可以是 GitHub Release 链接、OSS 直链、网盘链接等
           -->
-          <a href="#" class="btn btn-primary btn-lg download-btn" id="downloadBtn">
+          <a href="https://github.com/ShenPepys/sunploy-ai-plugin/releases/download/0.1.0/sunploy-ai-plugin-0.1.0.vsix" class="btn btn-primary btn-lg download-btn" id="downloadBtn">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            下载 my-ai-plugin-0.3.5.vsix
+            下载 sunploy-ai-plugin-0.1.0.vsix
           </a>
         </div>
 
         <div class="download-divider"></div>
 
         <div class="donate-info">
-          <h3 class="donate-title">☕ 支持作者</h3>
-          <p class="donate-desc">如果觉得好用，欢迎请我喝杯咖啡</p>
-          <div class="qr-placeholder" id="qrPlaceholder">
-            <!-- 
-              替换说明：
-              把下面的占位内容替换为你的打赏二维码图片：
-              <img src="assets/donate-qr.png" alt="打赏二维码" class="qr-image">
-            -->
-            <div class="qr-empty">
-              <span>🖼️</span>
-              <p>请将打赏二维码图片<br>放入 <code>assets/donate-qr.png</code></p>
-            </div>
+          <h3 class="donate-title">📱 关注公众号</h3>
+          <p class="donate-desc">扫码关注，获取更新动态和使用技巧</p>
+          <div class="qr-placeholder">
+            <img src="wechat-qr.JPG" alt="微信公众号二维码" class="qr-image">
           </div>
-          <p class="donate-hint">微信 / 支付宝扫码</p>
+          <p class="donate-hint">微信扫码关注</p>
         </div>
       </div>
     </div>
