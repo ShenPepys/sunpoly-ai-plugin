@@ -4,6 +4,10 @@
   "description": "VS Code AI 助理插件，支持代码解释、Bug 修复、代码优化、续写和单测生成",
   "version": "0.3.5",
   "publisher": "sunploy-ai-plugin",
+  "author": {
+    "name": "Mr.shen",
+    "email": "sqf_163@163.com"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
