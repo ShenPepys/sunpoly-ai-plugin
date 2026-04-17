@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import { error, info } from '../logger';
 import { executeToolCalls, readFile } from '../tools';
 import type { ParsedToolCall, ToolCallType, ToolExecutionResult } from '../tools';
-import { resolveAndValidatePath } from '../tools/fileOps';
+import { buildEditedContent, resolveAndValidatePath } from '../tools/fileOps';
 import type {
   AddStepResponse,
   ShowChangeSummaryResponse,
@@ -273,24 +273,6 @@ export async function ensurePreviewFileState(
   return nextState;
 }
 
-function countExactOccurrences(source: string, search: string): number {
-  if (!search) {
-    return 0;
-  }
-
-  let count = 0;
-  let startIndex = 0;
-  while (true) {
-    const matchIndex = source.indexOf(search, startIndex);
-    if (matchIndex === -1) {
-      return count;
-    }
-
-    count += 1;
-    startIndex = matchIndex + search.length;
-  }
-}
-
 export function buildPreviewContent(toolCall: ParsedToolCall, currentContent: string): PreviewBuildResult {
   if (toolCall.type === 'write_file') {
     return {
@@ -308,35 +290,65 @@ export function buildPreviewContent(toolCall: ParsedToolCall, currentContent: st
 
   const oldSegment = toolCall.oldContent;
   const newSegment = toolCall.newContent || '';
-  if (oldSegment === undefined || oldSegment === '') {
-    return {
-      newContent: currentContent,
-      canApply: false,
-      issueText: '预览提示：编辑片段缺少 old 内容，实际执行会失败',
-    };
-  }
+  const editResult = buildEditedContent(currentContent, oldSegment || '', newSegment);
+  if (!editResult.success) {
+    if (editResult.reason === 'missing-old') {
+      return {
+        newContent: currentContent,
+        canApply: false,
+        issueText: '预览提示：编辑片段缺少 old 内容，实际执行会失败',
+      };
+    }
 
-  if (!currentContent.includes(oldSegment)) {
-    return {
-      newContent: currentContent,
-      canApply: false,
-      issueText: '预览提示：当前文件中未找到要替换的内容，实际执行会失败',
-    };
-  }
+    if (editResult.reason === 'not-found') {
+      return {
+        newContent: currentContent,
+        canApply: false,
+        issueText: '预览提示：当前文件中未找到要替换的内容，实际执行会失败',
+      };
+    }
 
-  const matchCount = countExactOccurrences(currentContent, oldSegment);
-  if (matchCount > 1) {
     return {
       newContent: currentContent,
       canApply: false,
-      issueText: `预览提示：要替换的内容在文件中出现了 ${matchCount} 次，实际执行会因定位不唯一而失败`,
+      issueText: `预览提示：要替换的内容在文件中出现了 ${editResult.matchCount} 次，实际执行会因定位不唯一而失败`,
     };
   }
 
   return {
-    newContent: currentContent.replace(oldSegment, newSegment),
+    newContent: editResult.updatedContent,
     canApply: true,
   };
+}
+
+function createWriteFailureSummaryEntry(options: {
+  toolCall: ParsedToolCall;
+  filePath: string;
+  fileExistedBeforeWrite: boolean;
+  issueText: string;
+  toDisplayPath?: (filePath: string) => string;
+}): ChangeSummaryFile {
+  const toDisplayPath = options.toDisplayPath ?? getDisplayPath;
+  return {
+    path: options.filePath,
+    displayPath: toDisplayPath(options.filePath),
+    additions: 0,
+    deletions: 0,
+    status: options.toolCall.type === 'write_file' && !options.fileExistedBeforeWrite ? 'created' : 'modified',
+    issueText: options.issueText,
+  };
+}
+
+function truncateStepFailureText(text: string, maxChars = 120): string {
+  if (text.length <= maxChars) {
+    return text;
+  }
+
+  return `${text.slice(0, maxChars)}...`;
+}
+
+function buildWriteFailureStepDescription(toolCall: ParsedToolCall, failureText: string): string {
+  return `${getToolStepDescription(toolCall)} · ${truncateStepFailureText(failureText)}`;
 }
 
 export function buildPreviewSummaryFiles(
@@ -401,9 +413,56 @@ export async function executeWriteToolCall(options: {
   const requestedFilePath = options.toolCall.path;
   const resolvedFilePath = resolveAndValidatePath(requestedFilePath);
   const filePath = resolvedFilePath ?? requestedFilePath;
+  const toDisplayPath = options.toDisplayPath ?? getDisplayPath;
+  const fileExistedBeforeWrite = resolvedFilePath ? fs.existsSync(filePath) : false;
 
   if (resolvedFilePath && resolvedFilePath !== requestedFilePath) {
     info(`写操作路径已解析: ${requestedFilePath} -> ${resolvedFilePath}`);
+  }
+
+  if (resolvedFilePath && fileExistedBeforeWrite && options.toolCall.type === 'write_file') {
+    const issueText = '预检失败：目标文件已存在。为了避免整文件重写，请先读取当前文件并改用 edit_file 做局部修改';
+    return {
+      filePath,
+      singleResult: {
+        toolCall: options.toolCall,
+        result: {
+          success: false,
+          content: issueText,
+        },
+      },
+      changeSummaryEntry: createWriteFailureSummaryEntry({
+        toolCall: options.toolCall,
+        filePath,
+        fileExistedBeforeWrite,
+        issueText,
+        toDisplayPath,
+      }),
+    };
+  }
+
+  if (resolvedFilePath && fileExistedBeforeWrite && options.toolCall.type === 'edit_file') {
+    const previewResult = buildPreviewContent(options.toolCall, readFileTextSafely(filePath));
+    if (!previewResult.canApply) {
+      const issueText = previewResult.issueText || '预检失败：当前编辑无法安全应用';
+      return {
+        filePath,
+        singleResult: {
+          toolCall: options.toolCall,
+          result: {
+            success: false,
+            content: issueText,
+          },
+        },
+        changeSummaryEntry: createWriteFailureSummaryEntry({
+          toolCall: options.toolCall,
+          filePath,
+          fileExistedBeforeWrite,
+          issueText,
+          toDisplayPath,
+        }),
+      };
+    }
   }
 
   if (resolvedFilePath && !options.writeBackups.has(filePath)) {
@@ -427,6 +486,13 @@ export async function executeWriteToolCall(options: {
     return {
       filePath,
       singleResult,
+      changeSummaryEntry: createWriteFailureSummaryEntry({
+        toolCall: options.toolCall,
+        filePath,
+        fileExistedBeforeWrite,
+        issueText: singleResult.result.content,
+        toDisplayPath,
+      }),
     };
   }
 
@@ -446,7 +512,6 @@ export async function executeWriteToolCall(options: {
     needsConfirm: false,
     collapsed: true,
   };
-  const toDisplayPath = options.toDisplayPath ?? getDisplayPath;
   const changeSummaryEntry: ChangeSummaryFile = {
     path: filePath,
     displayPath: toDisplayPath(filePath),
@@ -540,6 +605,9 @@ export async function executeToolCallBatch(options: {
         }
       } else {
         writeFailCount += 1;
+        if (writeResult.changeSummaryEntry) {
+          upsertChangeSummaryFile(batchWriteFiles, writeResult.changeSummaryEntry);
+        }
       }
 
       executionRecords.push({
@@ -551,6 +619,9 @@ export async function executeToolCallBatch(options: {
         type: 'updateStep',
         stepId,
         status: singleResult.result.success ? 'done' : 'error',
+        description: singleResult.result.success
+          ? undefined
+          : buildWriteFailureStepDescription(toolCall, singleResult.result.content),
         elapsed: Date.now() - startTime,
       });
       continue;

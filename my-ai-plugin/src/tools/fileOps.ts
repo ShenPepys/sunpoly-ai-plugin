@@ -116,6 +116,106 @@ function countExactOccurrences(source: string, search: string): number {
   }
 }
 
+function normalizeLineEndings(source: string): string {
+  return source.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+function buildNormalizedTextPositionMap(source: string): { normalizedText: string; positionMap: number[] } {
+  let normalizedText = '';
+  const positionMap: number[] = [];
+  let index = 0;
+
+  while (index < source.length) {
+    const currentChar = source[index];
+    if (currentChar === '\r') {
+      positionMap.push(index);
+      normalizedText += '\n';
+      if (source[index + 1] === '\n') {
+        index += 2;
+        continue;
+      }
+
+      index += 1;
+      continue;
+    }
+
+    positionMap.push(index);
+    normalizedText += currentChar;
+    index += 1;
+  }
+
+  positionMap.push(source.length);
+  return { normalizedText, positionMap };
+}
+
+function detectPreferredLineEnding(...parts: string[]): '\r\n' | '\n' {
+  for (const part of parts) {
+    if (part.includes('\r\n')) {
+      return '\r\n';
+    }
+  }
+
+  return '\n';
+}
+
+function applyPreferredLineEnding(source: string, preferredLineEnding: '\r\n' | '\n'): string {
+  const normalizedSource = normalizeLineEndings(source);
+  if (preferredLineEnding === '\n') {
+    return normalizedSource;
+  }
+
+  return normalizedSource.replace(/\n/g, '\r\n');
+}
+
+export function buildEditedContent(
+  fileContent: string,
+  oldContent: string,
+  newContent: string,
+):
+  | { success: true; updatedContent: string; usedNormalizedMatch: boolean }
+  | { success: false; reason: 'missing-old' | 'not-found' | 'not-unique'; matchCount?: number } {
+  if (!oldContent) {
+    return { success: false, reason: 'missing-old' };
+  }
+
+  const exactMatchCount = countExactOccurrences(fileContent, oldContent);
+  const preferredLineEnding = detectPreferredLineEnding(fileContent, oldContent, newContent);
+  const replacementContent = applyPreferredLineEnding(newContent, preferredLineEnding);
+
+  if (exactMatchCount === 1) {
+    const matchIndex = fileContent.indexOf(oldContent);
+    return {
+      success: true,
+      updatedContent: fileContent.slice(0, matchIndex) + replacementContent + fileContent.slice(matchIndex + oldContent.length),
+      usedNormalizedMatch: false,
+    };
+  }
+
+  if (exactMatchCount > 1) {
+    return { success: false, reason: 'not-unique', matchCount: exactMatchCount };
+  }
+
+  const { normalizedText: normalizedFileContent, positionMap } = buildNormalizedTextPositionMap(fileContent);
+  const normalizedOldContent = normalizeLineEndings(oldContent);
+  const normalizedMatchCount = countExactOccurrences(normalizedFileContent, normalizedOldContent);
+  if (normalizedMatchCount === 0) {
+    return { success: false, reason: 'not-found' };
+  }
+
+  if (normalizedMatchCount > 1) {
+    return { success: false, reason: 'not-unique', matchCount: normalizedMatchCount };
+  }
+
+  const normalizedMatchIndex = normalizedFileContent.indexOf(normalizedOldContent);
+  const matchStartIndex = positionMap[normalizedMatchIndex];
+  const matchEndIndex = positionMap[normalizedMatchIndex + normalizedOldContent.length];
+  return {
+    success: true,
+    updatedContent: fileContent.slice(0, matchStartIndex) + replacementContent + fileContent.slice(matchEndIndex),
+    usedNormalizedMatch: true,
+  };
+}
+
 /**
  * 读取文件内容
  * @param filePath 文件路径（绝对路径或相对于工作区的路径）
@@ -217,23 +317,24 @@ export async function editFile(filePath: string, oldContent: string, newContent:
 
     const fileContent = fs.readFileSync(safePath, 'utf-8');
 
-    if (!fileContent.includes(oldContent)) {
-      return { success: false, content: `未找到要替换的内容，文件未修改: ${safePath}` };
-    }
+    const editResult = buildEditedContent(fileContent, oldContent, newContent);
+    if (!editResult.success) {
+      if (editResult.reason === 'missing-old') {
+        return { success: false, content: `编辑操作缺少 old 内容: ${safePath}` };
+      }
 
-    const matchCount = countExactOccurrences(fileContent, oldContent);
-    if (matchCount > 1) {
+      if (editResult.reason === 'not-found') {
+        return { success: false, content: `未找到要替换的内容，文件未修改: ${safePath}` };
+      }
+
       return {
         success: false,
-        content: `要替换的内容在文件中出现了 ${matchCount} 次，请提供更精确的 old 内容以唯一定位: ${safePath}`,
+        content: `要替换的内容在文件中出现了 ${editResult.matchCount} 次，请提供更精确的 old 内容以唯一定位: ${safePath}`,
       };
     }
 
-    // 用 indexOf + slice 拼接而非 .replace()，避免 newContent 含 $& 等特殊替换模式导致意外结果
-    const matchIndex = fileContent.indexOf(oldContent);
-    const updatedContent = fileContent.slice(0, matchIndex) + newContent + fileContent.slice(matchIndex + oldContent.length);
-    fs.writeFileSync(safePath, updatedContent, 'utf-8');
-    info(`编辑文件: ${safePath} (替换 ${oldContent.length} → ${newContent.length} 字符)`);
+    fs.writeFileSync(safePath, editResult.updatedContent, 'utf-8');
+    info(`编辑文件: ${safePath} (替换 ${oldContent.length} → ${newContent.length} 字符${editResult.usedNormalizedMatch ? '，已自动兼容换行差异' : ''})`);
     return { success: true, content: `文件已编辑: ${safePath}` };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
