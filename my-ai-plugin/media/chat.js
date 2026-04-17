@@ -50,7 +50,7 @@
   const queueText = document.getElementById('message-queue-text');
   const btnQueueResume = document.getElementById('message-queue-resume');
   const btnQueueClear = document.getElementById('message-queue-clear');
-  const panelTitle = document.body.dataset.panelTitle || 'Sunploy';
+  const panelTitle = document.body.dataset.panelTitle || 'Sunpoly';
   var sessionLauncherRequestTimer = 0;
 
   /**
