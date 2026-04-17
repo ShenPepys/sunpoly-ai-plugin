@@ -290,10 +290,12 @@ export function sendStreamRequest(
     callOnError(`连接 AI 服务失败: ${err.message}`);
   });
 
-  // 设置超时（30 秒连接超时）
-  req.setTimeout(30000, () => {
+  // 设置超时（120 秒连接超时，大模型首 token 延迟可能较长）
+  req.setTimeout(120000, () => {
+    // 先标记终态，避免 req.destroy() 同步触发 error 事件导致 settled 时序错乱
+    settled = true;
     req.destroy();
-    callOnError('连接 AI 服务超时（30 秒），请检查网络或 API 地址');
+    onError('连接 AI 服务超时（120 秒），请检查网络或 API 地址');
   });
 
   req.write(bodyStr);
@@ -388,9 +390,9 @@ function doHttpRequest(
       });
 
       req.on('error', (err) => reject(new Error(`连接失败: ${err.message}`)));
-      req.setTimeout(60000, () => {
+      req.setTimeout(180000, () => {
         req.destroy();
-        reject(new Error('请求超时（60 秒）'));
+        reject(new Error('请求超时（180 秒）'));
       });
 
       req.write(bodyStr);
