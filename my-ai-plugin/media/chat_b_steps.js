@@ -418,24 +418,39 @@
     return label.split(/[/\\]/).pop() || label;
   }
 
+  function isSummaryFileUndoable(file) {
+    if (!file) { return false; }
+    if (typeof file.undoable === 'boolean') {
+      return !!file.undoable;
+    }
+    var isWriteFile = file.status === 'created' || file.status === 'modified';
+    return isWriteFile && !file.issueText;
+  }
+
   function rememberUndoIntent(summaryId, filePath) {
     if (!summaryUndoIntentStore[summaryId]) {
       summaryUndoIntentStore[summaryId] = {
         files: [],
         fileMap: {},
+        paths: [],
+        pathMap: {},
       };
     }
 
     var undoState = summaryUndoIntentStore[summaryId];
     var files = [];
+    var paths = [];
     var i;
 
     if (filePath) {
       files.push(getSummaryFileLabel(summaryId, filePath));
+      paths.push(filePath);
     } else {
       var summaryFiles = summaryFilesStore[summaryId] || [];
       for (i = 0; i < summaryFiles.length; i += 1) {
+        if (!isSummaryFileUndoable(summaryFiles[i])) { continue; }
         files.push(summaryFiles[i].displayPath || summaryFiles[i].path);
+        paths.push(summaryFiles[i].path);
       }
     }
 
@@ -444,6 +459,13 @@
       if (!label || undoState.fileMap[label]) { continue; }
       undoState.fileMap[label] = true;
       undoState.files.push(label);
+    }
+
+    for (i = 0; i < paths.length; i += 1) {
+      var currentPath = paths[i];
+      if (!currentPath || undoState.pathMap[currentPath]) { continue; }
+      undoState.pathMap[currentPath] = true;
+      undoState.paths.push(currentPath);
     }
   }
 
@@ -1730,6 +1752,72 @@
     });
   }
 
+  function refreshSummaryUndoButtonState(summaryEl) {
+    if (!summaryEl) { return; }
+    var undoAllBtn = summaryEl.querySelector('.summary-btn-undo');
+    if (!undoAllBtn) { return; }
+    var hasVisibleFileUndo = false;
+    var fileUndoBtns = summaryEl.querySelectorAll('.file-btn-undo');
+    Array.prototype.forEach.call(fileUndoBtns, function (btn) {
+      if (btn.style.display !== 'none') {
+        hasVisibleFileUndo = true;
+      }
+    });
+    undoAllBtn.style.display = hasVisibleFileUndo ? '' : 'none';
+  }
+
+  function hideUndoButtonsInSummary(summaryEl, filePaths) {
+    if (!summaryEl) { return; }
+
+    var hideAll = !Array.isArray(filePaths) || filePaths.length === 0;
+    var allowedPathMap = {};
+    if (!hideAll) {
+      filePaths.forEach(function (filePath) {
+        if (filePath) {
+          allowedPathMap[filePath] = true;
+        }
+      });
+    }
+
+    var undoAllBtn = summaryEl.querySelector('.summary-btn-undo');
+    if (undoAllBtn && hideAll) {
+      undoAllBtn.style.display = 'none';
+    }
+
+    var fileUndoBtns = summaryEl.querySelectorAll('.file-btn-undo');
+    Array.prototype.forEach.call(fileUndoBtns, function (btn) {
+      if (hideAll) {
+        btn.style.display = 'none';
+        return;
+      }
+
+      var currentPath = btn.getAttribute('data-file-path') || '';
+      if (allowedPathMap[currentPath]) {
+        btn.style.display = 'none';
+      }
+    });
+
+    refreshSummaryUndoButtonState(summaryEl);
+  }
+
+  function hideUndoButtonsForFilePaths(filePaths) {
+    if (!Array.isArray(filePaths) || filePaths.length === 0) { return; }
+    var summaryEls = document.querySelectorAll('.change-summary');
+    Array.prototype.forEach.call(summaryEls, function (summaryEl) {
+      hideUndoButtonsInSummary(summaryEl, filePaths);
+    });
+  }
+
+  function hideUndoButtonsForMessage(messageId) {
+    if (!messageId) { return; }
+    var messageEl = document.querySelector('[data-message-id="' + messageId + '"]');
+    if (!messageEl) { return; }
+    var summaryEls = messageEl.querySelectorAll('.change-summary');
+    Array.prototype.forEach.call(summaryEls, function (summaryEl) {
+      hideUndoButtonsInSummary(summaryEl);
+    });
+  }
+
   function setSummaryStatusState(summaryEl, summaryId, statusClass, statusText) {
     // 只更新专用的状态文字 span，不替换整个 .summary-actions
     // 这样 [↩ Undo all] 按钮不会被覆盖掉
@@ -1744,14 +1832,28 @@
     updateSummaryViewButtons(summaryId);
 
     // 撤销完成后隐藏所有 Undo 入口，防止重复撤销
-    var isUndone = statusClass === 'summary-undone' || statusClass === 'summary-partial';
-    if (isUndone && statusText.indexOf('\u21a9') === 0) {
-      var undoAllBtn = summaryEl.querySelector('.summary-btn-undo');
-      if (undoAllBtn) { undoAllBtn.style.display = 'none'; }
-      var fileUndoBtns = summaryEl.querySelectorAll('.file-btn-undo');
-      Array.prototype.forEach.call(fileUndoBtns, function (btn) {
-        btn.style.display = 'none';
-      });
+    var messageId = getMessageIdByElement(summaryEl);
+    if (statusClass === 'summary-cancelled') {
+      hideUndoButtonsInSummary(summaryEl);
+      return;
+    }
+
+    if (statusText.indexOf('\u21a9') === 0 && statusClass === 'summary-undone') {
+      if (messageId) {
+        hideUndoButtonsForMessage(messageId);
+      } else {
+        hideUndoButtonsInSummary(summaryEl);
+      }
+      return;
+    }
+
+    if (statusText.indexOf('\u21a9') === 0 && statusClass === 'summary-partial') {
+      var undoState = summaryUndoIntentStore[summaryId];
+      if (undoState && undoState.paths && undoState.paths.length > 0) {
+        hideUndoButtonsForFilePaths(undoState.paths);
+      } else {
+        hideUndoButtonsInSummary(summaryEl);
+      }
     }
   }
 
@@ -1902,6 +2004,7 @@
 
     // 构建文件行 HTML：写操作文件带单文件 ↩ 撤销按钮
     var fileRowsHtml = '';
+    var hasUndoableFiles = false;
     data.files.forEach(function (file) {
       var fileName = file.displayPath || file.path;
       var statusIcon = getFileStatusIcon(file.status);
@@ -1913,11 +2016,15 @@
       if (file.deletions > 0) { statsHtml += '<span class="diff-del">-' + file.deletions + '</span>'; }
 
       var isWriteFile = file.status === 'created' || file.status === 'modified';
+      var isUndoableFile = isWriteFile && isSummaryFileUndoable(file);
+      if (isUndoableFile) {
+        hasUndoableFiles = true;
+      }
       var pathAttr = ' data-file-path="' + escapeHtml(file.path) + '"';
       var statusAttr = ' data-file-status="' + file.status + '"';
 
       // 写操作文件右侧显示单文件 ↩ 撤销按钮
-      var fileActionsHtml = isWriteFile
+      var fileActionsHtml = isUndoableFile
         ? '<span class="summary-file-actions"><button class="file-btn file-btn-undo" title="撤销此文件" data-file-path="' + escapeHtml(file.path) + '">↩</button></span>'
         : '';
 
@@ -1946,7 +2053,9 @@
         '</div>' +
         '<div class="summary-actions">' +
           '<button class="summary-btn summary-btn-view" title="' + (data.readOnly ? '历史记录只读' : '查看全部变更') + '"' + (data.readOnly ? ' disabled' : '') + '>View all changes</button>' +
-          '<button class="summary-btn summary-btn-undo"' + (data.readOnly ? ' title="历史记录只读" disabled' : '') + '>↩ Undo all</button>' +
+          (hasUndoableFiles
+            ? '<button class="summary-btn summary-btn-undo"' + (data.readOnly ? ' title="历史记录只读" disabled' : '') + '>↩ Undo all</button>'
+            : '') +
         '</div>' +
       '</div>' +
       '<div class="summary-files">' + fileRowsHtml + '</div>';

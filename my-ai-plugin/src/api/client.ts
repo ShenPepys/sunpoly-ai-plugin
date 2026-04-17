@@ -292,10 +292,8 @@ export function sendStreamRequest(
 
   // 设置超时（120 秒连接超时，大模型首 token 延迟可能较长）
   req.setTimeout(120000, () => {
-    // 先标记终态，避免 req.destroy() 同步触发 error 事件导致 settled 时序错乱
-    settled = true;
     req.destroy();
-    onError('连接 AI 服务超时（120 秒），请检查网络或 API 地址');
+    callOnError('连接 AI 服务超时（120 秒），请检查网络或 API 地址');
   });
 
   req.write(bodyStr);

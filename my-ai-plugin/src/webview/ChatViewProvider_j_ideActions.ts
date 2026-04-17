@@ -92,20 +92,25 @@ export async function selectWorkflowToRun(
   };
 }
 
-export function insertCodeToEditor(code: string): boolean {
+export async function insertCodeToEditor(code: string): Promise<boolean> {
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
     vscode.window.showWarningMessage('没有打开的编辑器，无法插入代码');
     return false;
   }
 
-  editor.edit(editBuilder => {
+  const editApplied = await editor.edit(editBuilder => {
     if (editor.selection.isEmpty) {
       editBuilder.insert(editor.selection.active, code);
     } else {
       editBuilder.replace(editor.selection, code);
     }
   });
+
+  if (!editApplied) {
+    vscode.window.showWarningMessage('代码插入失败，请检查当前编辑器是否可写');
+    return false;
+  }
 
   vscode.window.showInformationMessage('代码已插入到编辑器');
   return true;

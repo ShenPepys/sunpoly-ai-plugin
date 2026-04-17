@@ -8,7 +8,7 @@ export type LightweightWebviewDispatchOptions = {
   sendModelList: () => void;
   pushTokenCount: () => void;
   applyModeChange: (mode: WorkMode) => void;
-  insertCodeToEditor: (code: string) => void;
+  insertCodeToEditor: (code: string) => Promise<boolean>;
   getContextFiles: () => string[];
   setContextFiles: (filePaths: string[]) => void;
   resolveCommandType: (command: string) => CommandType | null;
@@ -27,7 +27,7 @@ export async function tryHandleLightweightWebviewMessage(
       return true;
 
     case 'insertCode':
-      options.insertCodeToEditor(message.code);
+      await options.insertCodeToEditor(message.code);
       return true;
 
     case 'requestModels':

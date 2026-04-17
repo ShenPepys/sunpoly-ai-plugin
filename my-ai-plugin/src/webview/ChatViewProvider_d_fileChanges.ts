@@ -21,6 +21,7 @@ export type ChangeSummaryFile = {
   status: 'created' | 'modified' | 'read' | 'listed';
   issueText?: string;
   stepId?: string;
+  undoable?: boolean;
 };
 
 export type WriteBackupEntry = {
@@ -91,6 +92,7 @@ export type UndoSingleWriteBackupExecution =
     status: 'success';
     logMessages: string[];
     notification?: UndoExecutionNotification;
+    remainingCount: number;
     summaryResponse: UpdateChangeSummaryResponse;
   };
 
@@ -120,13 +122,13 @@ export type ExecuteToolCallBatchResult = {
   readOnlyBatchLimited: boolean;
 };
 
- type ToolCallExecutionPlan = {
-   executableToolCalls: ParsedToolCall[];
-   deferredToolCalls: ParsedToolCall[];
-   readOnlyBatchLimited: boolean;
- };
+type ToolCallExecutionPlan = {
+  executableToolCalls: ParsedToolCall[];
+  deferredToolCalls: ParsedToolCall[];
+  readOnlyBatchLimited: boolean;
+};
 
- const MAX_READ_ONLY_TOOL_CALLS_PER_ROUND = 3;
+const MAX_READ_ONLY_TOOL_CALLS_PER_ROUND = 3;
 
 type BuildPreviewSummaryFilesOptions = {
   writeFilePaths?: Set<string>;
@@ -141,6 +143,27 @@ type BuildAppliedChangeSummaryResponsesOptions = {
   writeSuccessCount: number;
   writeFailCount: number;
 };
+
+export function isChangeSummaryFileUndoable(
+  file: Pick<ChangeSummaryFile, 'status' | 'undoable' | 'issueText'>,
+): boolean {
+  if (typeof file.undoable === 'boolean') {
+    return file.undoable;
+  }
+
+  const isWriteFile = file.status === 'created' || file.status === 'modified';
+  return isWriteFile && !file.issueText;
+}
+
+export function collectWriteBackupMessageIds(writeBackups: Map<string, WriteBackupEntry>): string[] {
+  const messageIds = new Set<string>();
+  for (const backup of writeBackups.values()) {
+    if (backup.messageId) {
+      messageIds.add(backup.messageId);
+    }
+  }
+  return [...messageIds];
+}
 
 export function readFileTextSafely(filePath: string, fallback = ''): string {
   try {
@@ -326,6 +349,7 @@ function createWriteFailureSummaryEntry(options: {
   filePath: string;
   fileExistedBeforeWrite: boolean;
   issueText: string;
+  stepId: string;
   toDisplayPath?: (filePath: string) => string;
 }): ChangeSummaryFile {
   const toDisplayPath = options.toDisplayPath ?? getDisplayPath;
@@ -336,6 +360,8 @@ function createWriteFailureSummaryEntry(options: {
     deletions: 0,
     status: options.toolCall.type === 'write_file' && !options.fileExistedBeforeWrite ? 'created' : 'modified',
     issueText: options.issueText,
+    stepId: options.stepId,
+    undoable: false,
   };
 }
 
@@ -376,6 +402,7 @@ export function buildPreviewSummaryFiles(
       deletions: diffStats.deletions,
       status: baseState.exists ? 'modified' : 'created',
       issueText: previewIssues.get(filePath),
+      undoable: false,
     });
   }
 
@@ -436,6 +463,7 @@ export async function executeWriteToolCall(options: {
         filePath,
         fileExistedBeforeWrite,
         issueText,
+        stepId: options.stepId,
         toDisplayPath,
       }),
     };
@@ -459,6 +487,7 @@ export async function executeWriteToolCall(options: {
           filePath,
           fileExistedBeforeWrite,
           issueText,
+          stepId: options.stepId,
           toDisplayPath,
         }),
       };
@@ -491,6 +520,7 @@ export async function executeWriteToolCall(options: {
         filePath,
         fileExistedBeforeWrite,
         issueText: singleResult.result.content,
+        stepId: options.stepId,
         toDisplayPath,
       }),
     };
@@ -518,6 +548,8 @@ export async function executeWriteToolCall(options: {
     additions: diffStats.additions,
     deletions: diffStats.deletions,
     status: options.toolCall.type === 'write_file' ? 'created' : 'modified',
+    stepId: options.stepId,
+    undoable: true,
   };
 
   return {
@@ -745,6 +777,7 @@ export function executeUndoSingleWriteBackupWithFeedback(options: {
   return {
     status: 'success',
     logMessages: [],
+    remainingCount: undoResult.remainingCount,
     summaryResponse: buildUndoSingleChangeSummaryResponse(options.summaryId, undoResult.remainingCount),
   };
 }
@@ -753,6 +786,7 @@ export function executeUndoAllWriteBackupsFlow(options: {
   writeBackups: Map<string, WriteBackupEntry>;
   summaryId: string;
   postMessage: (message: UpdateChangeSummaryResponse) => void;
+  onCompleted?: (undoExecution: Extract<UndoAllWriteBackupsExecution, { status: 'completed' }>) => void;
 }): void {
   const undoExecution = executeUndoAllWriteBackupsWithFeedback({
     writeBackups: options.writeBackups,
@@ -773,6 +807,7 @@ export function executeUndoAllWriteBackupsFlow(options: {
 
   if (undoExecution.status === 'completed') {
     options.postMessage(undoExecution.summaryResponse);
+    options.onCompleted?.(undoExecution);
   }
 }
 
@@ -781,6 +816,7 @@ export function executeUndoSingleWriteBackupFlow(options: {
   filePath: string;
   summaryId: string;
   postMessage: (message: UpdateChangeSummaryResponse) => void;
+  onSuccess?: (undoExecution: Extract<UndoSingleWriteBackupExecution, { status: 'success' }>) => void;
 }): void {
   const undoExecution = executeUndoSingleWriteBackupWithFeedback({
     writeBackups: options.writeBackups,
@@ -807,6 +843,7 @@ export function executeUndoSingleWriteBackupFlow(options: {
   }
 
   options.postMessage(undoExecution.summaryResponse);
+  options.onSuccess?.(undoExecution);
 }
 
 export function undoAllWriteBackups(
@@ -947,6 +984,18 @@ export function buildUndoSingleChangeSummaryResponse(
       : `↩ Undone 1 file (${remainingCount} remaining)`,
   };
 }
+
+ export function buildExpiredChangeSummaryResponse(
+   summaryId: string,
+   text = 'Undo expired',
+ ): UpdateChangeSummaryResponse {
+   return {
+     type: 'updateChangeSummary',
+     summaryId,
+     status: 'cancelled',
+     text,
+   };
+ }
 
 export function buildFinalTurnChangeSummaryResponse(
   messageId: string,

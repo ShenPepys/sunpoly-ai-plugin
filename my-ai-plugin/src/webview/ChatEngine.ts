@@ -8,7 +8,6 @@
 import * as vscode from 'vscode';
 import { info, error } from '../logger';
 import { getModelConfig, ensureApiKey, getMaxTokens, getTemperature, getAllModels, getActiveModelIndex, getPanelTitle } from '../config';
-import { sendStreamRequest } from '../api/client';
 import type { ApiClientConfig, AbortStreamFn } from '../api/client';
 import type { ChatMessageParam } from '../api/types';
 import type { CommandExecutionRequest, CommandType } from '../commands/handler';
@@ -24,7 +23,6 @@ import type {
   PersistedUiEvent,
   PersistedUiMessageEntry,
 } from './messageTypes';
-import { formatToolResults } from '../tools';
 import type { ParsedToolCall } from '../tools';
 import { buildContextUsageSnapshot, buildUpdateTokenCountResponse } from './ChatViewProvider_a_contextUsage';
 import { buildChatViewHtml } from './ChatViewProvider_b_html';
@@ -45,8 +43,11 @@ import {
   upsertAssistantDisplayHistoryMessage,
 } from './ChatViewProvider_c_displayHistory';
 import {
+  buildExpiredChangeSummaryResponse,
   buildFinalTurnChangeSummaryResponse,
+  collectWriteBackupMessageIds,
   getDisplayPath as getDisplayPathHelper,
+  isChangeSummaryFileUndoable,
 } from './ChatViewProvider_d_fileChanges';
 import type { ChangeSummaryFile, WriteBackupEntry } from './ChatViewProvider_d_fileChanges';
 import {
@@ -115,13 +116,6 @@ import {
 import type { IChatHost } from './IChatHost';
 import type { SessionRunLock, SessionStore } from './SessionStore';
 
-type DeferredToolStep = {
-  stepId: string;
-  stepDesc: string;
-  toolCall: ParsedToolCall;
-  startedAt: number;
-};
-
 type UserMessageRequestOptions = {
   userContentOverride?: string;
   retryRequestId?: string;
@@ -141,6 +135,8 @@ type SessionRuntimeState = {
   writeBackups: Map<string, WriteBackupEntry>;
   stepToMessageId: Map<string, string>;
   summaryToMessageId: Map<string, string>;
+  currentMode: WorkMode;
+  contextFiles: string[];
 };
 
 const LAUNCHER_SESSION_RUNTIME_KEY = '__launcher__';
@@ -249,12 +245,6 @@ export class ChatEngine {
 
   // ==================== 运行时状态 ====================
 
-  /** 当前工作模式：code（可修改文件）、ask（只读对话）、plan（先规划后执行） */
-  private currentMode: WorkMode = 'code';
-
-  /** 用户通过 @ Mentions 添加的上下文文件路径列表 */
-  private contextFiles: string[] = [];
-
   private readonly sessionRuntimeBySessionId: Map<string, SessionRuntimeState> = new Map();
 
   private sessionLauncherVisible = false;
@@ -299,6 +289,8 @@ export class ChatEngine {
       writeBackups: new Map(),
       stepToMessageId: new Map(),
       summaryToMessageId: new Map(),
+      currentMode: 'code',
+      contextFiles: [],
     };
   }
 
@@ -399,6 +391,22 @@ export class ChatEngine {
     this.getSessionRuntimeState().pendingRegenerateState = value;
   }
 
+  private get currentMode(): WorkMode {
+    return this.getSessionRuntimeState().currentMode;
+  }
+
+  private set currentMode(value: WorkMode) {
+    this.getSessionRuntimeState().currentMode = value;
+  }
+
+  private get contextFiles(): string[] {
+    return this.getSessionRuntimeState().contextFiles;
+  }
+
+  private set contextFiles(value: string[]) {
+    this.getSessionRuntimeState().contextFiles = value;
+  }
+
   private get stepToMessageId(): Map<string, string> {
     return this.getSessionRuntimeState().stepToMessageId;
   }
@@ -457,7 +465,7 @@ export class ChatEngine {
       return '当前会话正在其他聊天 Tab 中生成，请先停止当前任务后再继续。';
     }
 
-    return '当前会话正在其他聊天 Tab 中生成，请先停止当前任务后再继续。';
+    return '当前会话已有进行中的任务，请先停止当前任务后再继续。';
   }
 
   private tryAcquireSessionRunLock(sessionId: string, runId: string): string | null {
@@ -489,6 +497,19 @@ export class ChatEngine {
     runtime.stepSequence = 0;
     runtime.toolCallRound = 0;
     runtime.activeHistoryProcessSummary = null;
+  }
+
+  private syncActiveSessionTransientState(): void {
+    this.host.postMessage({ type: 'updateMode', mode: this.currentMode });
+    this.host.postMessage({ type: 'clearContextFiles' });
+
+    for (const filePath of this.contextFiles) {
+      this.host.postMessage({
+        type: 'addContextFile',
+        filePath,
+        fileName: filePath.split(/[\\/]/).pop() || filePath,
+      });
+    }
   }
 
   // ==================== displayHistory 代理 ====================
@@ -904,6 +925,90 @@ export class ChatEngine {
     return null;
   }
 
+  private collectUndoableSummaryIdsForMessage(messageId: string, sessionId: string = this.activeSessionId): string[] {
+    const entry = this.findUiMessageEntry(messageId, sessionId);
+    if (!entry || !Array.isArray(entry.events)) {
+      return [];
+    }
+
+    const summaryStates = new Map<string, { hasUndoableFiles: boolean; latestStatus: string | null }>();
+    for (const event of entry.events) {
+      if (event.type === 'showChangeSummary') {
+        const current = summaryStates.get(event.summaryId);
+        summaryStates.set(event.summaryId, {
+          hasUndoableFiles: event.files.some(file => isChangeSummaryFileUndoable(file)),
+          latestStatus: current?.latestStatus ?? null,
+        });
+        continue;
+      }
+
+      if (event.type === 'updateChangeSummary') {
+        const current = summaryStates.get(event.summaryId);
+        summaryStates.set(event.summaryId, {
+          hasUndoableFiles: current?.hasUndoableFiles ?? false,
+          latestStatus: event.status,
+        });
+      }
+    }
+
+    const summaryIds: string[] = [];
+    for (const [summaryId, state] of summaryStates.entries()) {
+      if (!state.hasUndoableFiles) {
+        continue;
+      }
+
+      if (state.latestStatus === 'undone' || state.latestStatus === 'cancelled') {
+        continue;
+      }
+
+      summaryIds.push(summaryId);
+    }
+
+    return summaryIds;
+  }
+
+  private expireUndoableSummariesForMessageIds(
+    messageIds: string[],
+    sessionId: string,
+    options?: { excludeSummaryIds?: string[]; text?: string },
+  ): void {
+    const excludeSummaryIds = new Set(options?.excludeSummaryIds ?? []);
+    const postedSummaryIds = new Set<string>();
+
+    for (const messageId of messageIds) {
+      for (const summaryId of this.collectUndoableSummaryIdsForMessage(messageId, sessionId)) {
+        if (excludeSummaryIds.has(summaryId) || postedSummaryIds.has(summaryId)) {
+          continue;
+        }
+
+        postedSummaryIds.add(summaryId);
+        this.postSessionMessage(sessionId, buildExpiredChangeSummaryResponse(summaryId, options?.text));
+      }
+    }
+  }
+
+  private expireUndoableSummariesForWriteBackups(
+    writeBackups: Map<string, WriteBackupEntry>,
+    sessionId: string,
+    text = 'Undo expired',
+  ): void {
+    const messageIds = collectWriteBackupMessageIds(writeBackups);
+    if (messageIds.length === 0) {
+      return;
+    }
+
+    this.expireUndoableSummariesForMessageIds(messageIds, sessionId, { text });
+  }
+
+  private expireUndoableSiblingSummaries(summaryId: string, sessionId: string): void {
+    const messageId = this.findMessageIdBySummaryId(summaryId, sessionId);
+    if (!messageId) {
+      return;
+    }
+
+    this.expireUndoableSummariesForMessageIds([messageId], sessionId, { excludeSummaryIds: [summaryId] });
+  }
+
   private resetUiMessageState(messageId: string, sessionId: string = this.activeSessionId): void {
     const entry = this.findUiMessageEntry(messageId, sessionId);
     if (!entry) {
@@ -1164,17 +1269,19 @@ export class ChatEngine {
   public getActiveModelName(): string {
     const models = getAllModels();
     const activeIndex = getActiveModelIndex();
-    return models[activeIndex]?.name || 'AI';
+    const safeIndex = Math.max(0, Math.min(activeIndex, models.length - 1));
+    return models[safeIndex]?.name || 'AI';
   }
 
   /** 推送模型列表到前端 */
   public sendModelList(): void {
     const models = getAllModels();
     const activeIndex = getActiveModelIndex();
+    const safeIndex = Math.max(0, Math.min(activeIndex, models.length - 1));
     const modelConfig = getModelConfig();
     this.postMessage(buildUpdateModelsResponse({
       models,
-      activeIndex,
+      activeIndex: safeIndex,
       supportsVision: modelConfig.supportsVision ?? false,
     }));
   }
@@ -1185,7 +1292,7 @@ export class ChatEngine {
    */
   public initializeWebviewState(): void {
     this.sendModelList();
-    this.postMessage({ type: 'updateMode', mode: this.currentMode });
+    this.syncActiveSessionTransientState();
     this.resetUiRuntimeState();
 
     const activeSession = getActiveSessionHelper(this.sessions, this.activeSessionId);
@@ -1303,7 +1410,7 @@ export class ChatEngine {
     this.contextFiles = [];
     const sessionListResponse = this.saveSessions();
     this.host.postMessage(sessionListResponse);
-    this.host.postMessage({ type: 'clearContextFiles' });
+    this.syncActiveSessionTransientState();
     this.host.postMessage({ type: 'setSessionLauncher', visible: true });
     this.host.postMessage({ type: 'clearChat' });
     this.host.postMessage({ type: 'setLoading', loading: false });
@@ -1399,6 +1506,14 @@ export class ChatEngine {
         rollbackPendingRegenerateState: runId => this.rollbackPendingRegenerateState(runId),
         getTurnWriteRounds: () => this.turnWriteRounds,
         getTurnWriteFiles: () => this.turnWriteFiles,
+        onUndoAllCompleted: summaryId => {
+          this.expireUndoableSiblingSummaries(summaryId, this.activeSessionId);
+        },
+        onUndoSingleCompleted: (summaryId, remainingCount) => {
+          if (remainingCount === 0) {
+            this.expireUndoableSiblingSummaries(summaryId, this.activeSessionId);
+          }
+        },
         postMessage: messageToPost => this.postMessage(messageToPost),
         logInfo: (logMessage, payload) => {
           if (payload === undefined) {
@@ -1429,6 +1544,8 @@ export class ChatEngine {
     requestOptions?: UserMessageRequestOptions,
   ): Promise<void> {
     const initialSessionId = this.activeSessionId;
+    const initialMode = this.currentMode;
+    const initialContextFiles = this.contextFiles.slice();
     info(`[锁诊断] handleUserMessage 入口: engineId=${this.engineId}, initialSessionId=${initialSessionId}, launcherVisible=${this.sessionLauncherVisible}`);
     if (this.hasRunningTask(initialSessionId)) {
       const message = '当前仍在生成，请先停止当前任务后再发送新的消息。';
@@ -1454,6 +1571,9 @@ export class ChatEngine {
       if (typeof createSessionPlan.nextSessionLauncherVisible === 'boolean') {
         this.sessionLauncherVisible = createSessionPlan.nextSessionLauncherVisible;
       }
+      const createdSessionRuntime = this.getSessionRuntimeState(this.activeSessionId);
+      createdSessionRuntime.currentMode = initialMode;
+      createdSessionRuntime.contextFiles = initialContextFiles;
       const sessionListResponse = this.saveSessions();
       for (const message of createSessionPlan.messages) {
         this.postMessage(message);
@@ -1492,16 +1612,16 @@ export class ChatEngine {
     this.postSessionMessage(sessionId, { type: 'setLoading', loading: true });
 
     const retryRequestId = requestOptions?.retryRequestId || createRetryRequestIdHelper();
-    const requestMode = requestOptions?.requestMode || this.currentMode;
-    this.currentMode = requestMode;
-    this.postMessage({ type: 'updateMode', mode: this.currentMode });
+    const requestMode = requestOptions?.requestMode || sessionRuntime.currentMode;
+    sessionRuntime.currentMode = requestMode;
+    this.postMessage({ type: 'updateMode', mode: requestMode });
     info('handleUserMessage 模式快照', {
       requestMode,
-      currentMode: this.currentMode,
+      currentMode: sessionRuntime.currentMode,
       hasUserContentOverride: !!requestOptions?.userContentOverride,
       retryRequestId,
     });
-    const contextFilePaths = requestOptions?.userContentOverride ? [] : this.contextFiles.slice();
+    const contextFilePaths = requestOptions?.userContentOverride ? [] : sessionRuntime.contextFiles.slice();
 
     try {
 
@@ -1536,7 +1656,7 @@ export class ChatEngine {
       });
 
       if (contextFilePaths.length > 0) {
-        this.contextFiles = [];
+        sessionRuntime.contextFiles = [];
         this.postMessage({ type: 'clearContextFiles' });
       }
 
@@ -1594,6 +1714,7 @@ export class ChatEngine {
           },
         },
         clearWriteBackups: () => {
+          this.expireUndoableSummariesForWriteBackups(sessionRuntime.writeBackups, sessionId);
           sessionRuntime.writeBackups.clear();
         },
       });
@@ -1703,11 +1824,11 @@ export class ChatEngine {
     }
     sessionRuntime.toolCallsInProgress = true;
     sessionRuntime.toolCallRound += 1;
+    sessionRuntime.currentMode = requestMode;
     if (sessionId === this.activeSessionId) {
-      this.currentMode = requestMode;
-      this.postMessage({ type: 'updateMode', mode: this.currentMode });
+      this.postMessage({ type: 'updateMode', mode: requestMode });
     }
-    info('handleToolCalls 模式快照', { reuseMsgId, requestMode, currentMode: this.currentMode, toolCallRound: sessionRuntime.toolCallRound });
+    info('handleToolCalls 模式快照', { reuseMsgId, requestMode, currentMode: sessionRuntime.currentMode, toolCallRound: sessionRuntime.toolCallRound });
 
     try {
 
@@ -1916,7 +2037,7 @@ export class ChatEngine {
     this.setChatHistoryForSession(sessionId, prepareResult.trimmedHistory as ChatMessageParam[]);
 
     info('重新生成回复，参考用户消息长度:', prepareResult.userText.length);
-    await this.regenerateResponse(sessionId, prepareResult.userText, this.currentMode, targetAssistantMessageId);
+    await this.regenerateResponse(sessionId, prepareResult.userText, this.getSessionRuntimeState(sessionId).currentMode, targetAssistantMessageId);
   }
 
   private async regenerateResponse(
@@ -1995,6 +2116,7 @@ export class ChatEngine {
           },
         },
         clearWriteBackups: () => {
+          this.expireUndoableSummariesForWriteBackups(sessionRuntime.writeBackups, sessionId);
           sessionRuntime.writeBackups.clear();
         },
       });
@@ -2049,6 +2171,8 @@ export class ChatEngine {
 
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
+      this.resetOwnedRunState(sessionId);
+      this.rollbackPendingRegenerateState(regenMsgId, sessionId);
       this.postSessionMessage(sessionId, { type: 'setLoading', loading: false });
       this.postSessionMessage(sessionId, {
         type: 'showError',
@@ -2201,6 +2325,10 @@ export class ChatEngine {
       return;
     }
 
+    if (switchPlan.clearRetryableSessionId) {
+      clearRetryableRequestsForSessionHelper(this.retryableRequests, switchPlan.clearRetryableSessionId);
+    }
+
     this.sessions = switchPlan.nextSessions;
     this.activeSessionId = switchPlan.nextActiveSessionId;
     this.sessionLauncherVisible = switchPlan.nextSessionLauncherVisible;
@@ -2217,6 +2345,7 @@ export class ChatEngine {
         this.host.postMessage(message);
       }
     }
+    this.syncActiveSessionTransientState();
     this.host.postMessage({ type: 'setLoading', loading: this.hasRunningTask(this.activeSessionId) });
     this.syncHostTitle();
     info(`切换会话到: ${switchPlan.sessionName}`);
@@ -2259,6 +2388,7 @@ export class ChatEngine {
     }
 
     clearRetryableRequestsForSessionHelper(this.retryableRequests, deletePlan.clearRetryableSessionId);
+    this.clearSessionRuntimeState(deletePlan.deletedSessionId);
     this.sessions = deletePlan.nextSessions;
     if (deletePlan.shouldResetSessionRuntime) {
       this.resetSessionScopedRuntimeState();

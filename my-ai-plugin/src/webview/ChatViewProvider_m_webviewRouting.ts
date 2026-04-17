@@ -182,6 +182,8 @@ export type HandleRemainingWebviewMessageOptions = {
   rollbackPendingRegenerateState: (runId: string) => boolean;
   getTurnWriteRounds: () => number;
   getTurnWriteFiles: () => ChangeSummaryFile[];
+  onUndoAllCompleted?: (summaryId: string) => void;
+  onUndoSingleCompleted?: (summaryId: string, remainingCount: number) => void;
   postMessage: (message: ExtensionMessage) => void;
   logInfo: (message: string, payload?: unknown) => void;
 };
@@ -327,6 +329,9 @@ export async function handleRemainingWebviewMessage(
         writeBackups: options.writeBackups,
         summaryId: request.summaryId,
         postMessage: message => options.postMessage(message),
+        onCompleted: () => {
+          options.onUndoAllCompleted?.(request.summaryId);
+        },
       });
     },
     onUndoFileChange: async request => {
@@ -335,6 +340,9 @@ export async function handleRemainingWebviewMessage(
         filePath: request.filePath,
         summaryId: request.summaryId,
         postMessage: message => options.postMessage(message),
+        onSuccess: undoExecution => {
+          options.onUndoSingleCompleted?.(request.summaryId, undoExecution.remainingCount);
+        },
       });
     },
   });

@@ -29,12 +29,66 @@ export interface ParsedToolCall {
   rawMatch: string;
 }
 
+type TextRange = [number, number];
+
+const WRAPPED_TOOL_CALL_REGEX_SOURCE = '<tool_call>([\\s\\S]*?)</tool_call>';
+const BARE_TOOL_NAMES = ['read_file', 'write_file', 'edit_file', 'list_dir'];
+const BARE_TOOL_CALL_REGEX_SOURCE = `<(${BARE_TOOL_NAMES.join('|')})[\\s>][\\s\\S]*?(?:\\/>|<\\/\\1>)`;
+const BARE_TOOL_CALL_QUICK_CHECK_REGEX = /<(?:read_file|write_file|edit_file|list_dir)\s/;
+const FENCED_CODE_BLOCK_REGEX_SOURCE = '(^|\\r?\\n)(`{3,}|~{3,})[^\\n\\r]*\\r?\\n[\\s\\S]*?\\r?\\n\\2[^\\n\\r]*(?=\\r?\\n|$)';
+
+function collectFencedCodeBlockRanges(text: string): TextRange[] {
+  const ranges: TextRange[] = [];
+  const fenceRegex = new RegExp(FENCED_CODE_BLOCK_REGEX_SOURCE, 'g');
+  let match: RegExpExecArray | null;
+
+  while ((match = fenceRegex.exec(text)) !== null) {
+    const prefix = match[1] ?? '';
+    const start = match.index + prefix.length;
+    const end = match.index + match[0].length;
+    ranges.push([start, end]);
+  }
+
+  return ranges;
+}
+
+function buildOutsideFencedCodeSegments(text: string): string[] {
+  const ranges = collectFencedCodeBlockRanges(text);
+  if (ranges.length === 0) {
+    return [text];
+  }
+
+  const segments: string[] = [];
+  let cursor = 0;
+
+  for (const [start, end] of ranges) {
+    if (cursor < start) {
+      segments.push(text.slice(cursor, start));
+    }
+    cursor = end;
+  }
+
+  if (cursor < text.length) {
+    segments.push(text.slice(cursor));
+  }
+
+  return segments;
+}
+
+function replaceToolCallsInPlainText(text: string): string {
+  let result = text.replace(new RegExp(WRAPPED_TOOL_CALL_REGEX_SOURCE, 'g'), '');
+  result = result.replace(/<(?:read_file|list_dir)\s+path\s*=\s*"[^"]+"\s*\/>/g, '');
+  result = result.replace(/<write_file\s+path\s*=\s*"[^"]+">[\s\S]*?<\/write_file>/g, '');
+  result = result.replace(/<edit_file\s+path\s*=\s*"[^"]+">[\s\S]*?<\/edit_file>/g, '');
+  return result;
+}
+
 /**
  * 从 AI 回复文本中解析所有工具调用
  * 
  * 同时支持两种格式：
- * 1. 带包裹：<tool_call><read_file path="路径" /></tool_call>
- * 2. 裸标签：<read_file path="路径" />
+ * 1. 带包裹：<tool_call>...</tool_call>
+ * 2. 裸标签：<read_file path="..." />
  * 
  * 解析顺序：先匹配带包裹的，再匹配裸标签，避免重复
  * 
@@ -43,42 +97,37 @@ export interface ParsedToolCall {
  */
 export function parseToolCalls(text: string): ParsedToolCall[] {
   const results: ParsedToolCall[] = [];
-  // 记录已匹配的区间，避免裸标签与包裹标签重复匹配
-  const matchedRanges: Array<[number, number]> = [];
+  const outsideSegments = buildOutsideFencedCodeSegments(text);
 
-  // 第一轮：匹配带 <tool_call> 包裹的格式
-  const wrappedRegex = /<tool_call>([\s\S]*?)<\/tool_call>/g;
-  let match: RegExpExecArray | null;
-  while ((match = wrappedRegex.exec(text)) !== null) {
-    const rawMatch = match[0];
-    const inner = match[1].trim();
-    const parsed = parseSingleToolCall(inner, rawMatch);
-    if (parsed) {
-      results.push(parsed);
-      matchedRanges.push([match.index, match.index + rawMatch.length]);
+  for (const segment of outsideSegments) {
+    const matchedRanges: Array<[number, number]> = [];
+    const wrappedRegex = new RegExp(WRAPPED_TOOL_CALL_REGEX_SOURCE, 'g');
+    let match: RegExpExecArray | null;
+
+    while ((match = wrappedRegex.exec(segment)) !== null) {
+      const rawMatch = match[0];
+      const inner = match[1].trim();
+      const parsed = parseSingleToolCall(inner, rawMatch);
+      if (parsed) {
+        results.push(parsed);
+        matchedRanges.push([match.index, match.index + rawMatch.length]);
+      }
     }
-  }
 
-  // 第二轮：匹配裸标签（不带 <tool_call> 包裹）
-  // 兼容部分模型不输出外层包裹的情况
-  const bareToolNames = ['read_file', 'write_file', 'edit_file', 'list_dir'];
-  const bareRegex = new RegExp(
-    `<(${bareToolNames.join('|')})[\\s>][\\s\\S]*?(?:\\/>|<\\/\\1>)`,
-    'g',
-  );
-  while ((match = bareRegex.exec(text)) !== null) {
-    const start = match.index;
-    const end = start + match[0].length;
-    // 跳过已被包裹格式匹配过的区间
-    const isAlreadyMatched = matchedRanges.some(
-      ([rStart, rEnd]) => start >= rStart && end <= rEnd,
-    );
-    if (isAlreadyMatched) { continue; }
+    const bareRegex = new RegExp(BARE_TOOL_CALL_REGEX_SOURCE, 'g');
+    while ((match = bareRegex.exec(segment)) !== null) {
+      const start = match.index;
+      const end = start + match[0].length;
+      const isAlreadyMatched = matchedRanges.some(
+        ([rStart, rEnd]) => start >= rStart && end <= rEnd,
+      );
+      if (isAlreadyMatched) { continue; }
 
-    const rawMatch = match[0];
-    const parsed = parseSingleToolCall(rawMatch, rawMatch);
-    if (parsed) {
-      results.push(parsed);
+      const rawMatch = match[0];
+      const parsed = parseSingleToolCall(rawMatch, rawMatch);
+      if (parsed) {
+        results.push(parsed);
+      }
     }
   }
 
@@ -132,9 +181,10 @@ function parseSingleToolCall(inner: string, rawMatch: string): ParsedToolCall | 
  * 同时检测带包裹和裸标签两种格式
  */
 export function hasToolCalls(text: string): boolean {
-  if (text.includes('<tool_call>')) { return true; }
-  // 裸标签快速检测
-  return /<(?:read_file|write_file|edit_file|list_dir)\s/.test(text);
+  const outsideSegments = buildOutsideFencedCodeSegments(text);
+  return outsideSegments.some(segment => {
+    return segment.includes('<tool_call>') || BARE_TOOL_CALL_QUICK_CHECK_REGEX.test(segment);
+  });
 }
 
 /**
@@ -142,10 +192,20 @@ export function hasToolCalls(text: string): boolean {
  * 用于在界面上只显示 AI 的文字部分，不暴露原始 XML 给用户
  */
 export function stripToolCalls(text: string): string {
-  let result = text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '');
-  // 移除裸标签
-  result = result.replace(/<(?:read_file|list_dir)\s+path\s*=\s*"[^"]+"\s*\/>/g, '');
-  result = result.replace(/<write_file\s+path\s*=\s*"[^"]+">[\s\S]*?<\/write_file>/g, '');
-  result = result.replace(/<edit_file\s+path\s*=\s*"[^"]+">[\s\S]*?<\/edit_file>/g, '');
+  const ranges = collectFencedCodeBlockRanges(text);
+  if (ranges.length === 0) {
+    return replaceToolCallsInPlainText(text).trim();
+  }
+
+  let result = '';
+  let cursor = 0;
+
+  for (const [start, end] of ranges) {
+    result += replaceToolCallsInPlainText(text.slice(cursor, start));
+    result += text.slice(start, end);
+    cursor = end;
+  }
+
+  result += replaceToolCallsInPlainText(text.slice(cursor));
   return result.trim();
 }

@@ -360,6 +360,16 @@ export async function executeToolCallBatchRound(
     };
   }
 
+  if (batchExecution.writeFailCount > 0) {
+    return {
+      kind: 'halted',
+      nextStepSequence: batchExecution.nextStepSequence,
+      nextTurnWriteRounds,
+      nextActiveHistoryProcessSummary,
+      shouldFinalizeStoppedRun: true,
+    };
+  }
+
   const toolFeedback = buildToolFeedback({
     toolResults: batchExecution.toolResults,
     deferredToolCalls: batchExecution.deferredToolCalls,

@@ -2468,6 +2468,19 @@
     syncRegenButtonForLatestTurn();
   }
 
+  function getCodeBlockText(wrapper) {
+    if (!wrapper) {
+      return '';
+    }
+
+    var codeEl = wrapper.querySelector('pre code');
+    if (!codeEl) {
+      return '';
+    }
+
+    return String(codeEl.textContent || '');
+  }
+
   /** 是否正在生成中 */
   var isGenerating = false;
 
@@ -2701,17 +2714,17 @@
         return;
       }
       var wrapper = target.closest('.code-block-wrapper');
-      if (wrapper) {
-        var codeEl = wrapper.querySelector('pre code');
-        if (codeEl) {
-          vscode.postMessage({
-            type: 'copyCode',
-            code: codeEl.textContent,
-          });
-          target.textContent = '已复制 ✓';
-          setTimeout(function () { target.textContent = '复制'; }, 1500);
-        }
+      var codeText = getCodeBlockText(wrapper);
+      if (!codeText.trim()) {
+        showError('代码块为空，无法复制');
+        return;
       }
+
+      vscode.postMessage({
+        type: 'copyCode',
+        code: codeText,
+      });
+      return;
     }
 
     // 重试按钮：重新发送最后一条消息
@@ -2741,15 +2754,13 @@
       var msgContent = copyBtn.closest('.message-content');
       if (msgContent) {
         var bodyEl = msgContent.querySelector('.message-body');
-        if (bodyEl) {
-          vscode.postMessage({ type: 'copyCode', code: bodyEl.textContent });
-          copyBtn.classList.add('is-copied');
-          copyBtn.title = '已复制';
-          setTimeout(function () {
-            copyBtn.classList.remove('is-copied');
-            copyBtn.title = '复制全文';
-          }, 1500);
+        var bodyText = bodyEl ? String(bodyEl.textContent || '') : '';
+        if (!bodyText.trim()) {
+          showError('消息内容为空，无法复制');
+          return;
         }
+
+        vscode.postMessage({ type: 'copyCode', code: bodyText });
       }
       return;
     }
@@ -2760,17 +2771,17 @@
         return;
       }
       var wrapper = target.closest('.code-block-wrapper');
-      if (wrapper) {
-        var codeEl = wrapper.querySelector('pre code');
-        if (codeEl) {
-          vscode.postMessage({
-            type: 'insertCode',
-            code: codeEl.textContent,
-          });
-          target.textContent = '已插入 ✓';
-          setTimeout(function () { target.textContent = '插入'; }, 1500);
-        }
+      var insertCodeText = getCodeBlockText(wrapper);
+      if (!insertCodeText.trim()) {
+        showError('代码块为空，无法插入');
+        return;
       }
+
+      vscode.postMessage({
+        type: 'insertCode',
+        code: insertCodeText,
+      });
+      return;
     }
   });
 

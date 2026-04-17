@@ -397,6 +397,7 @@ export interface PersistedUiChangeSummaryFile {
   status: 'created' | 'modified' | 'read' | 'listed';
   issueText?: string;
   stepId?: string;
+  undoable?: boolean;
 }
 
 export type PersistedUiEvent =
