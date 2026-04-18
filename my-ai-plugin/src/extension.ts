@@ -7,6 +7,12 @@ import { initLogger, disposeLogger, info, error } from './logger';
 import { setExtensionPath, getAllModels, getActiveModelIndex } from './config';
 import { ChatTabManager } from './webview/ChatTabManager';
 import { executeCommand } from './commands/handler';
+import { disposeProject } from './tools/astContext';
+import { registerAdapter, disposeAll as disposeAstAdapters } from './tools/astRouter';
+import { typescriptAdapter } from './tools/astAdapter_typescript';
+import { pythonAdapter } from './tools/astAdapter_python';
+import { csharpAdapter } from './tools/astAdapter_csharp';
+import { javaAdapter } from './tools/astAdapter_java';
 import type { CommandType } from './commands/handler';
 
 /** Tab 管理器实例，模块级变量供 deactivate 时清理 */
@@ -207,6 +213,13 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
+  // 注册 AST 语言适配器
+  registerAdapter(typescriptAdapter);
+  registerAdapter(pythonAdapter);
+  registerAdapter(csharpAdapter);
+  registerAdapter(javaAdapter);
+  info('AST 语言适配器已注册');
+
   info('所有命令注册完成');
 }
 
@@ -220,6 +233,8 @@ export function deactivate(): void {
     tabManager.dispose();
     tabManager = undefined;
   }
+  disposeAstAdapters();
+  disposeProject();
   info('AI 助理插件已停用');
   disposeLogger();
 }

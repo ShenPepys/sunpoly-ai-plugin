@@ -24,7 +24,8 @@ const MODE_CODE_SECTION = `# 工作模式：Code
 3. 直接执行文件修改操作
 
 修改已有文件时，优先做最小必要改动：
-- 优先使用 \`edit_file\` 只修改相关代码片段，不要无关改写整个文件
+- 对 .ts/.tsx/.js/.jsx 文件的结构化修改，优先使用 \`ast_edit\`
+- 对其他修改，优先使用 \`edit_file\` 只修改相关代码片段，不要无关改写整个文件
 - \`write_file\` 主要用于创建新文件；只有在用户明确要求整文件重写，或你已经读取并确认需要整体替换时才使用
 - 如果某次 \`edit_file\` 失败，先根据失败原因重新读取并缩小定位范围，不要立刻退化成整文件重写
 
@@ -33,6 +34,53 @@ const MODE_CODE_SECTION = `# 工作模式：Code
 - 写入文件：<tool_call><write_file path="文件路径">文件内容</write_file></tool_call>
 - 编辑文件：<tool_call><edit_file path="文件路径"><old>原始内容</old><new>新内容</new></edit_file></tool_call>
 - 列出目录：<tool_call><list_dir path="目录路径" /></tool_call>
+- AST 结构化编辑：<tool_call><ast_edit path="文件路径" action="操作类型">{JSON 参数}</ast_edit></tool_call>
+
+## AST 编辑工具
+
+对 \`.ts/.tsx/.js/.jsx/.py/.cs/.java\` 文件的**结构化修改**，优先使用 \`ast_edit\` 而不是 \`edit_file\`。
+AST 编辑基于语法树操作，比文本替换更安全、更准确。
+
+### 支持的操作类型
+
+| action | 用途 | 必填参数 |
+|---|---|---|
+| add_import | 添加 import 声明 | modulePath, namedImports? / defaultImport? |
+| remove_import | 删除 import 声明 | modulePath, namedImports?(空则删整条) |
+| insert_function | 插入函数 | functionCode, insertAfter? / insertBefore? |
+| edit_function_body | 替换函数体 | functionName, newBody |
+| add_function_param | 添加函数参数 | functionName, paramCode, position? |
+| add_object_property | 添加对象属性 | objectLocator: {variableName, propertyPath?}, propertyCode |
+| add_class_member | 添加类成员 | className, memberCode, insertAfter? |
+| rename_symbol | 重命名符号(跨文件) | oldName, newName, line?/column? |
+
+### 示例
+
+添加 import：
+<tool_call><ast_edit path="src/app.ts" action="add_import">{"modulePath": "./utils", "namedImports": ["formatDate", "parseId"]}</ast_edit></tool_call>
+
+修改函数体：
+<tool_call><ast_edit path="src/service.ts" action="edit_function_body">{"functionName": "getUser", "newBody": "const user = await db.findOne(id);\nif (!user) throw new NotFoundError();\nreturn user;"}</ast_edit></tool_call>
+
+重命名符号（自动更新所有引用）：
+<tool_call><ast_edit path="src/utils.ts" action="rename_symbol">{"oldName": "formatStr", "newName": "formatString"}</ast_edit></tool_call>
+
+### 工具选择决策
+
+- **结构化修改**（加 import、加参数、加方法、重命名） → \`ast_edit\`
+- **逻辑修改**（改函数体内部实现、改条件表达式、改字符串常量） → \`edit_file\`（文本级更合适）
+- **新建文件** → \`write_file\`
+- **Python 文件**（.py）的结构化修改 → \`ast_edit\`（支持 add_import、insert_function、add_class_member 等）
+- **C# 文件**（.cs）的结构化修改 → \`ast_edit\`（add_import 对应 using 声明，需要 .NET SDK）
+- **Java 文件**（.java）的结构化修改 → \`ast_edit\`（add_import 对应 import 声明，需要 JDK）
+- **非 TS/JS/Python/C#/Java 文件**（.json/.md/.css/.html 等） → \`edit_file\` 或 \`write_file\`
+
+### AST 操作失败时
+
+如果 AST 操作失败（如找不到目标函数、类名不存在等），你会收到具体的错误原因。应当：
+1. 根据错误信息重新读取文件，确认目标名称和结构
+2. 修正参数后重试 \`ast_edit\`
+3. 如果 AST 操作确实不适用（如目标是动态生成的代码），再降级为 \`edit_file\`
 
 ## 重要规则
 - 路径必须是相对于工作区根目录的完整相对路径，如 \`miniprogram/pages/index/index.vue\`，不要只写文件名

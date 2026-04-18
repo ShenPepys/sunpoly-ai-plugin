@@ -101,6 +101,9 @@ export type ExecuteWriteToolCallResult = {
   singleResult: ToolExecutionResult;
   diffResponse?: ShowDiffResponse;
   changeSummaryEntry?: ChangeSummaryFile;
+  /** AST 多文件修改（如 rename_symbol）产生的额外 diff 和汇总条目 */
+  additionalDiffs?: ShowDiffResponse[];
+  additionalChangeSummaryEntries?: ChangeSummaryFile[];
 };
 
 export type ToolCallExecutionRecord = {
@@ -194,6 +197,8 @@ export function getToolStepDescription(tc: ParsedToolCall): string {
       return `Creating ${fileName}`;
     case 'edit_file':
       return `Editing ${fileName}`;
+    case 'ast_edit':
+      return `AST editing ${fileName}`;
     case 'list_dir':
       return `Listing ${fileName}`;
     default:
@@ -209,6 +214,8 @@ export function getToolStepIcon(type: ToolCallType): string {
       return '📝';
     case 'edit_file':
       return '✏️';
+    case 'ast_edit':
+      return '🌳';
     case 'list_dir':
       return '📁';
     default:
@@ -552,6 +559,64 @@ export async function executeWriteToolCall(options: {
     undoable: true,
   };
 
+  // AST 多文件修改（如 rename_symbol）：为主文件以外的受影响文件生成备份、diff 和汇总
+  const astAffected = singleResult.result.astAffectedFiles;
+  if (astAffected && astAffected.length > 1) {
+    const additionalDiffs: ShowDiffResponse[] = [];
+    const additionalChangeSummaryEntries: ChangeSummaryFile[] = [];
+
+    for (const affected of astAffected) {
+      // 主文件已在上面处理，跳过
+      const normalizedAffected = affected.filePath.replace(/\\/g, '/');
+      const normalizedPrimary = filePath.replace(/\\/g, '/');
+      if (normalizedAffected === normalizedPrimary) {
+        continue;
+      }
+
+      // 为额外文件注册备份（undo 时恢复）
+      if (!options.writeBackups.has(affected.filePath)) {
+        options.writeBackups.set(affected.filePath, {
+          originalContent: affected.originalContent,
+          messageId: options.messageId,
+        });
+      }
+
+      const secDiffStats = calculateDiffStats(affected.originalContent, affected.newContent);
+      additionalDiffs.push({
+        type: 'showDiff',
+        messageId: options.messageId,
+        stepId: options.stepId,
+        summaryId: options.summaryId,
+        filePath: affected.filePath,
+        language: detectLanguage(affected.filePath),
+        additions: secDiffStats.additions,
+        deletions: secDiffStats.deletions,
+        oldContent: affected.originalContent,
+        newContent: affected.newContent,
+        needsConfirm: false,
+        collapsed: true,
+      });
+      additionalChangeSummaryEntries.push({
+        path: affected.filePath,
+        displayPath: toDisplayPath(affected.filePath),
+        additions: secDiffStats.additions,
+        deletions: secDiffStats.deletions,
+        status: 'modified',
+        stepId: options.stepId,
+        undoable: true,
+      });
+    }
+
+    return {
+      filePath,
+      singleResult,
+      diffResponse,
+      changeSummaryEntry,
+      additionalDiffs,
+      additionalChangeSummaryEntries,
+    };
+  }
+
   return {
     filePath,
     singleResult,
@@ -612,7 +677,7 @@ export async function executeToolCallBatch(options: {
     });
 
     const startTime = Date.now();
-    const isWriteOp = toolCall.type === 'write_file' || toolCall.type === 'edit_file';
+    const isWriteOp = toolCall.type === 'write_file' || toolCall.type === 'edit_file' || toolCall.type === 'ast_edit';
 
     if (isWriteOp) {
       const writeResult = await executeWriteToolCall({
@@ -634,6 +699,17 @@ export async function executeToolCallBatch(options: {
         }
         if (writeResult.changeSummaryEntry) {
           upsertChangeSummaryFile(batchWriteFiles, writeResult.changeSummaryEntry);
+        }
+        // AST 多文件修改（如 rename_symbol）产生的额外 diff 和汇总
+        if (writeResult.additionalDiffs) {
+          for (const diff of writeResult.additionalDiffs) {
+            options.postMessage(diff);
+          }
+        }
+        if (writeResult.additionalChangeSummaryEntries) {
+          for (const entry of writeResult.additionalChangeSummaryEntries) {
+            upsertChangeSummaryFile(batchWriteFiles, entry);
+          }
         }
       } else {
         writeFailCount += 1;

@@ -22,7 +22,9 @@
     "Other"
   ],
   "icon": "resources/icon.png",
-  "activationEvents": ["onStartupFinished"],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
@@ -177,7 +179,12 @@
           ],
           "items": {
             "type": "object",
-            "required": ["name", "modelId", "baseUrl", "apiKey"],
+            "required": [
+              "name",
+              "modelId",
+              "baseUrl",
+              "apiKey"
+            ],
             "properties": {
               "name": {
                 "type": "string",
@@ -265,5 +272,7 @@
     "esbuild": "^0.20.0",
     "typescript": "^5.3.0"
   },
-  "dependencies": {}
+  "dependencies": {
+    "ts-morph": "^28.0.0"
+  }
 }

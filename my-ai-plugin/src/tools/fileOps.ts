@@ -90,12 +90,21 @@ export function resolveAndValidatePath(targetPath: string): string | null {
   return absolutePath;
 }
 
+/** AST 编辑影响的单个文件信息（仅 ast_edit 操作使用） */
+export interface AstAffectedFile {
+  filePath: string;
+  originalContent: string;
+  newContent: string;
+}
+
 /** 文件操作结果 */
 export interface FileOpResult {
   /** 操作是否成功 */
   success: boolean;
   /** 操作结果内容（文件内容、目录列表等） */
   content: string;
+  /** AST 编辑影响的文件列表，含原始与修改后的内容（仅 ast_edit 操作使用） */
+  astAffectedFiles?: AstAffectedFile[];
 }
 
 function countExactOccurrences(source: string, search: string): number {

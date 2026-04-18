@@ -1717,12 +1717,12 @@ requestExecution       → executeToolCallBatchRound() 决定 halted / follow-up
 
 **目标**：引入 AST 解析能力，建立项目级 TypeScript 解析上下文，但不改变任何现有功能。
 
-- [ ] **TASK-AST-1.1: 安装 ts-morph 依赖**
+- [x] **TASK-AST-1.1: 安装 ts-morph 依赖**
   - `npm install ts-morph`
   - ts-morph 内置 TypeScript compiler，不需要额外装 typescript 运行时依赖
   - 确认 esbuild 打包不会出问题（ts-morph 是纯 JS，但体积较大，需验证）
 
-- [ ] **TASK-AST-1.2: 创建 `src/tools/astContext.ts` 模块**
+- [x] **TASK-AST-1.2: 创建 `src/tools/astContext.ts` 模块**
   - 职责：管理项目级 `Project` 实例（ts-morph 的核心对象）
   - 提供 `getOrCreateProject(workspaceRoot: string): Project`
   - 提供 `getSourceFile(filePath: string): SourceFile | undefined`
@@ -1731,18 +1731,23 @@ requestExecution       → executeToolCallBatchRound() 决定 halted / follow-up
   - 使用惰性初始化：第一次需要 AST 时才创建 Project
   - Project 配置：读取工作区的 `tsconfig.json`，如果不存在则用合理默认值
 
-- [ ] **TASK-AST-1.3: 在插件 activate/deactivate 中管理 AST 上下文生命周期**
+- [x] **TASK-AST-1.3: 在插件 activate/deactivate 中管理 AST 上下文生命周期**
   - activate 时不需要立即初始化（惰性）
   - deactivate 时调用 `disposeProject()` 释放内存
 
-- [ ] **TASK-AST-1.4: 为 astContext 编写基础测试**
+- [x] **TASK-AST-1.4: 为 astContext 编写基础测试**
   - 验证能从内存中的 TS 源码创建 SourceFile
   - 验证能解析函数声明、import 声明、class 声明
   - 验证 dispose 后不会内存泄漏
 
-- [ ] **TASK-AST-1.5: 验证 esbuild 打包兼容性**
+- [x] **TASK-AST-1.5: 验证 esbuild 打包兼容性**
   - 运行 `npm run build` 确认 ts-morph 可被正确打包
   - 如果 ts-morph 太大导致包体膨胀，评估是否需要 external 化或换用更轻量的 `@ts-morph/bootstrap`
+  - 验证结果：
+    - `tsc --noEmit` 通过
+    - `tsc -p tsconfig.test.json --noEmit` 通过
+    - `npm run build` 通过
+    - `npm run test` 通过，`54/54` 测试通过
 
 **产出**：`astContext.ts` 模块 + 基础测试，不影响现有功能。
 
@@ -1752,7 +1757,7 @@ requestExecution       → executeToolCallBatchRound() 决定 halted / follow-up
 
 **目标**：定义语言无关的 AST 编辑接口，实现语言路由层，并完成 TS/JS 适配器的全部原子操作。
 
-- [ ] **TASK-AST-2.1a: 创建 `src/tools/astEditorTypes.ts` — 语言无关接口定义**
+- [x] **TASK-AST-2.1a: 创建 `src/tools/astEditorTypes.ts` — 语言无关接口定义**
   - 定义 `AstEditAction` 枚举：`add_import | remove_import | insert_function | edit_function_body | add_function_param | add_object_property | add_class_member | rename_symbol`
   - 定义 `AstEditRequest`：`{ filePath, action, params }`
   - 定义 `AstEditResult`：
@@ -1763,7 +1768,7 @@ requestExecution       → executeToolCallBatchRound() 决定 halted / follow-up
     - `execute(request: AstEditRequest, fileContent: string): Promise<AstEditResult>`
     - `dispose?(): void`
 
-- [ ] **TASK-AST-2.1b: 创建 `src/tools/astRouter.ts` — 语言路由层**
+- [x] **TASK-AST-2.1b: 创建 `src/tools/astRouter.ts` — 语言路由层**
   - 维护已注册的 `AstLanguageAdapter` 列表
   - 提供 `registerAdapter(adapter: AstLanguageAdapter): void`
   - 提供 `routeAstEdit(request: AstEditRequest, fileContent: string): Promise<AstEditResult | { supported: false }>`
@@ -1771,14 +1776,14 @@ requestExecution       → executeToolCallBatchRound() 决定 halted / follow-up
   - 如果没有匹配的适配器，返回 `{ supported: false }`，由上层降级到 `edit_file`
   - 提供 `disposeAll(): void`
 
-- [ ] **TASK-AST-2.1c: 创建 `src/tools/astAdapter_typescript.ts` — TS/JS 适配器**
+- [x] **TASK-AST-2.1c: 创建 `src/tools/astAdapter_typescript.ts` — TS/JS 适配器**
   - 实现 `AstLanguageAdapter` 接口
   - `supportsFile`：匹配 `.ts / .tsx / .js / .jsx`
   - 内部使用 `astContext.ts` 获取 SourceFile
   - 每个操作接收 SourceFile + 参数，返回修改后的文件内容字符串
   - 不直接写磁盘，只返回新内容，由上层决定是否落盘
 
-- [ ] **TASK-AST-2.2: 实现 `astAddImport` 操作**
+- [x] **TASK-AST-2.2: 实现 `astAddImport` 操作**
   - 输入：`{ filePath, modulePath, namedImports?, defaultImport? }`
   - 行为：
     - 如果目标 import 已存在，合并 namedImports
@@ -1786,21 +1791,21 @@ requestExecution       → executeToolCallBatchRound() 决定 halted / follow-up
     - 不重复添加已有的 import
   - 返回修改后的完整文件内容
 
-- [ ] **TASK-AST-2.3: 实现 `astRemoveImport` 操作**
+- [x] **TASK-AST-2.3: 实现 `astRemoveImport` 操作**
   - 输入：`{ filePath, modulePath, namedImports? }`
   - 行为：
     - 如果指定 namedImports，只移除指定的导入符号
     - 如果移除后该 import 声明为空，删除整行
     - 如果不指定 namedImports，删除整条 import 声明
 
-- [ ] **TASK-AST-2.4: 实现 `astInsertFunction` 操作**
+- [x] **TASK-AST-2.4: 实现 `astInsertFunction` 操作**
   - 输入：`{ filePath, functionCode, insertAfter?, insertBefore? }`
   - 行为：
     - 把一段完整的函数代码插入到指定位置
     - insertAfter/insertBefore 用函数名定位
     - 如果不指定位置，默认插入到文件末尾（export 之前）
 
-- [ ] **TASK-AST-2.5: 实现 `astEditFunction` 操作**
+- [x] **TASK-AST-2.5: 实现 `astEditFunction` 操作**
   - 输入：`{ filePath, functionName, newBody }`
   - 行为：
     - 找到指定名称的函数声明或箭头函数
@@ -1808,14 +1813,14 @@ requestExecution       → executeToolCallBatchRound() 决定 halted / follow-up
     - 如果找不到，返回失败
     - 如果同名函数有多个（重载），返回失败并提示
 
-- [ ] **TASK-AST-2.6: 实现 `astAddFunctionParam` 操作**
+- [x] **TASK-AST-2.6: 实现 `astAddFunctionParam` 操作**
   - 输入：`{ filePath, functionName, paramCode, position? }`
   - 行为：
     - 在指定函数的参数列表中插入新参数
     - position 默认末尾
     - 如果参数已存在（同名），返回失败
 
-- [ ] **TASK-AST-2.7: 实现 `astAddObjectProperty` 操作**
+- [x] **TASK-AST-2.7: 实现 `astAddObjectProperty` 操作**
   - 输入：`{ filePath, objectLocator, propertyCode }`
   - objectLocator 格式：`{ variableName }` 或 `{ functionName, paramIndex }` 等
   - 行为：
@@ -1823,13 +1828,13 @@ requestExecution       → executeToolCallBatchRound() 决定 halted / follow-up
     - 在末尾插入新属性
     - 如果属性已存在，返回失败
 
-- [ ] **TASK-AST-2.8: 实现 `astAddClassMember` 操作**
+- [x] **TASK-AST-2.8: 实现 `astAddClassMember` 操作**
   - 输入：`{ filePath, className, memberCode, insertAfter? }`
   - 行为：
     - 在指定 class 中插入方法或属性
     - 如果同名成员已存在，返回失败
 
-- [ ] **TASK-AST-2.9: 实现 `astRenameSymbol` 操作（语义级）**
+- [x] **TASK-AST-2.9: 实现 `astRenameSymbol` 操作（语义级）**
   - 输入：`{ filePath, oldName, newName, line?, column? }`
   - 行为：
     - 利用 ts-morph 的 `findReferences` 找到符号的定义和所有引用
@@ -1837,11 +1842,15 @@ requestExecution       → executeToolCallBatchRound() 决定 halted / follow-up
     - 如果是跨文件引用，返回所有被修改文件的路径和新内容
   - 返回：`Array<{ filePath, newContent }>` 支持多文件修改
 
-- [ ] **TASK-AST-2.10: 为每个 AST 操作编写单元测试**
+- [x] **TASK-AST-2.10: 为每个 AST 操作编写单元测试**
   - 每个操作至少 3 个测试用例：
     - 正常操作
     - 目标不存在时的失败处理
     - 边界情况（已存在、重复、空文件等）
+  - 验证结果：
+    - `tsc --noEmit` 通过
+    - `tsc -p tsconfig.test.json --noEmit` 通过
+    - `npm run test` 通过，`75/75` 测试通过
 
 **产出**：`astEditorTypes.ts`（语言无关接口）+ `astRouter.ts`（路由层）+ `astAdapter_typescript.ts`（TS/JS 适配器）+ 完整测试，不改现有编辑链路。
 
@@ -1851,7 +1860,7 @@ requestExecution       → executeToolCallBatchRound() 决定 halted / follow-up
 
 **目标**：让模型可以输出 AST 级工具调用，插件可以解析并执行。
 
-- [ ] **TASK-AST-3.1: 扩展 `ParsedToolCall` 类型**
+- [x] **TASK-AST-3.1: 扩展 `ParsedToolCall` 类型**
   - 新增 `type: 'ast_edit'`
   - 新增 `astAction` 字段，枚举值：
     - `add_import`
@@ -1864,7 +1873,7 @@ requestExecution       → executeToolCallBatchRound() 决定 halted / follow-up
     - `rename_symbol`
   - 新增 `astParams` 字段：对应各操作的参数（联合类型）
 
-- [ ] **TASK-AST-3.2: 在 `toolParser.ts` 中新增 AST 工具调用解析**
+- [x] **TASK-AST-3.2: 在 `toolParser.ts` 中新增 AST 工具调用解析**
   - 新增 XML 格式：
     ```xml
     <tool_call>
@@ -1884,27 +1893,31 @@ requestExecution       → executeToolCallBatchRound() 决定 halted / follow-up
     ```
   - 保留对旧 `edit_file` 格式的完全兼容
 
-- [ ] **TASK-AST-3.3: 在 `toolExecutor.ts` 中新增 `ast_edit` 分派**
+- [x] **TASK-AST-3.3: 在 `toolExecutor.ts` 中新增 `ast_edit` 分派**
   - 在 `executeSingleToolCall` 的 switch 中新增 `case 'ast_edit'`
   - 调用 `astRouter.routeAstEdit()` 路由到对应语言适配器
   - 如果路由返回 `{ supported: false }`，自动降级到 `edit_file` 的文本替换逻辑
   - 返回标准 `FileOpResult`
 
-- [ ] **TASK-AST-3.4: 在 `ChatViewProvider_d_fileChanges.ts` 中适配 AST 写操作**
+- [x] **TASK-AST-3.4: 在 `ChatViewProvider_d_fileChanges.ts` 中适配 AST 写操作**
   - `executeWriteToolCall` 中：`ast_edit` 视为写操作
   - 预检逻辑：AST 操作自带结构校验，预检可以直接用 AST 编辑函数的"干跑"模式
   - 备份逻辑：与 `edit_file` 复用，不需要改
   - diff 逻辑：与 `edit_file` 复用（都是拿旧内容和新内容做 diff）
 
-- [ ] **TASK-AST-3.5: 处理 `ast_edit` 的多文件修改情况**
+- [x] **TASK-AST-3.5: 处理 `ast_edit` 的多文件修改情况**
   - `rename_symbol` 可能改多个文件
   - 需要扩展 `ExecuteWriteToolCallResult` 支持返回多个文件的 diff
   - 上层 `executeToolCallBatch` 需要能处理单个工具调用产生多个文件变更
   - 备份和 undo 需要覆盖所有被改文件
 
-- [ ] **TASK-AST-3.6: 为 AST 工具调用的解析和执行编写集成测试**
+- [x] **TASK-AST-3.6: 为 AST 工具调用的解析和执行编写集成测试**
   - 从 XML 输入到最终文件内容的端到端验证
   - 覆盖：正常执行、解析失败、AST 操作失败、权限拦截
+  - 验证结果：
+    - `tsc --noEmit` 通过
+    - `tsc -p tsconfig.test.json --noEmit` 通过
+    - `npm run test` 通过，`80/80` 测试通过
 
 **产出**：AST 工具调用可被解析和执行，但模型还不知道有这些工具。
 
@@ -1914,26 +1927,26 @@ requestExecution       → executeToolCallBatchRound() 决定 halted / follow-up
 
 **目标**：让模型知道有 AST 编辑工具可用，并优先使用。
 
-- [ ] **TASK-AST-4.1: 在 `system.ts` Code 模式中新增 AST 工具说明**
+- [x] **TASK-AST-4.1: 在 `system.ts` Code 模式中新增 AST 工具说明**
   - 在工具列表中新增 `ast_edit` 的格式说明和使用规则
   - 明确告知模型：
     - 对 `.ts/.tsx/.js/.jsx` 文件，**优先使用 `ast_edit`**
     - 只有当 AST 操作不能覆盖修改需求时，才降级用 `edit_file`
     - 对 `.json/.md/.yaml/.css/.html` 等非 JS/TS 文件，继续用 `edit_file`
 
-- [ ] **TASK-AST-4.2: 提供 AST 工具调用示例**
+- [x] **TASK-AST-4.2: 提供 AST 工具调用示例**
   - 在系统提示词中给 2-3 个典型示例：
     - 添加 import
     - 修改函数体
     - 重命名
 
-- [ ] **TASK-AST-4.3: 更新失败反馈格式**
+- [x] **TASK-AST-4.3: 更新失败反馈格式**
   - 当 AST 操作失败时，反馈信息应包含：
     - 失败原因（找不到目标、重复、类型不匹配等）
     - 建议的修正方式
   - 让模型可以根据反馈自行纠正
 
-- [ ] **TASK-AST-4.4: 引导模型正确选择工具**
+- [x] **TASK-AST-4.4: 引导模型正确选择工具**
   - 在提示词中明确决策规则：
     - 结构化修改（加 import、改签名、加方法） → `ast_edit`
     - 逻辑修改（改函数体内部实现、改条件表达式） → `edit_file`（仍然是文本级最合适）
@@ -1942,13 +1955,18 @@ requestExecution       → executeToolCallBatchRound() 决定 halted / follow-up
 
 **产出**：模型可以正确输出 AST 工具调用，端到端可用。
 
+**验证结果**：
+- `tsc --noEmit` 通过
+- `tsc -p tsconfig.test.json --noEmit` 通过
+- `npm run test` 通过，`80/80` 测试通过
+
 ---
 
 ### 阶段五：验证、优化与边界收尾
 
 **目标**：在真实项目场景下验收 AST 编辑能力，处理边界情况。
 
-- [ ] **TASK-AST-5.1: 真实场景端到端验收**
+- [x] **TASK-AST-5.1: 真实场景端到端验收**
   - 用插件自身代码作为测试项目，验证以下场景：
     - 给现有文件添加 import
     - 给函数添加参数
@@ -1957,33 +1975,43 @@ requestExecution       → executeToolCallBatchRound() 决定 halted / follow-up
     - 修改函数体实现（应降级到 edit_file）
     - 对 JSON/MD 文件的编辑（应走 edit_file）
 
-- [ ] **TASK-AST-5.2: AST 操作失败时的优雅降级**
+- [x] **TASK-AST-5.2: AST 操作失败时的优雅降级**
   - 如果 AST 解析失败（语法错误的文件），自动降级到 `edit_file`
   - 如果 ts-morph Project 初始化失败（没有 tsconfig），用合理默认值
   - 在日志中记录降级原因
 
-- [ ] **TASK-AST-5.3: 性能优化**
+- [x] **TASK-AST-5.3: 性能优化**
   - ts-morph Project 的初始化可能较慢（大项目几秒）
   - 确认惰性初始化不会阻塞 UI
   - 评估是否需要用 Worker 线程隔离 AST 解析
   - 文件修改后的 SourceFile 刷新要增量而非全量重建
 
-- [ ] **TASK-AST-5.4: 处理 JavaScript 文件**
+- [x] **TASK-AST-5.4: 处理 JavaScript 文件**
   - `.js/.jsx` 文件也应支持 AST 编辑
   - ts-morph 可以解析 JS 文件（设置 `allowJs: true`）
   - 验证 JS 文件的 AST 操作与 TS 一致
 
-- [ ] **TASK-AST-5.5: AST 编辑后的格式保持**
+- [x] **TASK-AST-5.5: AST 编辑后的格式保持**
   - ts-morph 默认的代码生成格式可能与项目原有格式不一致
   - 策略：对于替换节点内容的操作，尽量使用 `replaceWithText` 保持原始格式
   - 对于插入操作，读取文件现有缩进风格（tab/space、宽度）并适配
 
-- [ ] **TASK-AST-5.6: 更新 workplan 和 README**
+- [x] **TASK-AST-5.6: 更新 workplan 和 README**
   - 记录 AST 编辑能力的使用方式
   - 记录支持的操作列表
   - 记录降级规则
 
 **产出**：AST 编辑能力经过真实验收，边界情况处理完整。
+
+**验收过程中的修复**：
+- 修复 `insertStatements` 索引参数 bug：之前用行号作为语句索引，在 JS 文件中会超出范围，改为用 `getStatements().indexOf(anchor)`
+- `withAstMutation` 将整个初始化流程包进 try/catch，语法错误文件也能优雅返回失败并提示降级
+
+**验证结果**：
+- `tsc --noEmit` 通过
+- `tsc -p tsconfig.test.json --noEmit` 通过
+- `npm run test` 通过，`93/93` 测试通过
+- E2E 测试覆盖：class 添加方法、函数参数、import 合并、嵌套对象属性、XML 解析、JS/JSX 文件、箭头函数、rename 跨引用、部分删除 import、错误场景
 
 ---
 
@@ -1991,13 +2019,13 @@ requestExecution       → executeToolCallBatchRound() 决定 halted / follow-up
 
 **目标**：扩展 AST 编辑能力到 Python，通过子进程调用 Python + libcst 实现结构化编辑。
 
-- [ ] **TASK-AST-6.1: 设计 Python AST worker 通信协议**
+- [x] **TASK-AST-6.1: 设计 Python AST worker 通信协议**
   - 插件（Node.js）通过 `child_process.spawn` 启动 Python 子进程
   - 通信方式：stdin/stdout JSON 协议
   - 请求格式：`{ action, filePath, fileContent, params }`
   - 响应格式：`{ success, files?, reason? }`（与 `AstEditResult` 对齐）
 
-- [ ] **TASK-AST-6.2: 实现 Python 端 AST worker 脚本**
+- [x] **TASK-AST-6.2: 实现 Python 端 AST worker 脚本**
   - 创建 `resources/ast_workers/python_ast_worker.py`
   - 依赖 `libcst`（比标准库 `ast` 更适合做代码修改，因为 libcst 保留格式和注释）
   - 实现操作：
@@ -2010,7 +2038,7 @@ requestExecution       → executeToolCallBatchRound() 决定 halted / follow-up
     - `rename_symbol`：基于作用域分析的安全重命名（libcst 的 `QualifiedNameProvider`）
   - 从 stdin 读 JSON 请求，向 stdout 写 JSON 响应
 
-- [ ] **TASK-AST-6.3: 创建 `src/tools/astAdapter_python.ts`**
+- [x] **TASK-AST-6.3: 创建 `src/tools/astAdapter_python.ts`**
   - 实现 `AstLanguageAdapter` 接口
   - `supportsFile`：匹配 `.py`
   - 内部管理 Python 子进程生命周期：
@@ -2022,15 +2050,15 @@ requestExecution       → executeToolCallBatchRound() 决定 halted / follow-up
     - 如果没有，`supportsFile` 返回 false，自动降级到 edit_file
     - 在日志中记录原因
 
-- [ ] **TASK-AST-6.4: 在 `astRouter.ts` 中注册 Python 适配器**
+- [x] **TASK-AST-6.4: 在 `astRouter.ts` 中注册 Python 适配器**
   - 在适配器列表中追加 Python 适配器
   - 不需要改 router 逻辑，只需要注册
 
-- [ ] **TASK-AST-6.5: 更新系统提示词支持 Python 的 ast_edit**
+- [x] **TASK-AST-6.5: 更新系统提示词支持 Python 的 ast_edit**
   - 在工具说明中新增：对 `.py` 文件也可使用 `ast_edit`
   - 给出 Python 特有的示例（Python 的 import 格式与 TS 不同）
 
-- [ ] **TASK-AST-6.6: 为 Python 适配器编写测试**
+- [x] **TASK-AST-6.6: 为 Python 适配器编写测试**
   - 测试 Python worker 脚本的各操作
   - 测试 Node.js 端子进程通信的正常和异常路径
   - 测试 Python 不可用时的降级行为
@@ -2038,6 +2066,18 @@ requestExecution       → executeToolCallBatchRound() 决定 halted / follow-up
 **产出**：`.py` 文件可通过 `ast_edit` 进行结构化编辑。
 
 **前置条件**：用户机器需安装 Python 3 + `pip install libcst`。
+
+**实现摘要**：
+- `resources/ast_workers/python_ast_worker.py`：Python 端 worker，支持 7 种 AST 操作 + ping/shutdown 协议
+- `src/tools/astAdapter_python.ts`：Node.js 端适配器，惰性启动、复用子进程、超时处理、优雅关闭
+- `extension.ts`：在 activate 中注册 TS + Python 适配器，deactivate 中 disposeAll
+- `system.ts`：提示词已更新支持 .py 文件
+
+**验证结果**：
+- `tsc --noEmit` 通过
+- `tsc -p tsconfig.test.json --noEmit` 通过
+- `npm run test` 通过，101 测试（97 pass + 4 skip）
+- 4 个跳过的测试需要 Python 3 + libcst 环境，当前 CI 未安装
 
 ---
 
@@ -2047,7 +2087,7 @@ requestExecution       → executeToolCallBatchRound() 决定 halted / follow-up
 
 #### C# 适配器（Roslyn）
 
-- [ ] **TASK-AST-7.1: 实现 C# AST worker**
+- [x] **TASK-AST-7.1: 实现 C# AST worker**
   - 创建 `resources/ast_workers/csharp_ast_worker/` .NET 控制台项目
   - 依赖 `Microsoft.CodeAnalysis.CSharp`（Roslyn）
   - 通信方式：stdin/stdout JSON 协议，与 Python worker 格式一致
@@ -2060,7 +2100,7 @@ requestExecution       → executeToolCallBatchRound() 决定 halted / follow-up
     - `add_class_member`：给 class 添加字段/属性/方法
     - `rename_symbol`：基于 Roslyn 语义模型的安全重命名
 
-- [ ] **TASK-AST-7.2: 创建 `src/tools/astAdapter_csharp.ts`**
+- [x] **TASK-AST-7.2: 创建 `src/tools/astAdapter_csharp.ts`**
   - 实现 `AstLanguageAdapter` 接口
   - `supportsFile`：匹配 `.cs`
   - 子进程管理逻辑与 Python 适配器相似
@@ -2069,7 +2109,7 @@ requestExecution       → executeToolCallBatchRound() 决定 halted / follow-up
 
 #### Java 适配器（javaparser）
 
-- [ ] **TASK-AST-7.3: 实现 Java AST worker**
+- [x] **TASK-AST-7.3: 实现 Java AST worker**
   - 创建 `resources/ast_workers/java_ast_worker/` Maven/Gradle 项目
   - 依赖 `com.github.javaparser:javaparser-core`
   - 通信方式：stdin/stdout JSON 协议
@@ -2082,20 +2122,20 @@ requestExecution       → executeToolCallBatchRound() 决定 halted / follow-up
     - `add_class_member`
     - `rename_symbol`（javaparser 的 symbol 解析能力有限，初版可只支持单文件重命名）
 
-- [ ] **TASK-AST-7.4: 创建 `src/tools/astAdapter_java.ts`**
+- [x] **TASK-AST-7.4: 创建 `src/tools/astAdapter_java.ts`**
   - 实现 `AstLanguageAdapter` 接口
   - `supportsFile`：匹配 `.java`
   - 检测 JVM 是否可用
   - 首次使用时自动 build worker 或内置 fat jar
 
-- [ ] **TASK-AST-7.5: 在 `astRouter.ts` 中注册 C# 和 Java 适配器**
+- [x] **TASK-AST-7.5: 在 `astRouter.ts` 中注册 C# 和 Java 适配器**
 
-- [ ] **TASK-AST-7.6: 更新系统提示词**
+- [x] **TASK-AST-7.6: 更新系统提示词**
   - 新增 `.cs` 和 `.java` 文件的 `ast_edit` 说明和示例
   - C# 的 `add_import` 对应 `using`
   - Java 的 `add_import` 对应 `import`
 
-- [ ] **TASK-AST-7.7: 为 C# 和 Java 适配器编写测试**
+- [x] **TASK-AST-7.7: 为 C# 和 Java 适配器编写测试**
   - 各语言的 worker 操作测试
   - Node.js 端子进程通信测试
   - 运行时不可用时的降级测试
@@ -2105,6 +2145,25 @@ requestExecution       → executeToolCallBatchRound() 决定 halted / follow-up
 **前置条件**：
 - C#：用户机器需安装 .NET SDK 6.0+
 - Java：用户机器需安装 JDK 11+ 和 Maven 或 Gradle
+
+**实现摘要**：
+- `resources/ast_workers/csharp_ast_worker/`：.NET 6 控制台项目，使用 Roslyn (Microsoft.CodeAnalysis.CSharp) 实现 7 种 AST 操作
+- `resources/ast_workers/java_ast_worker/`：Maven 项目，使用 javaparser-core 实现 7 种 AST 操作
+- `src/tools/astAdapter_subprocess.ts`：通用子进程适配器基础设施（惰性启动、复用、超时、路径解析）
+- `src/tools/astAdapter_csharp.ts` / `astAdapter_java.ts`：各语言适配器，使用通用基础设施
+- `extension.ts`：在 activate 中注册 4 个语言适配器（TS/Python/C#/Java）
+- `system.ts`：提示词已更新支持 .cs/.java 文件
+
+**验证结果**：
+- `tsc --noEmit` 通过
+- `npm run test` 通过，112 测试（106 pass + 6 skip）
+- C# 适配器测试：add_import、rename_symbol、错误场景均通过
+- Java/Python 测试因环境跳过（需要对应运行时 + 已构建 worker）
+
+**关键修复**：
+- 解决了测试构建与正式构建的 `__dirname` 路径不一致问题，使用 `resolveFromProjectRoot` 向上查找 package.json 确定项目根
+- `java --version` 替代 `-version` 避免 stderr 输出导致误判
+- 子进程超时调整为 30s，容纳首次构建的启动时间
 
 ---
 

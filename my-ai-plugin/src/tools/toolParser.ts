@@ -2,7 +2,7 @@
  * 工具调用解析器
  * 
  * 解析 AI 回复中的工具调用标签，
- * 提取出文件操作指令（read_file, write_file, edit_file, list_dir）。
+ * 提取出文件操作指令（read_file, write_file, edit_file, list_dir, ast_edit）。
  * 
  * 支持两种格式：
  * 1. 带包裹：<tool_call><read_file path="..." /></tool_call>
@@ -10,8 +10,10 @@
  * 兼容不同模型对格式指令的遵循程度差异。
  */
 
+import type { AstEditAction } from './astEditorTypes';
+
 /** 工具调用类型 */
-export type ToolCallType = 'read_file' | 'write_file' | 'edit_file' | 'list_dir';
+export type ToolCallType = 'read_file' | 'write_file' | 'edit_file' | 'list_dir' | 'ast_edit';
 
 /** 解析后的工具调用结构 */
 export interface ParsedToolCall {
@@ -25,6 +27,10 @@ export interface ParsedToolCall {
   oldContent?: string;
   /** 新内容（仅 edit_file） */
   newContent?: string;
+  /** AST 操作类型（仅 ast_edit） */
+  astAction?: AstEditAction;
+  /** AST 操作参数的 JSON 对象（仅 ast_edit） */
+  astParams?: Record<string, unknown>;
   /** 原始匹配文本（用于在回复中替换为执行结果） */
   rawMatch: string;
 }
@@ -32,9 +38,9 @@ export interface ParsedToolCall {
 type TextRange = [number, number];
 
 const WRAPPED_TOOL_CALL_REGEX_SOURCE = '<tool_call>([\\s\\S]*?)</tool_call>';
-const BARE_TOOL_NAMES = ['read_file', 'write_file', 'edit_file', 'list_dir'];
+const BARE_TOOL_NAMES = ['read_file', 'write_file', 'edit_file', 'list_dir', 'ast_edit'];
 const BARE_TOOL_CALL_REGEX_SOURCE = `<(${BARE_TOOL_NAMES.join('|')})[\\s>][\\s\\S]*?(?:\\/>|<\\/\\1>)`;
-const BARE_TOOL_CALL_QUICK_CHECK_REGEX = /<(?:read_file|write_file|edit_file|list_dir)\s/;
+const BARE_TOOL_CALL_QUICK_CHECK_REGEX = /<(?:read_file|write_file|edit_file|list_dir|ast_edit)\s/;
 const FENCED_CODE_BLOCK_REGEX_SOURCE = '(^|\\r?\\n)(`{3,}|~{3,})[^\\n\\r]*\\r?\\n[\\s\\S]*?\\r?\\n\\2[^\\n\\r]*(?=\\r?\\n|$)';
 
 function collectFencedCodeBlockRanges(text: string): TextRange[] {
@@ -80,6 +86,7 @@ function replaceToolCallsInPlainText(text: string): string {
   result = result.replace(/<(?:read_file|list_dir)\s+path\s*=\s*"[^"]+"\s*\/>/g, '');
   result = result.replace(/<write_file\s+path\s*=\s*"[^"]+">[\s\S]*?<\/write_file>/g, '');
   result = result.replace(/<edit_file\s+path\s*=\s*"[^"]+">[\s\S]*?<\/edit_file>/g, '');
+  result = result.replace(/<ast_edit\s+path\s*=\s*"[^"]+"\s+action\s*=\s*"[^"]+">[\s\S]*?<\/ast_edit>/g, '');
   return result;
 }
 
@@ -173,7 +180,71 @@ function parseSingleToolCall(inner: string, rawMatch: string): ParsedToolCall | 
     }
   }
 
+  // ast_edit: <ast_edit path="xxx" action="add_import">{"modulePath": "./utils"}</ast_edit>
+  const astMatch = inner.match(/<ast_edit\s+path\s*=\s*"([^"]+)"\s+action\s*=\s*"([^"]+)">((?:[\s\S]*?))<\/ast_edit>/);
+  if (astMatch) {
+    const astPath = astMatch[1];
+    const astAction = astMatch[2] as AstEditAction;
+    const astBody = astMatch[3].trim();
+    const astParams = parseAstParams(astBody);
+    if (astParams) {
+      return { type: 'ast_edit', path: astPath, astAction, astParams, rawMatch };
+    }
+  }
+
   return null;
+}
+
+/**
+ * 解析 ast_edit 标签体内的参数。
+ * 支持两种格式：
+ * 1. JSON 格式：{"modulePath": "./utils", "namedImports": ["foo"]}
+ * 2. <param> 标签格式：<param name="modulePath">./utils</param>
+ */
+function parseAstParams(body: string): Record<string, unknown> | null {
+  // 优先尝试 JSON 格式
+  if (body.startsWith('{')) {
+    try {
+      return JSON.parse(body) as Record<string, unknown>;
+    } catch {
+      // JSON 解析失败，继续尝试 param 标签格式
+    }
+  }
+
+  // <param name="key">value</param> 格式
+  const paramRegex = /<param\s+name\s*=\s*"([^"]+)">((?:[\s\S]*?))<\/param>/g;
+  let paramMatch: RegExpExecArray | null;
+  const params: Record<string, unknown> = {};
+  let foundAny = false;
+
+  while ((paramMatch = paramRegex.exec(body)) !== null) {
+    foundAny = true;
+    const key = paramMatch[1];
+    const rawValue = paramMatch[2].trim();
+    params[key] = parseParamValue(rawValue);
+  }
+
+  return foundAny ? params : null;
+}
+
+/**
+ * 将 param 标签的文本值转换为合适的 JS 类型。
+ * 逗号分隔的值会被解析为数组，数字和布尔值会被自动转换。
+ */
+function parseParamValue(raw: string): unknown {
+  // 先尝试作为 JSON（支持数组、对象、数字、布尔等）
+  try {
+    return JSON.parse(raw);
+  } catch {
+    // 不是合法 JSON，继续
+  }
+
+  // 逗号分隔 → 字符串数组
+  if (raw.includes(',')) {
+    return raw.split(',').map(s => s.trim()).filter(s => s !== '');
+  }
+
+  return raw;
 }
 
 /**

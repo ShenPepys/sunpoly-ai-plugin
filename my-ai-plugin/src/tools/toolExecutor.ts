@@ -4,10 +4,13 @@
  * 接收解析后的工具调用，执行实际的文件操作，
  * 并返回执行结果，供 ChatViewProvider 将结果反馈给 AI。
  */
+import * as fs from 'fs';
 import { info, error } from '../logger';
 import { readFile, writeFile, editFile, listDir } from './fileOps';
+import { routeAstEdit } from './astRouter';
+import type { AstEditRequest } from './astEditorTypes';
 import type { ParsedToolCall } from './toolParser';
-import type { FileOpResult } from './fileOps';
+import type { FileOpResult, AstAffectedFile } from './fileOps';
 import type { WorkMode } from '../webview/messageTypes';
 
 /** 单个工具调用的执行结果 */
@@ -83,7 +86,7 @@ async function executeSingleToolCall(
   mode: WorkMode,
 ): Promise<FileOpResult> {
   // 权限控制：Ask 和 Plan 模式下禁止写操作
-  const isWriteOp = toolCall.type === 'write_file' || toolCall.type === 'edit_file';
+  const isWriteOp = toolCall.type === 'write_file' || toolCall.type === 'edit_file' || toolCall.type === 'ast_edit';
   if (isWriteOp && mode !== 'code') {
     const modeName = mode === 'ask' ? 'Ask' : 'Plan';
     return {
@@ -112,6 +115,9 @@ async function executeSingleToolCall(
 
     case 'list_dir':
       return listDir(toolCall.path);
+
+    case 'ast_edit':
+      return executeAstEdit(toolCall);
 
     default:
       error(`未知的工具类型: ${toolCall.type}`);
@@ -152,6 +158,90 @@ function formatToolResultContent(toolCall: ParsedToolCall, content: string): str
   return `${content.slice(0, maxChars)}\n...(工具结果已截断，原始长度 ${content.length} 字符)`;
 }
 
+/**
+ * 执行 AST 编辑工具调用。
+ * 将 ParsedToolCall 中的 astAction/astParams 转换为 AstEditRequest，
+ * 通过语言路由层分派到对应适配器。
+ * 如果没有适配器支持该文件类型，返回失败提示。
+ */
+async function executeAstEdit(toolCall: ParsedToolCall): Promise<FileOpResult> {
+  if (!toolCall.astAction) {
+    return { success: false, content: 'ast_edit 缺少 action 字段' };
+  }
+  if (!toolCall.astParams) {
+    return { success: false, content: 'ast_edit 缺少参数' };
+  }
+
+  // 构造 AstEditRequest，这里 workspaceRoot 用空字符串占位，
+  // 上层 ChatViewProvider 会在执行前填充真实的工作区路径
+  const request: AstEditRequest = {
+    workspaceRoot: '',
+    filePath: toolCall.path,
+    action: toolCall.astAction,
+    params: toolCall.astParams,
+  } as AstEditRequest;
+
+  // 读取文件当前内容
+  const readResult = await readFile(toolCall.path);
+  if (!readResult.success) {
+    return readResult;
+  }
+
+  const routeResult = await routeAstEdit(request, readResult.content);
+
+  // 无适配器支持该文件类型
+  if ('supported' in routeResult) {
+    return {
+      success: false,
+      content: `文件 ${toolCall.path} 的语言类型暂无 AST 适配器支持，请改用 edit_file 工具`,
+    };
+  }
+
+  // 此处 routeResult 已被缩窄为 AstEditResult
+  const editResult = routeResult;
+
+  // AST 操作失败
+  if (!editResult.success) {
+    return { success: false, content: editResult.reason };
+  }
+
+  // 写入前先读取所有受影响文件的原始内容，用于上层备份和 diff
+  const astAffectedFiles: AstAffectedFile[] = editResult.files.map((file) => {
+    let originalContent = '';
+    try {
+      originalContent = fs.readFileSync(file.filePath, 'utf-8');
+    } catch {
+      // 文件可能不存在（新建场景），原始内容为空
+    }
+    return { filePath: file.filePath, originalContent, newContent: file.newContent };
+  });
+
+  // 将修改后的内容写回磁盘
+  const writeErrors: string[] = [];
+  for (const file of editResult.files) {
+    const writeResult = await writeFile(file.filePath, file.newContent);
+    if (!writeResult.success) {
+      writeErrors.push(`${file.filePath}: ${writeResult.content}`);
+    }
+  }
+
+  if (writeErrors.length > 0) {
+    return {
+      success: false,
+      content: `AST 编辑成功但写入文件失败：\n${writeErrors.join('\n')}`,
+    };
+  }
+
+  const filesSummary = editResult.files
+    .map((f) => `${f.filePath}（${f.newContent.length} 字符）`)
+    .join('\n');
+  return {
+    success: true,
+    content: `AST 编辑成功，影响 ${editResult.files.length} 个文件：\n${filesSummary}`,
+    astAffectedFiles,
+  };
+}
+
 /** 工具类型的中文标签 */
 function getToolTypeLabel(type: string): string {
   switch (type) {
@@ -159,6 +249,7 @@ function getToolTypeLabel(type: string): string {
     case 'write_file': return '📝 写入文件';
     case 'edit_file': return '✏️ 编辑文件';
     case 'list_dir': return '📁 列出目录';
+    case 'ast_edit': return '🌳 AST 编辑';
     default: return type;
   }
 }
