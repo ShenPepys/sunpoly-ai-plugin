@@ -136,3 +136,26 @@ test('stripToolCalls 能清除 ast_edit 标签', () => {
   assert.match(stripped, /一些文字/);
   assert.match(stripped, /结束/);
 });
+
+test('stripToolCalls 剥离代码块内工具调用后不应残留空围栏', () => {
+  // 模型把 read_file 包在 ```xml 代码块里
+  const content = [
+    '我来读取这个文件：',
+    '```xml',
+    '<read_file path="src/index.ts" />',
+    '```',
+  ].join('\n');
+
+  const stripped = stripToolCalls(content);
+  // 不应包含空代码围栏
+  assert.doesNotMatch(stripped, /```/);
+  assert.match(stripped, /我来读取这个文件/);
+});
+
+test('stripToolCalls 纯代码块内工具调用全剥离后结果应为空或纯文本', () => {
+  // 模型回复仅含代码块内的工具调用，无其他文字
+  const content = '```\n<tool_call><read_file path="a.ts" /></tool_call>\n```';
+  const stripped = stripToolCalls(content);
+  // 不应残留空代码块
+  assert.doesNotMatch(stripped, /```/);
+});

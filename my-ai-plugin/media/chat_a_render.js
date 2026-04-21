@@ -128,6 +128,11 @@
   function renderCodeBlock(lang, code) {
     var langLabel = lang || '代码';
     var trimmedCode = code.replace(/\n$/, '');
+
+    // 空代码块不渲染，避免显示无内容的代码块区域
+    if (!trimmedCode.trim()) {
+      return '';
+    }
     var highlightedCode = highlightSyntax(lang, trimmedCode);
     var lines = trimmedCode.split('\n');
     var showLineNumbers = lines.length > 5;

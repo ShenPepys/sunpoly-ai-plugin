@@ -275,13 +275,21 @@ export function hasToolCalls(text: string): boolean {
 }
 
 /**
+ * 清理剥离工具调用后遗留的空代码块围栏
+ * 例如 ```xml\n``` 或 ```\n  \n``` 等只剩围栏没有实际内容的代码块
+ */
+function cleanupEmptyCodeFences(text: string): string {
+  return text.replace(/```\w*\n\s*```/g, '');
+}
+
+/**
  * 从文本中移除所有工具调用标签（包含包裹和裸标签）
  * 用于在界面上只显示 AI 的文字部分，不暴露原始 XML 给用户
  */
 export function stripToolCalls(text: string): string {
   const ranges = collectFencedCodeBlockRanges(text);
   if (ranges.length === 0) {
-    return replaceToolCallsInPlainText(text).trim();
+    return cleanupEmptyCodeFences(replaceToolCallsInPlainText(text)).trim();
   }
 
   // 先检查代码块外是否有工具调用
@@ -304,5 +312,5 @@ export function stripToolCalls(text: string): string {
   }
 
   // 代码块外没有调用：全文剥离（模型把真实调用包在代码块里）
-  return replaceToolCallsInPlainText(text).trim();
+  return cleanupEmptyCodeFences(replaceToolCallsInPlainText(text)).trim();
 }
