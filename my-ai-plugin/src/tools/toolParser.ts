@@ -91,22 +91,12 @@ function replaceToolCallsInPlainText(text: string): string {
 }
 
 /**
- * 从 AI 回复文本中解析所有工具调用
- * 
- * 同时支持两种格式：
- * 1. 带包裹：<tool_call>...</tool_call>
- * 2. 裸标签：<read_file path="..." />
- * 
- * 解析顺序：先匹配带包裹的，再匹配裸标签，避免重复
- * 
- * @param text AI 回复的完整文本
- * @returns 解析出的工具调用数组
+ * 在给定的文本段中解析工具调用（不区分代码块）
  */
-export function parseToolCalls(text: string): ParsedToolCall[] {
+function parseToolCallsFromSegments(segments: string[]): ParsedToolCall[] {
   const results: ParsedToolCall[] = [];
-  const outsideSegments = buildOutsideFencedCodeSegments(text);
 
-  for (const segment of outsideSegments) {
+  for (const segment of segments) {
     const matchedRanges: Array<[number, number]> = [];
     const wrappedRegex = new RegExp(WRAPPED_TOOL_CALL_REGEX_SOURCE, 'g');
     let match: RegExpExecArray | null;
@@ -139,6 +129,28 @@ export function parseToolCalls(text: string): ParsedToolCall[] {
   }
 
   return results;
+}
+
+/**
+ * 检查给定文本段中是否存在工具调用
+ */
+function hasToolCallsInSegments(segments: string[]): boolean {
+  return segments.some(segment => {
+    return segment.includes('<tool_call>') || BARE_TOOL_CALL_QUICK_CHECK_REGEX.test(segment);
+  });
+}
+
+export function parseToolCalls(text: string): ParsedToolCall[] {
+  const outsideSegments = buildOutsideFencedCodeSegments(text);
+  const outsideResults = parseToolCallsFromSegments(outsideSegments);
+
+  // 代码块外找到了工具调用，直接返回（代码块内的视为示例）
+  if (outsideResults.length > 0) {
+    return outsideResults;
+  }
+
+  // 代码块外没有找到，回退到全文解析，兼容模型把真实调用包在代码块里
+  return parseToolCallsFromSegments([text]);
 }
 
 /**
@@ -253,9 +265,13 @@ function parseParamValue(raw: string): unknown {
  */
 export function hasToolCalls(text: string): boolean {
   const outsideSegments = buildOutsideFencedCodeSegments(text);
-  return outsideSegments.some(segment => {
-    return segment.includes('<tool_call>') || BARE_TOOL_CALL_QUICK_CHECK_REGEX.test(segment);
-  });
+  // 代码块外有工具调用则直接返回 true
+  if (hasToolCallsInSegments(outsideSegments)) {
+    return true;
+  }
+
+  // 代码块外没有，回退到全文检测
+  return hasToolCallsInSegments([text]);
 }
 
 /**
@@ -268,15 +284,25 @@ export function stripToolCalls(text: string): string {
     return replaceToolCallsInPlainText(text).trim();
   }
 
-  let result = '';
-  let cursor = 0;
+  // 先检查代码块外是否有工具调用
+  const outsideSegments = buildOutsideFencedCodeSegments(text);
+  const hasOutsideCalls = hasToolCallsInSegments(outsideSegments);
 
-  for (const [start, end] of ranges) {
-    result += replaceToolCallsInPlainText(text.slice(cursor, start));
-    result += text.slice(start, end);
-    cursor = end;
+  // 代码块外有调用：只剥离代码块外的，保留代码块内（示例）
+  if (hasOutsideCalls) {
+    let result = '';
+    let cursor = 0;
+
+    for (const [start, end] of ranges) {
+      result += replaceToolCallsInPlainText(text.slice(cursor, start));
+      result += text.slice(start, end);
+      cursor = end;
+    }
+
+    result += replaceToolCallsInPlainText(text.slice(cursor));
+    return result.trim();
   }
 
-  result += replaceToolCallsInPlainText(text.slice(cursor));
-  return result.trim();
+  // 代码块外没有调用：全文剥离（模型把真实调用包在代码块里）
+  return replaceToolCallsInPlainText(text).trim();
 }

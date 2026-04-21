@@ -21,14 +21,30 @@ test('parseToolCalls 会忽略 fenced code block 中的工具 XML，只解析代
   assert.equal(parsed[0].path, 'src/real.ts');
 });
 
-test('hasToolCalls 在工具 XML 只存在于 fenced code block 中时返回 false', () => {
+test('parseToolCalls 在工具 XML 只存在于 fenced code block 中时回退到全文解析', () => {
+  const content = [
+    '首先列出目录：',
+    '```xml',
+    '<list_dir path="miniprogram" />',
+    '```',
+  ].join('\n');
+
+  const parsed = parseToolCalls(content);
+
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0].type, 'list_dir');
+  assert.equal(parsed[0].path, 'miniprogram');
+});
+
+test('hasToolCalls 在工具 XML 只存在于 fenced code block 中时回退返回 true（兼容模型包裹真实调用）', () => {
   const content = [
     '```xml',
     '<tool_call><read_file path="demo/example.ts" /></tool_call>',
     '```',
   ].join('\n');
 
-  assert.equal(hasToolCalls(content), false);
+  // 代码块外没有工具调用时回退到全文检测，返回 true
+  assert.equal(hasToolCalls(content), true);
 });
 
 test('stripToolCalls 会保留 fenced code block 中的示例 XML，只剥离代码块外调用', () => {
