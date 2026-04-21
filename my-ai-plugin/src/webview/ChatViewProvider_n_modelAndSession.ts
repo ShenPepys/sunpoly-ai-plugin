@@ -136,7 +136,10 @@ function fitMessagesToContextWindow(options: {
 }): ContextWindowFitResult {
   const normalizedContextWindow = Math.max(options.contextWindow, 1);
   const requestedMaxTokens = Math.max(options.requestedMaxTokens, MIN_REQUEST_MAX_TOKENS);
-  const safetyBufferTokens = Math.min(512, Math.max(128, Math.floor(normalizedContextWindow * 0.03)));
+  // 安全缓冲：考虑 token 估算与真实分词的偏差，再加一层冗余。
+  // 经验值：中英混合 + 代码估算偏差通常在 10% 以内，8% 的缓冲足以覆盖。
+  // 下限 256 避免窗口过小时失效；上限 2048 避免大窗口模型（如 128K）浪费太多空间。
+  const safetyBufferTokens = Math.min(2048, Math.max(256, Math.floor(normalizedContextWindow * 0.08)));
   const minimumCompletionTokens = Math.min(requestedMaxTokens, MIN_COMPLETION_TOKENS);
   const minimumPromptBudget = Math.max(1, normalizedContextWindow - minimumCompletionTokens - safetyBufferTokens);
   const nextMessages = [...options.messages];

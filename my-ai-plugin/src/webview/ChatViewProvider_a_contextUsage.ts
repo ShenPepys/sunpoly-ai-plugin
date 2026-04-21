@@ -18,8 +18,14 @@ export type TrimmedHistoryResult = HistoryWindowSnapshot & {
   retainedCount: number;
 };
 
+// Token 估算系数说明：
+// OpenAI/DeepSeek 对中英混合 + 代码内容的实际分词通常比 length/3 多 20% 左右。
+// 沿用 /3 会让预算计算偏乐观，触发 "This model's maximum context length..." 的 400。
+// 改用 /2.5 后估算结果更接近真实分词，历史裁剪与 max_tokens 下调都会更保守，避免溢出。
+const TOKEN_ESTIMATE_CHARS_PER_TOKEN = 2.5;
+
 function estimateTextTokenCount(text: string): number {
-  return Math.max(0, Math.round(text.length / 3));
+  return Math.max(0, Math.round(text.length / TOKEN_ESTIMATE_CHARS_PER_TOKEN));
 }
 
 export function estimateMessageTokenCount(message: ChatMessageParam): number {
@@ -39,7 +45,7 @@ export function estimateMessageTokenCount(message: ChatMessageParam): number {
     }
   }
 
-  return Math.max(0, Math.round(charCount / 3));
+  return Math.max(0, Math.round(charCount / TOKEN_ESTIMATE_CHARS_PER_TOKEN));
 }
 
 export function estimateMessagesTokenCount(messages: ChatMessageParam[]): number {
