@@ -331,10 +331,15 @@ export function buildPreviewContent(toolCall: ParsedToolCall, currentContent: st
     }
 
     if (editResult.reason === 'not-found') {
+      // 附带文件开头片段，帮助模型在重试时看到真实内容
+      const SNIPPET_MAX = 800;
+      const snippet = currentContent.length > SNIPPET_MAX
+        ? currentContent.slice(0, SNIPPET_MAX) + '\n...(已截断)'
+        : currentContent;
       return {
         newContent: currentContent,
         canApply: false,
-        issueText: '预览提示：当前文件中未找到要替换的内容，实际执行会失败',
+        issueText: `预览提示：当前文件中未找到要替换的内容，实际执行会失败。请先用 read_file 读取该文件确认真实内容后再重试 edit_file。\n文件开头内容片段:\n${snippet}`,
       };
     }
 

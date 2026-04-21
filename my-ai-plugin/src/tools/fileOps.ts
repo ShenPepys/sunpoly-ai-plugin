@@ -176,6 +176,68 @@ function applyPreferredLineEnding(source: string, preferredLineEnding: '\r\n' | 
   return normalizedSource.replace(/\n/g, '\r\n');
 }
 
+/**
+ * Level 3 容错：忽略行首空白差异的逐行匹配
+ * 当精确匹配和换行归一化匹配均失败时，尝试 trimStart 逐行比对
+ * 只接受唯一匹配，避免误替换
+ * @returns 替换后的完整文件内容，若不匹配或不唯一则返回 null
+ */
+function tryWhitespaceNormalizedLineMatch(
+  fileContent: string,
+  oldContent: string,
+  newContent: string,
+): string | null {
+  const lineEnding = detectPreferredLineEnding(fileContent);
+  const fileLines = normalizeLineEndings(fileContent).split('\n');
+  const rawOldLines = normalizeLineEndings(oldContent).split('\n');
+
+  // 去掉 old 首尾空行（模型经常多带空行）
+  while (rawOldLines.length > 0 && rawOldLines[rawOldLines.length - 1].trim() === '') {
+    rawOldLines.pop();
+  }
+  while (rawOldLines.length > 0 && rawOldLines[0].trim() === '') {
+    rawOldLines.shift();
+  }
+
+  if (rawOldLines.length === 0) {
+    return null;
+  }
+
+  const trimmedOldLines = rawOldLines.map(l => l.trimStart());
+
+  // 在文件中查找所有连续匹配位置
+  const matchIndices: number[] = [];
+  for (let i = 0; i <= fileLines.length - trimmedOldLines.length; i++) {
+    let allMatch = true;
+    for (let j = 0; j < trimmedOldLines.length; j++) {
+      if (fileLines[i + j].trimStart() !== trimmedOldLines[j]) {
+        allMatch = false;
+        break;
+      }
+    }
+    if (allMatch) {
+      matchIndices.push(i);
+    }
+  }
+
+  // 只接受唯一匹配
+  if (matchIndices.length !== 1) {
+    return null;
+  }
+
+  const matchStart = matchIndices[0];
+  const matchEnd = matchStart + trimmedOldLines.length;
+  const newLines = normalizeLineEndings(newContent).split('\n');
+
+  const updatedLines = [
+    ...fileLines.slice(0, matchStart),
+    ...newLines,
+    ...fileLines.slice(matchEnd),
+  ];
+
+  return applyPreferredLineEnding(updatedLines.join('\n'), lineEnding);
+}
+
 export function buildEditedContent(
   fileContent: string,
   oldContent: string,
@@ -208,6 +270,11 @@ export function buildEditedContent(
   const normalizedOldContent = normalizeLineEndings(oldContent);
   const normalizedMatchCount = countExactOccurrences(normalizedFileContent, normalizedOldContent);
   if (normalizedMatchCount === 0) {
+    // Level 3：行首空白容错匹配 — 忽略缩进差异，逐行 trimStart 比对
+    const wsResult = tryWhitespaceNormalizedLineMatch(fileContent, oldContent, newContent);
+    if (wsResult) {
+      return { success: true, updatedContent: wsResult, usedNormalizedMatch: true };
+    }
     return { success: false, reason: 'not-found' };
   }
 
