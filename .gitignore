@@ -1,0 +1,38 @@
+# ================================================================
+# 仓库根级 .gitignore
+# 覆盖 my-ai-plugin 插件子项目的常见构建产物与本地缓存
+# ================================================================
+
+# -------- Node.js / TypeScript 构建产物 --------
+# 依赖包目录体积巨大，必须忽略
+my-ai-plugin/node_modules/
+
+# esbuild 产物输出目录（构建时自动生成）
+my-ai-plugin/dist/
+
+# 测试编译产物（tsc -p tsconfig.test.json 输出目录）
+my-ai-plugin/.test-dist/
+
+# VSIX 打包产物，每次 vsce package 会重新生成
+my-ai-plugin/*.vsix
+
+# npm 日志
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# -------- C# AST Worker 构建产物 --------
+# obj/ 下全是 .NET 中间构建缓存，每次编译都会变化，从不参与打包
+my-ai-plugin/resources/ast_workers/csharp_ast_worker/obj/
+
+# bin/ 下仅忽略用户自编译的工作进程文件（每次 dotnet build 都会变）
+# 其余稳定的 NuGet 语言资源 DLL 仍保留在仓库中，保证无 .NET SDK 时也能打包
+my-ai-plugin/resources/ast_workers/csharp_ast_worker/bin/Debug/net6.0/CsharpAstWorker.dll
+my-ai-plugin/resources/ast_workers/csharp_ast_worker/bin/Debug/net6.0/CsharpAstWorker.exe
+my-ai-plugin/resources/ast_workers/csharp_ast_worker/bin/Debug/net6.0/CsharpAstWorker.pdb
+
+# -------- IDE / 系统杂项 --------
+.DS_Store
+Thumbs.db
+*.swp
+*.swo

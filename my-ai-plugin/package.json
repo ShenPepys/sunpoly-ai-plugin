@@ -258,8 +258,9 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run build",
+    "vscode:prepublish": "npm run build:csharp && npm run build",
     "build": "node esbuild.js --production",
+    "build:csharp": "dotnet build resources/ast_workers/csharp_ast_worker/CsharpAstWorker.csproj -c Debug",
     "watch": "node esbuild.js --watch",
     "test:build": "tsc -p tsconfig.test.json",
     "test": "npm run test:build && node .\\scripts\\run-node-tests.cjs",
