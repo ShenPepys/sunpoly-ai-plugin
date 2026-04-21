@@ -13,6 +13,7 @@ import { typescriptAdapter } from './tools/astAdapter_typescript';
 import { pythonAdapter } from './tools/astAdapter_python';
 import { csharpAdapter } from './tools/astAdapter_csharp';
 import { javaAdapter } from './tools/astAdapter_java';
+import { vueAdapter } from './tools/astAdapter_vue';
 import type { CommandType } from './commands/handler';
 
 /** Tab 管理器实例，模块级变量供 deactivate 时清理 */
@@ -218,6 +219,7 @@ export function activate(context: vscode.ExtensionContext): void {
   registerAdapter(pythonAdapter);
   registerAdapter(csharpAdapter);
   registerAdapter(javaAdapter);
+  registerAdapter(vueAdapter);
   info('AST 语言适配器已注册');
 
   info('所有命令注册完成');
