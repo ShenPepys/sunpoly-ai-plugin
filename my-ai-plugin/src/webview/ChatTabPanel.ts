@@ -81,6 +81,7 @@ export class ChatTabPanel implements IChatHost {
 
     // 监听 Tab 关闭，清理资源
     this.panel.onDidDispose(() => {
+      this.engine.dispose();
       info(`聊天 Tab 已关闭: ${this.tabId}`);
       this.onDispose?.();
     });
