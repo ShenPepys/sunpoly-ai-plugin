@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("CsharpAstWorker")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+5c565816ae7bacc6cb6ca8f6ea74e89e4c13a202")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+c15eb31b56a3cec8abca075427d2d86bd061b364")]
 [assembly: System.Reflection.AssemblyProductAttribute("CsharpAstWorker")]
 [assembly: System.Reflection.AssemblyTitleAttribute("CsharpAstWorker")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

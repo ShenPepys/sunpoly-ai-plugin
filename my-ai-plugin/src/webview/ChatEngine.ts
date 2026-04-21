@@ -532,6 +532,15 @@ export class ChatEngine {
 
   // ==================== 公开 API（供宿主调用） ====================
 
+  /**
+   * 销毁引擎，释放该引擎持有的所有运行锁。
+   * 在宿主（ChatTabPanel）被关闭时调用，防止会话被永久锁定。
+   */
+  public dispose(): void {
+    this.store.releaseRunLock({ ownerId: this.engineId });
+    info(`ChatEngine disposed: ${this.engineId}`);
+  }
+
   /** 向前端发送消息（委托给宿主） */
   public postMessage(message: ExtensionMessage): void {
     this.postSessionMessage(this.activeSessionId, message);
