@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { error, info } from '../logger';
-import { executeToolCalls, readFile, validateFileReadState, buildReadFileStubIfUnchanged } from '../tools';
+import { executeToolCalls, readFile, validateFileReadState, buildReadFileStubIfUnchanged, isToolReadOnly, getToolIcon, getToolStepText } from '../tools';
 import type { ParsedToolCall, ToolCallType, ToolExecutionResult } from '../tools';
 import type { FileReadStateCache } from '../tools';
 import { collectDiagnosticsAfterEdit } from '../tools/lspDiagnostics';
@@ -192,37 +192,11 @@ export function upsertChangeSummaryFile(targetFiles: ChangeSummaryFile[], entry:
 
 export function getToolStepDescription(tc: ParsedToolCall): string {
   const fileName = tc.path.split(/[/\\]/).pop() || tc.path;
-  switch (tc.type) {
-    case 'read_file':
-      return `Reading ${fileName}`;
-    case 'write_file':
-      return `Creating ${fileName}`;
-    case 'edit_file':
-      return `Editing ${fileName}`;
-    case 'ast_edit':
-      return `AST editing ${fileName}`;
-    case 'list_dir':
-      return `Listing ${fileName}`;
-    default:
-      return `Processing ${fileName}`;
-  }
+  return getToolStepText(tc.type, fileName);
 }
 
 export function getToolStepIcon(type: ToolCallType): string {
-  switch (type) {
-    case 'read_file':
-      return '📖';
-    case 'write_file':
-      return '📝';
-    case 'edit_file':
-      return '✏️';
-    case 'ast_edit':
-      return '🌳';
-    case 'list_dir':
-      return '📁';
-    default:
-      return '📄';
-  }
+  return getToolIcon(type);
 }
 
 export function detectLanguage(filePath: string): string {
@@ -244,7 +218,7 @@ export function getDisplayPath(filePath: string): string {
 }
 
 function isReadOnlyToolCall(toolCall: ParsedToolCall): boolean {
-  return toolCall.type === 'read_file' || toolCall.type === 'list_dir';
+  return isToolReadOnly(toolCall.type);
 }
 
 function buildToolCallExecutionPlan(toolCalls: ParsedToolCall[]): ToolCallExecutionPlan {

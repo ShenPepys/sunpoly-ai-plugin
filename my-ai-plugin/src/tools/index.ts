@@ -10,3 +10,5 @@ export { executeToolCalls, formatToolResults } from './toolExecutor';
 export type { ToolExecutionResult } from './toolExecutor';
 export { FileReadStateCache, validateFileReadState, buildReadFileStubIfUnchanged } from './fileReadStateCache';
 export type { FileReadState, FileReadStateValidation, ReadFileStubResult } from './fileReadStateCache';
+export { getToolDef, getToolLabel, getToolIcon, isToolReadOnly, getToolStepText, getAllToolDefs } from './toolDefs';
+export type { ToolDef } from './toolDefs';

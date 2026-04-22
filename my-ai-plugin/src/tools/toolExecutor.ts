@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import { info, error } from '../logger';
 import { readFile, writeFile, editFile, listDir } from './fileOps';
 import { routeAstEdit } from './astRouter';
+import { isToolReadOnly, getToolLabel } from './toolDefs';
 import type { AstEditRequest } from './astEditorTypes';
 import type { ParsedToolCall } from './toolParser';
 import type { FileOpResult, AstAffectedFile } from './fileOps';
@@ -23,9 +24,10 @@ export interface ToolExecutionResult {
 
 /**
  * 判断工具调用是否为只读操作（无副作用，可并行）
+ * 委托到 toolDefs 统一注册表
  */
 function isReadOnlyToolCall(toolCall: ParsedToolCall): boolean {
-  return toolCall.type === 'read_file' || toolCall.type === 'list_dir';
+  return isToolReadOnly(toolCall.type);
 }
 
 /**
@@ -138,7 +140,7 @@ export function formatToolResults(results: ToolExecutionResult[]): string {
 
   const lines = results.map(({ toolCall, result }) => {
     const status = result.success ? '✅ 成功' : '❌ 失败';
-    const typeLabel = getToolTypeLabel(toolCall.type);
+    const typeLabel = getToolLabel(toolCall.type);
     const safeContent = formatToolResultContent(toolCall, result.content);
     return `### ${typeLabel} ${toolCall.path}\n**${status}**\n\`\`\`\n${safeContent}\n\`\`\``;
   });
@@ -244,14 +246,3 @@ async function executeAstEdit(toolCall: ParsedToolCall): Promise<FileOpResult> {
   };
 }
 
-/** 工具类型的中文标签 */
-function getToolTypeLabel(type: string): string {
-  switch (type) {
-    case 'read_file': return '📖 读取文件';
-    case 'write_file': return '📝 写入文件';
-    case 'edit_file': return '✏️ 编辑文件';
-    case 'list_dir': return '📁 列出目录';
-    case 'ast_edit': return '🌳 AST 编辑';
-    default: return type;
-  }
-}
