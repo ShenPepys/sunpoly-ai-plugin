@@ -111,7 +111,9 @@ async function executeSingleToolCall(
       if (!toolCall.oldContent || toolCall.newContent === undefined) {
         return { success: false, content: '编辑操作缺少 old 或 new 内容' };
       }
-      return editFile(toolCall.path, toolCall.oldContent, toolCall.newContent);
+      return editFile(toolCall.path, toolCall.oldContent, toolCall.newContent, {
+        replaceAll: toolCall.replaceAll,
+      });
 
     case 'list_dir':
       return listDir(toolCall.path);

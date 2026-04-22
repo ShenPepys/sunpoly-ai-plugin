@@ -244,13 +244,15 @@ export function buildEditedContent(
   fileContent: string,
   oldContent: string,
   newContent: string,
+  options?: { replaceAll?: boolean },
 ):
-  | { success: true; updatedContent: string; usedNormalizedMatch: boolean }
+  | { success: true; updatedContent: string; usedNormalizedMatch: boolean; replacedCount?: number }
   | { success: false; reason: 'missing-old' | 'not-found' | 'not-unique'; matchCount?: number } {
   if (!oldContent) {
     return { success: false, reason: 'missing-old' };
   }
 
+  const replaceAll = options?.replaceAll ?? false;
   const exactMatchCount = countExactOccurrences(fileContent, oldContent);
   const preferredLineEnding = detectPreferredLineEnding(fileContent, oldContent, newContent);
   const replacementContent = applyPreferredLineEnding(newContent, preferredLineEnding);
@@ -265,6 +267,16 @@ export function buildEditedContent(
   }
 
   if (exactMatchCount > 1) {
+    // replaceAll 模式：替换所有精确匹配
+    if (replaceAll) {
+      const updatedContent = fileContent.split(oldContent).join(replacementContent);
+      return {
+        success: true,
+        updatedContent,
+        usedNormalizedMatch: false,
+        replacedCount: exactMatchCount,
+      };
+    }
     return { success: false, reason: 'not-unique', matchCount: exactMatchCount };
   }
 
@@ -281,6 +293,18 @@ export function buildEditedContent(
   }
 
   if (normalizedMatchCount > 1) {
+    // replaceAll 模式：替换所有归一化匹配
+    if (replaceAll) {
+      const updatedContent = normalizedFileContent.split(normalizedOldContent).join(replacementContent);
+      // 归一化模式下 replaceAll 后统一使用文件原有换行风格
+      const finalContent = applyPreferredLineEnding(updatedContent, preferredLineEnding);
+      return {
+        success: true,
+        updatedContent: finalContent,
+        usedNormalizedMatch: true,
+        replacedCount: normalizedMatchCount,
+      };
+    }
     return { success: false, reason: 'not-unique', matchCount: normalizedMatchCount };
   }
 
@@ -381,8 +405,14 @@ export async function writeFile(filePath: string, content: string): Promise<File
  * @param filePath 文件路径
  * @param oldContent 要被替换的原始内容
  * @param newContent 替换后的新内容
+ * @param options.replaceAll 是否替换所有匹配（默认 false，仅替换唯一匹配）
  */
-export async function editFile(filePath: string, oldContent: string, newContent: string): Promise<FileOpResult> {
+export async function editFile(
+  filePath: string,
+  oldContent: string,
+  newContent: string,
+  options?: { replaceAll?: boolean },
+): Promise<FileOpResult> {
   const safePath = resolveAndValidatePath(filePath);
   if (!safePath) {
     return { success: false, content: `无法编辑文件: ${filePath}（路径不在工作区范围内或未打开工作区）` };
@@ -395,7 +425,7 @@ export async function editFile(filePath: string, oldContent: string, newContent:
 
     const fileContent = fs.readFileSync(safePath, 'utf-8');
 
-    const editResult = buildEditedContent(fileContent, oldContent, newContent);
+    const editResult = buildEditedContent(fileContent, oldContent, newContent, { replaceAll: options?.replaceAll });
     if (!editResult.success) {
       if (editResult.reason === 'missing-old') {
         return { success: false, content: `编辑操作缺少 old 内容: ${safePath}` };
@@ -411,9 +441,15 @@ export async function editFile(filePath: string, oldContent: string, newContent:
       };
     }
 
+    const replaceInfo = editResult.replacedCount
+      ? `，共替换 ${editResult.replacedCount} 处`
+      : '';
     fs.writeFileSync(safePath, editResult.updatedContent, 'utf-8');
-    info(`编辑文件: ${safePath} (替换 ${oldContent.length} → ${newContent.length} 字符${editResult.usedNormalizedMatch ? '，已自动兼容换行差异' : ''})`);
-    return { success: true, content: `文件已编辑: ${safePath}` };
+    info(`编辑文件: ${safePath} (替换 ${oldContent.length} → ${newContent.length} 字符${editResult.usedNormalizedMatch ? '，已自动兼容换行差异' : ''}${replaceInfo})`);
+    const resultMessage = editResult.replacedCount
+      ? `文件已编辑: ${safePath}（已替换全部 ${editResult.replacedCount} 处匹配）`
+      : `文件已编辑: ${safePath}`;
+    return { success: true, content: resultMessage };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { success: false, content: `编辑文件失败: ${msg}` };

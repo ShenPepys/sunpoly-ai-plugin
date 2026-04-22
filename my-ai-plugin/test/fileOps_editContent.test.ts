@@ -165,3 +165,46 @@ test('buildEditedContent: Level 3 多处缩进匹配时返回 not-found（不唯
   // 两处匹配 → Level 3 也拒绝
   assert.equal(result.reason, 'not-found');
 });
+
+// ==================== replaceAll 测试 ====================
+
+test('buildEditedContent: replaceAll=true 精确匹配替换所有出现', () => {
+  const fileContent = 'const foo = 1;\nconst bar = foo + foo;\n';
+  const result = buildEditedContent(fileContent, 'foo', 'baz', { replaceAll: true });
+
+  assert.equal(result.success, true);
+  if (!result.success) { return; }
+  assert.equal(result.updatedContent, 'const baz = 1;\nconst bar = baz + baz;\n');
+  assert.equal(result.replacedCount, 3);
+  assert.equal(result.usedNormalizedMatch, false);
+});
+
+test('buildEditedContent: replaceAll=false 多处匹配仍返回 not-unique', () => {
+  const fileContent = 'aaa bbb aaa';
+  const result = buildEditedContent(fileContent, 'aaa', 'ccc', { replaceAll: false });
+
+  assert.equal(result.success, false);
+  if (result.success) { return; }
+  assert.equal(result.reason, 'not-unique');
+  assert.equal(result.matchCount, 2);
+});
+
+test('buildEditedContent: replaceAll=true 单处匹配也正常替换', () => {
+  const fileContent = 'hello world';
+  const result = buildEditedContent(fileContent, 'world', 'earth', { replaceAll: true });
+
+  assert.equal(result.success, true);
+  if (!result.success) { return; }
+  assert.equal(result.updatedContent, 'hello earth');
+  // 单处匹配走精确路径，不设置 replacedCount
+  assert.equal(result.replacedCount, undefined);
+});
+
+test('buildEditedContent: replaceAll=true 找不到匹配返回 not-found', () => {
+  const fileContent = 'hello world';
+  const result = buildEditedContent(fileContent, 'xyz', 'abc', { replaceAll: true });
+
+  assert.equal(result.success, false);
+  if (result.success) { return; }
+  assert.equal(result.reason, 'not-found');
+});

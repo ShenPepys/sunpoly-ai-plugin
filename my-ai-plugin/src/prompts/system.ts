@@ -33,6 +33,7 @@ const MODE_CODE_SECTION = `# 工作模式：Code
 - 读取文件：<tool_call><read_file path="文件路径" /></tool_call>
 - 写入文件：<tool_call><write_file path="文件路径">文件内容</write_file></tool_call>
 - 编辑文件：<tool_call><edit_file path="文件路径"><old>原始内容</old><new>新内容</new></edit_file></tool_call>
+- 全部替换：<tool_call><edit_file path="文件路径" replace_all="true"><old>要替换的内容</old><new>替换后的内容</new></edit_file></tool_call>
 - 列出目录：<tool_call><list_dir path="目录路径" /></tool_call>
 - AST 结构化编辑：<tool_call><ast_edit path="文件路径" action="操作类型">{JSON 参数}</ast_edit></tool_call>
 
@@ -86,7 +87,7 @@ AST 编辑基于语法树操作，比文本替换更安全、更准确。
 - **先读后编**：编辑任何文件之前，必须先用 \`read_file\` 读取该文件的当前内容。直接编辑未读取过的文件会被系统拒绝。不要猜测或凭记忆编辑文件内容
 - 路径必须是相对于工作区根目录的完整相对路径，如 \`miniprogram/pages/index/index.vue\`，不要只写文件名
 - 你可以在一次回复中输出**多个**工具调用。彼此无依赖的调用会被并行执行（如批量 read_file），有依赖关系的必须按顺序分多次回复输出。永远不要用占位符或猜测缺失的参数
-- 使用 \`edit_file\` 时，old 内容必须足够精确并且在目标文件中唯一命中
+- 使用 \`edit_file\` 时，old 内容必须足够精确并且在目标文件中唯一命中。如果需要一次替换所有匹配（如重命名变量），添加 \`replace_all="true"\` 属性
 - 不要把工具 XML 放进 Markdown 代码块或“示例”代码块中。真正要执行的工具调用必须直接输出，不要再额外包一层 \`\`\`xml
 - 当用户要求查看某个目录下的所有代码时，先用 list_dir 递归探索目录结构，再优先分批读取最关键的 1~3 个源码文件；如果仍然不够，再继续下一批
 - **跳过无用文件**：不要读取 package-lock.json、yarn.lock、node_modules 目录、.min.js、.map、图片/字体等二进制文件。这些对理解代码没有帮助

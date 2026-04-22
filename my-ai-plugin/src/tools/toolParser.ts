@@ -31,6 +31,8 @@ export interface ParsedToolCall {
   astAction?: AstEditAction;
   /** AST 操作参数的 JSON 对象（仅 ast_edit） */
   astParams?: Record<string, unknown>;
+  /** 是否替换所有匹配（仅 edit_file，默认 false） */
+  replaceAll?: boolean;
   /** 原始匹配文本（用于在回复中替换为执行结果） */
   rawMatch: string;
 }
@@ -175,18 +177,24 @@ function parseSingleToolCall(inner: string, rawMatch: string): ParsedToolCall | 
     return { type: 'write_file', path: writeMatch[1], content: writeMatch[2], rawMatch };
   }
 
-  // edit_file: <edit_file path="xxx"><old>旧</old><new>新</new></edit_file>
-  const editMatch = inner.match(/<edit_file\s+path\s*=\s*"([^"]+)">([\s\S]*?)<\/edit_file>/);
+  // edit_file: <edit_file path="xxx" replace_all="true"><old>旧</old><new>新</new></edit_file>
+  // replace_all 属性可选，默认 false
+  const editMatch = inner.match(/<edit_file\s+path\s*=\s*"([^"]+)"((?:\s+[a-z_]+\s*=\s*"[^"]*")*)>([\s\S]*?)<\/edit_file>/);
   if (editMatch) {
-    const editBody = editMatch[2];
+    const editAttrs = editMatch[2] || '';
+    const editBody = editMatch[3];
     const oldMatch = editBody.match(/<old>([\s\S]*?)<\/old>/);
     const newMatch = editBody.match(/<new>([\s\S]*?)<\/new>/);
     if (oldMatch && newMatch) {
+      // 解析 replace_all 属性
+      const replaceAllAttr = editAttrs.match(/\breplace_all\s*=\s*"([^"]*)"/);
+      const replaceAll = replaceAllAttr ? replaceAllAttr[1] === 'true' : false;
       return {
         type: 'edit_file',
         path: editMatch[1],
         oldContent: oldMatch[1],
         newContent: newMatch[1],
+        replaceAll: replaceAll || undefined, // false 时不设置，保持向后兼容
         rawMatch,
       };
     }

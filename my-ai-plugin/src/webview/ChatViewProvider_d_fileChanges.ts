@@ -322,7 +322,7 @@ export function buildPreviewContent(toolCall: ParsedToolCall, currentContent: st
 
   const oldSegment = toolCall.oldContent;
   const newSegment = toolCall.newContent || '';
-  const editResult = buildEditedContent(currentContent, oldSegment || '', newSegment);
+  const editResult = buildEditedContent(currentContent, oldSegment || '', newSegment, { replaceAll: toolCall.replaceAll });
   if (!editResult.success) {
     if (editResult.reason === 'missing-old') {
       return {
