@@ -24,6 +24,7 @@ import type {
   PersistedUiMessageEntry,
 } from './messageTypes';
 import type { ParsedToolCall } from '../tools';
+import { FileReadStateCache } from '../tools';
 import { buildContextUsageSnapshot, buildUpdateTokenCountResponse } from './ChatViewProvider_a_contextUsage';
 import { buildChatViewHtml } from './ChatViewProvider_b_html';
 import {
@@ -250,6 +251,13 @@ export class ChatEngine {
   private sessionLauncherVisible = false;
 
   private retryableRequests: Map<string, RetryableRequestState> = new Map();
+
+  /**
+   * 文件读取状态 LRU 缓存（引擎级，跨会话共享）。
+   * 记录模型通过 read_file 工具读取过的文件信息，
+   * 用于 edit_file 执行前的"先读后编"校验。
+   */
+  private readonly fileReadStateCache = new FileReadStateCache();
 
   /** 模型切换回调，外部设置后在切换模型时触发 */
   public onModelSwitch?: (modelName: string) => void;
@@ -1401,6 +1409,7 @@ export class ChatEngine {
     }
 
     this.resetSessionScopedRuntimeState();
+    this.fileReadStateCache.clear();
     clearSessionConversation(getActiveSessionHelper(this.sessions, this.activeSessionId));
     const sessionListResponse = this.saveSessions();
     this.postMessage(sessionListResponse);
@@ -1861,6 +1870,7 @@ export class ChatEngine {
         saveChatHistory: () => this.saveChatHistory(sessionId),
         createHistoryProcessSummary,
         toDisplayPath: getDisplayPathHelper,
+        fileReadStateCache: this.fileReadStateCache,
       });
       sessionRuntime.stepSequence = batchRound.nextStepSequence;
       sessionRuntime.turnWriteRounds = batchRound.nextTurnWriteRounds;
@@ -2341,6 +2351,7 @@ export class ChatEngine {
     this.sessions = switchPlan.nextSessions;
     this.activeSessionId = switchPlan.nextActiveSessionId;
     this.sessionLauncherVisible = switchPlan.nextSessionLauncherVisible;
+    this.fileReadStateCache.clear();
     const activeSession = getActiveSessionHelper(this.sessions, this.activeSessionId);
     const hasUiTranscript = Array.isArray(activeSession?.uiTranscript) && activeSession.uiTranscript.length > 0;
     const sessionListResponse = this.saveSessions();

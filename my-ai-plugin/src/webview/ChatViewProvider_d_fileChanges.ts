@@ -1,8 +1,9 @@
 import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { error, info } from '../logger';
-import { executeToolCalls, readFile } from '../tools';
+import { executeToolCalls, readFile, validateFileReadState } from '../tools';
 import type { ParsedToolCall, ToolCallType, ToolExecutionResult } from '../tools';
+import type { FileReadStateCache } from '../tools';
 import { buildEditedContent, resolveAndValidatePath } from '../tools/fileOps';
 import type {
   AddStepResponse,
@@ -448,6 +449,8 @@ export async function executeWriteToolCall(options: {
   stepId: string;
   summaryId: string;
   toDisplayPath?: (filePath: string) => string;
+  /** 文件读取状态缓存，用于 edit_file 执行前校验"先读后编" */
+  fileReadStateCache?: FileReadStateCache;
 }): Promise<ExecuteWriteToolCallResult> {
   const requestedFilePath = options.toolCall.path;
   const resolvedFilePath = resolveAndValidatePath(requestedFilePath);
@@ -479,6 +482,36 @@ export async function executeWriteToolCall(options: {
         toDisplayPath,
       }),
     };
+  }
+
+  // 先读后编校验：edit_file 执行前检查文件是否被 read_file 读取过
+  if (resolvedFilePath && fileExistedBeforeWrite && options.toolCall.type === 'edit_file' && options.fileReadStateCache) {
+    try {
+      const fileStat = fs.statSync(filePath);
+      const currentContent = fs.readFileSync(filePath, 'utf-8');
+      const validation = validateFileReadState(filePath, options.fileReadStateCache, fileStat.mtimeMs, currentContent);
+      if (!validation.valid) {
+        const issueText = validation.reason || '编辑被拒绝：文件读取状态校验未通过';
+        return {
+          filePath,
+          singleResult: {
+            toolCall: options.toolCall,
+            result: { success: false, content: issueText },
+          },
+          changeSummaryEntry: createWriteFailureSummaryEntry({
+            toolCall: options.toolCall,
+            filePath,
+            fileExistedBeforeWrite,
+            issueText,
+            stepId: options.stepId,
+            toDisplayPath,
+          }),
+        };
+      }
+    } catch (err) {
+      // stat/read 失败不阻塞编辑流程，降级到无校验模式
+      info(`readFileState 校验时读取文件异常，跳过校验: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   if (resolvedFilePath && fileExistedBeforeWrite && options.toolCall.type === 'edit_file') {
@@ -640,6 +673,8 @@ export async function executeToolCallBatch(options: {
   postMessage: (message: AddStepResponse | UpdateStepResponse | ShowDiffResponse) => void;
   canContinue?: () => boolean;
   toDisplayPath?: (filePath: string) => string;
+  /** 文件读取状态缓存，read_file 成功后更新缓存，edit_file 执行前校验 */
+  fileReadStateCache?: FileReadStateCache;
 }): Promise<ExecuteToolCallBatchResult> {
   const toolResults: ToolExecutionResult[] = [];
   const executionRecords: ToolCallExecutionRecord[] = [];
@@ -693,6 +728,7 @@ export async function executeToolCallBatch(options: {
         stepId,
         summaryId: options.summaryId,
         toDisplayPath: options.toDisplayPath,
+        fileReadStateCache: options.fileReadStateCache,
       });
       const singleResult = writeResult.singleResult;
       toolResults.push(singleResult);
@@ -743,6 +779,18 @@ export async function executeToolCallBatch(options: {
     const result = await executeToolCalls([toolCall], options.requestMode);
     const singleResult = result[0];
     toolResults.push(singleResult);
+
+    // read_file 成功后更新文件读取状态缓存
+    if (toolCall.type === 'read_file' && singleResult.result.success && options.fileReadStateCache) {
+      const resolvedPath = resolveAndValidatePath(toolCall.path);
+      if (resolvedPath) {
+        options.fileReadStateCache.set(resolvedPath, {
+          content: singleResult.result.content,
+          timestamp: Date.now(),
+        });
+      }
+    }
+
     executionRecords.push({
       toolCall,
       success: singleResult.result.success,

@@ -4,7 +4,7 @@ import type { AbortStreamFn, ApiClientConfig } from '../api/client';
 import type { ChatMessageParam } from '../api/types';
 import { info } from '../logger';
 import type { ModelConfig } from '../prompts/types';
-import type { ParsedToolCall, ToolExecutionResult } from '../tools';
+import type { ParsedToolCall, ToolExecutionResult, FileReadStateCache } from '../tools';
 import {
   applyAssistantResponseDisplay,
   appendDisplayHistoryUserMessage,
@@ -146,6 +146,8 @@ export type ExecuteToolCallBatchRoundOptions = {
   saveChatHistory: () => void;
   createHistoryProcessSummary: () => HistoryProcessSummary;
   toDisplayPath: (filePath: string) => string;
+  /** 文件读取状态缓存，传递给 executeToolCallBatch */
+  fileReadStateCache?: FileReadStateCache;
 };
 
 export type ExecuteToolCallBatchRoundResult =
@@ -308,6 +310,7 @@ export async function executeToolCallBatchRound(
     postMessage: options.postMessage,
     canContinue: options.canContinue,
     toDisplayPath: options.toDisplayPath,
+    fileReadStateCache: options.fileReadStateCache,
   });
 
   let nextActiveHistoryProcessSummary = options.activeHistoryProcessSummary;

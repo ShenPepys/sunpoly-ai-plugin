@@ -2195,3 +2195,284 @@ requestExecution       → executeToolCallBatchRound() 决定 halted / follow-up
 7. **非 TS/JS 语言通过子进程通信**：因为 Python/C#/Java 的 AST 库无法在 Node.js 内直接运行，必须通过 spawn 子进程 + stdin/stdout JSON 协议
 8. **运行时检测与优雅降级**：如果用户机器没有对应语言运行时（如没装 Python），该语言的适配器自动禁用，降级到 `edit_file` 文本替换
 
+---
+
+## 文件操作能力升级计划（对标 Claude Code）
+
+> 来源：分析 `claude-code-main` 源码中 `FileReadTool`、`FileEditTool`、`FileWriteTool`、`LSPTool`、`Skills` 等模块后，归纳出我们可以学习和借鉴的关键机制。
+> 按价值/成本比排序，分 6 个工作任务批次推进。
+
+### 对标分析总结
+
+| 维度 | Claude Code 做法 | 我们当前做法 | 差距 |
+|------|-----------------|-------------|------|
+| **先读后编保护** | `readFileState` LRU 缓存追踪每个文件的读取时间、内容、范围；Edit 前强制校验文件已被读取过且未被外部修改 | 无追踪，模型可以直接编辑从未读过的文件 | 🔴 核心缺失 |
+| **文件未变检测** | 重复读取同一文件时返回 stub `"File unchanged since last read"`，节省大量 token | 每次重新读取完整内容 | 🟡 浪费 token |
+| **编辑匹配容错** | 弯引号归一化（curly quotes → straight quotes）+ `replace_all` 多匹配支持 | Level 1 精确 + Level 2 CRLF 归一化 + Level 3 行首空白容错 | 🟢 我们已有 3 级容错，弯引号场景少见 |
+| **LSP 集成** | 编辑后自动通知 LSP（didChange/didSave），类型错误自动反馈给模型；独立 LSPTool 提供 goToDefinition/findReferences/hover 等 | 无 LSP 集成 | 🔴 最大差距 |
+| **大文件保护** | 256KB 文件大小上限 + 25000 token 输出上限；超大文件直接拒绝 | `read_file` 有 512KB 限制，但 `@` 引用和工具反馈已有截断 | 🟢 基本覆盖 |
+| **空 old_string = 创建文件** | Edit 工具同时支持创建和编辑，`old_string === '' && !fileExists` 时创建新文件 | `edit_file` 和 `write_file` 是分开的工具 | 🟡 非关键 |
+| **文件读取缓存** | `FileStateCache` LRU（100 条、25MB），路径归一化，支持 dump/load 序列化 | 无缓存 | 🟡 中等价值 |
+| **统一工具定义** | `buildTool()` 模式：每个工具自描述（inputSchema/validateInput/checkPermissions/call/render） | `switch/case` + 各自函数 | 🟡 架构优化 |
+| **Skills 系统** | 可扩展的提示词模板 + 工具权限 + 上下文注入，支持内置和用户自定义 | 无独立 skill 系统 | 🟠 远期目标 |
+
+---
+
+### P0：readFileState 追踪 + 强制先读后编
+
+> **预计工作量**：2-3 小时
+> **核心收益**：根治模型幻觉编辑——模型跳过 `read_file` 直接用猜测内容调用 `edit_file` 导致 "未找到要替换的内容" 的问题
+
+#### 目标
+
+- 引入文件读取状态缓存，记录每个文件的读取时间戳、内容、范围
+- `edit_file` 执行前强制校验：文件必须被读取过，且自上次读取后未被外部修改
+- 校验失败时返回明确错误信息，引导模型先读再编
+
+#### 设计（参考 Claude Code `FileStateCache`）
+
+```typescript
+// 文件读取状态
+interface FileReadState {
+  content: string;        // 读取时的文件内容
+  timestamp: number;      // 读取时间戳（用于检测外部修改）
+  offset?: number;        // 部分读取的起始行
+  limit?: number;         // 部分读取的行数
+  isPartialView?: boolean; // 是否只看到部分（如 @文件注入）
+}
+
+// LRU 缓存，限制条目数和总大小，防止内存膨胀
+class FileReadStateCache {
+  private cache: Map<string, FileReadState>;  // 或引入 lru-cache
+  // 路径归一化：解决 Windows 正反斜杠、冗余 .. 等导致缓存不命中
+}
+```
+
+#### 实现清单
+
+- [ ] **P0-1: 创建 `src/tools/fileReadStateCache.ts` 模块**
+  - 实现 `FileReadState` 接口和 `FileReadStateCache` 类
+  - 路径归一化（`path.normalize`）
+  - LRU 淘汰策略：最多 100 条、总大小 25MB
+  - 提供 `get/set/has/delete/clear` 方法
+
+- [ ] **P0-2: 在 `ChatEngine` 中维护 `fileReadStateCache` 实例**
+  - 每个 `ChatEngine` 实例持有一个 cache
+  - `read_file` 工具执行成功后，更新 cache
+  - `@` 文件注入时，标记 `isPartialView: true`（Edit 时仍要求显式读取）
+  - 会话切换/清空时清理 cache
+
+- [ ] **P0-3: `edit_file` 执行前增加 readFileState 校验**
+  - 校验 1：文件路径是否在 cache 中（未读过 → 拒绝，提示 "请先使用 read_file 读取该文件"）
+  - 校验 2：`isPartialView` 时也拒绝（仅 `@` 注入不等于完整读取）
+  - 校验 3：文件修改时间是否晚于 cache 中的 timestamp（外部修改 → 拒绝，提示 "文件已被修改，请重新读取"）
+  - 校验 3 的 Windows 兼容：时间戳变化后还做内容对比兜底（云同步/杀毒软件可能改时间戳但不改内容）
+
+- [ ] **P0-4: 更新系统提示词**
+  - 明确告知模型："编辑文件前必须先读取该文件，否则编辑会被拒绝"
+  - 强化"不要猜测文件内容"的规则
+
+- [ ] **P0-5: 为 readFileState 编写自动化测试**
+  - 测试 cache 基础操作（get/set/normalize/LRU 淘汰）
+  - 测试 edit_file 校验链路（未读拒绝、partial 拒绝、时间戳变化拒绝、内容不变放行）
+  - 测试会话切换后 cache 清空
+
+---
+
+### P1-A：编辑后 LSP 诊断反馈
+
+> **预计工作量**：4-6 小时
+> **核心收益**：模型编辑文件后自动看到类型错误，可以自行修复，大幅减少"改了但编译不过"的情况
+
+#### 目标
+
+- 文件编辑后自动获取 LSP 诊断信息（类型错误、lint 警告等）
+- 将诊断结果反馈给模型，作为工具执行结果的一部分
+- 模型看到错误后可以在下一轮自动修复
+
+#### 设计（参考 Claude Code `LSPTool` + 编辑后自动诊断）
+
+Claude Code 的做法：
+1. 编辑文件后调用 `lspManager.changeFile()` 通知 LSP 内容变更
+2. 调用 `lspManager.saveFile()` 触发诊断
+3. 诊断结果自动附加到工具结果中
+4. 还有独立的 `LSPTool` 提供 goToDefinition / findReferences / hover 等
+
+我们的策略：
+- **第一步**：利用 VS Code 内置的诊断 API（`vscode.languages.getDiagnostics()`），编辑文件后等待短暂延迟再收集诊断
+- **第二步**（可选）：独立的 LSP 工具暴露给模型
+
+#### 实现清单
+
+- [ ] **P1A-1: 创建 `src/tools/diagnosticCollector.ts` 模块**
+  - 提供 `collectDiagnosticsAfterEdit(filePath: string): Promise<DiagnosticSummary>`
+  - 编辑后等待 1-2 秒让 LSP 服务器处理变更
+  - 收集 `vscode.languages.getDiagnostics(uri)` 中 severity 为 Error 和 Warning 的条目
+  - 格式化为简洁的文本摘要（行号 + 消息 + severity），限制总长度
+
+- [ ] **P1A-2: 在 `executeWriteToolCall` 中集成诊断收集**
+  - 文件写入成功后，调用 `collectDiagnosticsAfterEdit`
+  - 如果有 Error 级诊断，附加到工具反馈中
+  - 格式示例：`"⚠ 编辑后发现 2 个类型错误:\n  L15: Property 'foo' does not exist on type 'Bar'\n  L23: Expected 2 arguments, but got 1"`
+
+- [ ] **P1A-3: 更新系统提示词**
+  - 告知模型："编辑文件后如果收到类型错误反馈，应在下一步修复这些错误"
+
+- [ ] **P1A-4: 为诊断收集编写测试**
+  - 由于依赖 VS Code API，主要做集成测试
+  - 验证诊断格式化、长度限制、无诊断时不附加
+
+---
+
+### P1-B：文件未变时返回 stub
+
+> **预计工作量**：1 小时
+> **核心收益**：模型重复读取同一文件时不再浪费 token，显著降低上下文膨胀
+
+#### 目标
+
+- 当模型再次 `read_file` 同一文件且内容未变时，返回简短 stub 而非完整内容
+- 让模型参考之前读取的结果，而不是重新注入全文
+
+#### 设计（参考 Claude Code `FILE_UNCHANGED_STUB`）
+
+```typescript
+const FILE_UNCHANGED_STUB = 
+  '文件自上次读取以来未发生变化，请参考之前 read_file 返回的内容。';
+```
+
+#### 实现清单
+
+- [ ] **P1B-1: 在 `read_file` 工具执行逻辑中增加 unchanged 检测**
+  - 从 `fileReadStateCache` 获取上次读取记录
+  - 比较文件修改时间戳：如果 ≤ 上次读取时间戳 → 返回 stub
+  - 时间戳相同时再做内容哈希比对兜底（防止某些文件系统时间戳精度不够）
+  - 只对全量读取（无 offset/limit）生效；部分读取始终返回真实内容
+
+- [ ] **P1B-2: 在工具反馈摘要中正确处理 stub**
+  - `requestExecution` 中的工具反馈摘要逻辑，对 stub 结果不做截断
+  - stub 本身已经足够短
+
+---
+
+### P2-A：统一工具定义接口（ToolDef 模式）
+
+> **预计工作量**：3-4 小时
+> **核心收益**：代码更清晰，新增工具更容易，校验和权限逻辑不再散落
+
+#### 目标
+
+- 参考 Claude Code 的 `buildTool()` 模式，为每个工具定义统一的接口
+- 将工具的 schema 定义、输入校验、执行逻辑、结果格式化封装到同一个对象中
+- 替代当前 `toolExecutor.ts` 中的 `switch/case` 分派
+
+#### 设计概要
+
+```typescript
+interface ToolDefinition {
+  name: string;                           // 工具名称
+  type: 'read' | 'write' | 'command';    // 读/写/命令
+  description: string;                    // 工具描述
+  validateInput?(input: any): ValidationResult;  // 输入校验
+  execute(input: any, context: ToolContext): Promise<ToolResult>;  // 执行
+  formatResult?(result: ToolResult): string;     // 结果格式化
+}
+```
+
+#### 实现清单
+
+- [ ] **P2A-1: 创建 `src/tools/toolRegistry.ts`**
+  - 定义 `ToolDefinition` 接口
+  - 提供 `registerTool()` / `getToolByName()` / `getAllTools()`
+  - 每个工具自注册，替代 switch/case
+
+- [ ] **P2A-2: 将现有工具逐步迁移为 ToolDef 注册**
+  - `read_file` → `readFileTool`
+  - `edit_file` → `editFileTool`
+  - `write_file` → `writeFileTool`
+  - `list_dir` → `listDirTool`
+  - `run_command` → `runCommandTool`
+  - `ast_edit` → `astEditTool`
+  - 每个迁移后立即验证 tsc + 测试
+
+- [ ] **P2A-3: 重构 `toolExecutor.ts` 使用 registry 分派**
+  - 用 `getToolByName(toolCall.type)?.execute(...)` 替代 switch/case
+  - 保留未注册工具的 fallback 错误处理
+
+---
+
+### P2-B：replace_all 支持
+
+> **预计工作量**：1 小时
+> **核心收益**：减少 `not-unique` 失败，提升编辑成功率
+
+#### 目标
+
+- 在 `edit_file` 工具中支持 `replace_all` 参数
+- 当文件中有多处相同匹配时，模型可以选择全部替换
+
+#### 实现清单
+
+- [ ] **P2B-1: 在 `ParsedToolCall` 中增加 `replaceAll` 字段**
+  - `toolParser.ts` 解析时提取 `<replace_all>true</replace_all>`
+  - 默认 `false`
+
+- [ ] **P2B-2: 在 `buildEditedContent` 中实现 replace_all 逻辑**
+  - `replaceAll === true` 时使用 `replaceAll()` 替代 `replace()`
+  - `replaceAll === false` 且多匹配时仍返回 `not-unique`
+
+- [ ] **P2B-3: 更新系统提示词**
+  - 告知模型 `replace_all` 参数的用法
+  - 典型场景：重命名变量时，`old` 是变量名，`new` 是新变量名，`replace_all: true`
+
+- [ ] **P2B-4: 补充自动化测试**
+  - replace_all 正常替换多处
+  - replace_all + Level 2/3 容错
+  - replace_all = false 多匹配仍报 not-unique
+
+---
+
+### P3：LRU 文件读取缓存
+
+> **预计工作量**：1-2 小时
+> **核心收益**：控制内存使用，防止大量文件读取导致内存膨胀
+
+#### 说明
+
+此任务实际上与 P0 中的 `FileReadStateCache` 合并实现。如果 P0 完成时已引入 LRU 缓存和大小限制，则此任务自动完成。
+
+单独列出是为了强调：如果 P0 先用简单 Map 实现，后续需要升级为 LRU + 大小限制。
+
+#### 实现清单
+
+- [ ] **P3-1: 确认 P0 的 cache 实现是否包含 LRU 淘汰**
+  - 如已包含 → 标记完成
+  - 如未包含 → 引入 `lru-cache` 或手写简易 LRU
+
+- [ ] **P3-2: 增加总大小限制**
+  - 每次 set 时计算 content 的 byte 长度
+  - 超出总大小限制时，从最久未访问的条目开始淘汰
+
+---
+
+### 执行顺序
+
+```
+P0（readFileState）→ P1-B（unchanged stub）→ P1-A（LSP 诊断）→ P2-B（replace_all）→ P2-A（ToolDef）→ P3（LRU 升级）
+```
+
+| 批次 | 任务 | 预计工作量 | 依赖 |
+|------|------|-----------|------|
+| **第一批** | P0: readFileState + 先读后编 | 2-3h | 无 |
+| **第二批** | P1-B: 文件未变 stub | 1h | 依赖 P0 的 cache |
+| **第三批** | P1-A: LSP 诊断反馈 | 4-6h | 无依赖，可与第二批并行 |
+| **第四批** | P2-B: replace_all 支持 | 1h | 无依赖 |
+| **第五批** | P2-A: 统一 ToolDef 注册 | 3-4h | 建议在上述改动稳定后 |
+| **第六批** | P3: LRU 缓存升级 | 0-2h | 视 P0 实现决定 |
+
+### 当前执行状态
+
+- [x] 完成 Claude Code 源码分析
+- [x] 输出改进计划到 workplan
+- [ ] 开始 P0：readFileState 追踪 + 强制先读后编
+
