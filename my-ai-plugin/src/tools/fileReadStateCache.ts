@@ -241,3 +241,48 @@ export function validateFileReadState(
 
   return { valid: true };
 }
+
+// ==================== 重复读取 stub ====================
+
+/** buildReadFileStubIfUnchanged 的返回结果 */
+export interface ReadFileStubResult {
+  /** 是否应使用 stub 替代完整内容 */
+  useStub: boolean;
+  /** stub 文本（仅 useStub=true 时有值） */
+  stubContent?: string;
+}
+
+/**
+ * 检查本次 read_file 结果是否与缓存中的上次读取内容完全一致。
+ * 如果一致，返回 stub 文本代替完整内容，节省模型上下文窗口。
+ *
+ * @param filePath 文件的解析后绝对路径
+ * @param newContent 本次 read_file 返回的完整内容
+ * @param cache 文件读取状态缓存
+ * @returns useStub=true 表示内容未变、应使用 stubContent 替代
+ */
+export function buildReadFileStubIfUnchanged(
+  filePath: string,
+  newContent: string,
+  cache: FileReadStateCache,
+): ReadFileStubResult {
+  const previousState = cache.get(filePath);
+  if (!previousState) {
+    return { useStub: false };
+  }
+
+  // 仅部分视图不做 stub 比较（@ 注入的内容不完整）
+  if (previousState.isPartialView) {
+    return { useStub: false };
+  }
+
+  if (previousState.content === newContent) {
+    const fileName = filePath.split(/[\\/]/).pop() || filePath;
+    return {
+      useStub: true,
+      stubContent: `[文件未变] ${fileName} 的内容与上次读取完全一致（${newContent.length} 字符），无需重复阅读。你可以直接基于之前的理解继续操作。`,
+    };
+  }
+
+  return { useStub: false };
+}

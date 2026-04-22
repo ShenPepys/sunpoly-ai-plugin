@@ -1,9 +1,10 @@
 import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { error, info } from '../logger';
-import { executeToolCalls, readFile, validateFileReadState } from '../tools';
+import { executeToolCalls, readFile, validateFileReadState, buildReadFileStubIfUnchanged } from '../tools';
 import type { ParsedToolCall, ToolCallType, ToolExecutionResult } from '../tools';
 import type { FileReadStateCache } from '../tools';
+import { collectDiagnosticsAfterEdit } from '../tools/lspDiagnostics';
 import { buildEditedContent, resolveAndValidatePath } from '../tools/fileOps';
 import type {
   AddStepResponse,
@@ -572,6 +573,15 @@ export async function executeWriteToolCall(options: {
   }
 
   const newContent = readFileTextSafely(filePath);
+
+  // 写入成功后收集 LSP 诊断（Error/Warning），反馈给模型帮助自动修正
+  if (resolvedFilePath) {
+    const diagnosticsResult = await collectDiagnosticsAfterEdit(resolvedFilePath);
+    if (diagnosticsResult.summary) {
+      singleResult.result.diagnosticsSummary = diagnosticsResult.summary;
+    }
+  }
+
   const diffStats = calculateDiffStats(diffOldContent, newContent);
   const diffResponse: ShowDiffResponse = {
     type: 'showDiff',
@@ -778,18 +788,29 @@ export async function executeToolCallBatch(options: {
 
     const result = await executeToolCalls([toolCall], options.requestMode);
     const singleResult = result[0];
-    toolResults.push(singleResult);
 
-    // read_file 成功后更新文件读取状态缓存
+    // read_file 成功后：检测文件是否未变（返回 stub）+ 更新缓存
     if (toolCall.type === 'read_file' && singleResult.result.success && options.fileReadStateCache) {
       const resolvedPath = resolveAndValidatePath(toolCall.path);
       if (resolvedPath) {
+        // 先检测是否可以返回 stub（比较新旧内容）
+        const stubResult = buildReadFileStubIfUnchanged(resolvedPath, singleResult.result.content, options.fileReadStateCache);
+        if (stubResult.useStub && stubResult.stubContent) {
+          info(`文件未变，返回 stub: ${resolvedPath}`);
+          singleResult.result.content = stubResult.stubContent;
+        }
+
+        // 无论是否返回 stub，都更新缓存（刷新时间戳，保持最新内容）
         options.fileReadStateCache.set(resolvedPath, {
-          content: singleResult.result.content,
+          content: stubResult.useStub
+            ? options.fileReadStateCache.get(resolvedPath)!.content  // stub 时保留原始完整内容
+            : singleResult.result.content,  // 内容变了则更新
           timestamp: Date.now(),
         });
       }
     }
+
+    toolResults.push(singleResult);
 
     executionRecords.push({
       toolCall,

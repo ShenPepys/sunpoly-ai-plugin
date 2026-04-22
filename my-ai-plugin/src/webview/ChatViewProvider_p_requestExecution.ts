@@ -228,14 +228,21 @@ export type ExecuteToolCallBatchRoundResult =
      '...(结果已压缩)',
    );
 
-   return [
+   const sections = [
      `### ${result.toolCall.type} ${result.toolCall.path}`,
      `- 状态：${result.result.success ? '成功' : '失败'}`,
      '- 结果：',
      '```',
      content,
      '```',
-   ].join('\n');
+   ];
+
+   // 附加 LSP 诊断摘要（如果有）
+   if (result.result.diagnosticsSummary) {
+     sections.push(result.result.diagnosticsSummary);
+   }
+
+   return sections.join('\n');
  }
 
  function buildSingleToolResultSummary(result: ToolExecutionResult): string {

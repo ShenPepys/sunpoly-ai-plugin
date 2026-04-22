@@ -8,5 +8,5 @@ export { parseToolCalls, hasToolCalls, stripToolCalls } from './toolParser';
 export type { ParsedToolCall, ToolCallType } from './toolParser';
 export { executeToolCalls, formatToolResults } from './toolExecutor';
 export type { ToolExecutionResult } from './toolExecutor';
-export { FileReadStateCache, validateFileReadState } from './fileReadStateCache';
-export type { FileReadState, FileReadStateValidation } from './fileReadStateCache';
+export { FileReadStateCache, validateFileReadState, buildReadFileStubIfUnchanged } from './fileReadStateCache';
+export type { FileReadState, FileReadStateValidation, ReadFileStubResult } from './fileReadStateCache';

@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { FileReadStateCache, validateFileReadState } from '../src/tools/fileReadStateCache';
+import { FileReadStateCache, validateFileReadState, buildReadFileStubIfUnchanged } from '../src/tools/fileReadStateCache';
 
 // ==================== FileReadStateCache 基础操作 ====================
 
@@ -218,4 +218,39 @@ test('validateFileReadState: 不提供 currentContent 且时间戳过期 → 拒
   // 不提供 currentContent，无法做内容兜底比对
   const result = validateFileReadState('/a.ts', cache, readTime + 3000);
   assert.equal(result.valid, false);
+});
+
+// ==================== buildReadFileStubIfUnchanged ====================
+
+test('buildReadFileStubIfUnchanged: 缓存中无记录 → 不使用 stub', () => {
+  const cache = new FileReadStateCache();
+  const result = buildReadFileStubIfUnchanged('/a.ts', 'content', cache);
+  assert.equal(result.useStub, false);
+});
+
+test('buildReadFileStubIfUnchanged: 内容未变 → 返回 stub', () => {
+  const cache = new FileReadStateCache();
+  cache.set('/a.ts', { content: 'same content', timestamp: Date.now() });
+
+  const result = buildReadFileStubIfUnchanged('/a.ts', 'same content', cache);
+  assert.equal(result.useStub, true);
+  assert.ok(result.stubContent);
+  assert.ok(result.stubContent.includes('文件未变'));
+  assert.ok(result.stubContent.includes('a.ts'));
+});
+
+test('buildReadFileStubIfUnchanged: 内容变化 → 不使用 stub', () => {
+  const cache = new FileReadStateCache();
+  cache.set('/a.ts', { content: 'old content', timestamp: Date.now() });
+
+  const result = buildReadFileStubIfUnchanged('/a.ts', 'new content', cache);
+  assert.equal(result.useStub, false);
+});
+
+test('buildReadFileStubIfUnchanged: partial 视图不做 stub 比较', () => {
+  const cache = new FileReadStateCache();
+  cache.set('/a.ts', { content: 'partial', timestamp: Date.now(), isPartialView: true });
+
+  const result = buildReadFileStubIfUnchanged('/a.ts', 'partial', cache);
+  assert.equal(result.useStub, false, 'partial 视图即使内容相同也不应返回 stub');
 });

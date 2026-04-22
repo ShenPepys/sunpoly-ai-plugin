@@ -105,6 +105,8 @@ export interface FileOpResult {
   content: string;
   /** AST 编辑影响的文件列表，含原始与修改后的内容（仅 ast_edit 操作使用） */
   astAffectedFiles?: AstAffectedFile[];
+  /** 编辑成功后 LSP 诊断的文本摘要（仅写操作成功后可能存在） */
+  diagnosticsSummary?: string;
 }
 
 function countExactOccurrences(source: string, search: string): number {
