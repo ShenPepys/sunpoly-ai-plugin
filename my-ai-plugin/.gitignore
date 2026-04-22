@@ -4,3 +4,9 @@ dist/
 *.vsix
 .DS_Store
 .env
+
+# 演示脚本输出（不提交到仓库）
+test/demo_output/
+
+# Java AST worker 构建产物
+resources/ast_workers/java_ast_worker/target/

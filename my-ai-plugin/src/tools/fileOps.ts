@@ -319,6 +319,67 @@ export function buildEditedContent(
 }
 
 /**
+ * 行号定位编辑：替换指定行范围的内容
+ *
+ * 相比文本匹配编辑，行号定位不需要模型精确复现原始文本，
+ * 只需记住 read_file 返回的行号即可，显著降低编辑失败率。
+ *
+ * @param fileContent 文件当前内容
+ * @param startLine 替换起始行（1-indexed，含）
+ * @param endLine 替换结束行（1-indexed，含）；省略时等于 startLine
+ * @param newContent 替换后的新内容
+ */
+export function buildLineBasedEditContent(
+  fileContent: string,
+  startLine: number,
+  endLine: number | undefined,
+  newContent: string,
+):
+  | { success: true; updatedContent: string }
+  | { success: false; reason: 'invalid-range'; message: string } {
+
+  const effectiveEndLine = endLine ?? startLine;
+
+  // 基本校验
+  if (startLine < 1 || effectiveEndLine < startLine) {
+    return {
+      success: false,
+      reason: 'invalid-range',
+      message: `无效的行号范围: start_line=${startLine}, end_line=${effectiveEndLine}。start_line 必须 >= 1，end_line 必须 >= start_line`,
+    };
+  }
+
+  // 保留文件原有的换行风格
+  const lineEnding = detectPreferredLineEnding(fileContent);
+  const lines = normalizeLineEndings(fileContent).split('\n');
+
+  if (startLine > lines.length) {
+    return {
+      success: false,
+      reason: 'invalid-range',
+      message: `start_line=${startLine} 超出文件总行数 ${lines.length}。请重新读取文件确认行号`,
+    };
+  }
+
+  // 容许 endLine 超出文件末尾（自动截断到最后一行）
+  const clampedEndLine = Math.min(effectiveEndLine, lines.length);
+
+  // 0-indexed
+  const startIdx = startLine - 1;
+  const endIdx = clampedEndLine; // slice 不含 endIdx，正好对应 1-indexed 的“含”语义
+
+  const newLines = normalizeLineEndings(newContent).split('\n');
+  const updatedLines = [
+    ...lines.slice(0, startIdx),
+    ...newLines,
+    ...lines.slice(endIdx),
+  ];
+
+  const updatedContent = applyPreferredLineEnding(updatedLines.join('\n'), lineEnding);
+  return { success: true, updatedContent };
+}
+
+/**
  * 读取文件内容
  * @param filePath 文件路径（绝对路径或相对于工作区的路径）
  */
@@ -401,17 +462,19 @@ export async function writeFile(filePath: string, content: string): Promise<File
 }
 
 /**
- * 编辑文件：查找并替换指定内容
+ * 编辑文件：支持文本匹配模式和行号定位模式
  * @param filePath 文件路径
- * @param oldContent 要被替换的原始内容
+ * @param oldContent 要被替换的原始内容（文本模式必填，行号模式不需要）
  * @param newContent 替换后的新内容
  * @param options.replaceAll 是否替换所有匹配（默认 false，仅替换唯一匹配）
+ * @param options.startLine 行号模式：替换起始行（1-indexed）
+ * @param options.endLine 行号模式：替换结束行（1-indexed）
  */
 export async function editFile(
   filePath: string,
   oldContent: string,
   newContent: string,
-  options?: { replaceAll?: boolean },
+  options?: { replaceAll?: boolean; startLine?: number; endLine?: number },
 ): Promise<FileOpResult> {
   const safePath = resolveAndValidatePath(filePath);
   if (!safePath) {
@@ -425,6 +488,19 @@ export async function editFile(
 
     const fileContent = fs.readFileSync(safePath, 'utf-8');
 
+    // 行号定位模式：用 start_line/end_line 直接替换指定行
+    if (options?.startLine !== undefined) {
+      const lineResult = buildLineBasedEditContent(fileContent, options.startLine, options.endLine, newContent);
+      if (!lineResult.success) {
+        return { success: false, content: `${lineResult.message}: ${safePath}` };
+      }
+      fs.writeFileSync(safePath, lineResult.updatedContent, 'utf-8');
+      const rangeDesc = options.endLine ? `L${options.startLine}-L${options.endLine}` : `L${options.startLine}`;
+      info(`编辑文件(行号模式): ${safePath} (${rangeDesc})`);
+      return { success: true, content: `文件已编辑(行号模式 ${rangeDesc}): ${safePath}` };
+    }
+
+    // 文本匹配模式：原有逻辑
     const editResult = buildEditedContent(fileContent, oldContent, newContent, { replaceAll: options?.replaceAll });
     if (!editResult.success) {
       if (editResult.reason === 'missing-old') {

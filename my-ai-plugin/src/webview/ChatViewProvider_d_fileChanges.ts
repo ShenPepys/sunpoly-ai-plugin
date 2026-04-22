@@ -5,7 +5,7 @@ import { executeToolCalls, readFile, validateFileReadState, buildReadFileStubIfU
 import type { ParsedToolCall, ToolCallType, ToolExecutionResult } from '../tools';
 import type { FileReadStateCache } from '../tools';
 import { collectDiagnosticsAfterEdit } from '../tools/lspDiagnostics';
-import { buildEditedContent, resolveAndValidatePath } from '../tools/fileOps';
+import { buildEditedContent, buildLineBasedEditContent, resolveAndValidatePath } from '../tools/fileOps';
 import type {
   AddStepResponse,
   ShowChangeSummaryResponse,
@@ -294,6 +294,28 @@ export function buildPreviewContent(toolCall: ParsedToolCall, currentContent: st
     };
   }
 
+  // 行号编辑模式：用 start_line/end_line 定位，不需要 old 内容匹配
+  if (toolCall.startLine !== undefined) {
+    const lineResult = buildLineBasedEditContent(
+      currentContent,
+      toolCall.startLine,
+      toolCall.endLine,
+      toolCall.newContent || '',
+    );
+    if (!lineResult.success) {
+      return {
+        newContent: currentContent,
+        canApply: false,
+        issueText: `预览提示：${lineResult.message}`,
+      };
+    }
+    return {
+      newContent: lineResult.updatedContent,
+      canApply: true,
+    };
+  }
+
+  // 文本匹配模式：原有逻辑
   const oldSegment = toolCall.oldContent;
   const newSegment = toolCall.newContent || '';
   const editResult = buildEditedContent(currentContent, oldSegment || '', newSegment, { replaceAll: toolCall.replaceAll });
@@ -486,6 +508,57 @@ export async function executeWriteToolCall(options: {
     } catch (err) {
       // stat/read 失败不阻塞编辑流程，降级到无校验模式
       info(`readFileState 校验时读取文件异常，跳过校验: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // AST 强制拦截：对 AST 支持的文件，edit_file 必须带 ast_bypass="true" 才允许通过
+  const AST_SUPPORTED_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.py', '.cs', '.java', '.vue', '.html']);
+  if (options.toolCall.type === 'edit_file' && !options.toolCall.astBypass) {
+    const fileExt = filePath.includes('.') ? ('.' + filePath.split('.').pop()!.toLowerCase()) : '';
+    if (AST_SUPPORTED_EXTENSIONS.has(fileExt)) {
+      const issueText = `编辑被拒绝：${filePath} 是 AST 支持的文件类型（${fileExt}），必须优先使用 ast_edit 工具。`
+        + `\n\nast_edit 支持的操作：add_import / remove_import / insert_function / edit_function_body / add_function_param / add_object_property / add_class_member / rename_symbol`
+        + `\n\n如果此修改确实不适合 AST（如修改字符串常量、条件表达式、模板等非结构化内容），请在 edit_file 标签中添加 ast_bypass="true" 属性来绕过此检查。`;
+      return {
+        filePath,
+        singleResult: {
+          toolCall: options.toolCall,
+          result: { success: false, content: issueText },
+        },
+        changeSummaryEntry: createWriteFailureSummaryEntry({
+          toolCall: options.toolCall,
+          filePath,
+          fileExistedBeforeWrite,
+          issueText,
+          stepId: options.stepId,
+          toDisplayPath,
+        }),
+      };
+    }
+  }
+
+  // 编辑规模限制：old 内容超过 MAX_OLD_CONTENT_LINES 行时拒绝，引导模型拆分或使用行号模式
+  const MAX_OLD_CONTENT_LINES = 30;
+  if (options.toolCall.type === 'edit_file' && options.toolCall.oldContent && !options.toolCall.startLine) {
+    const oldLineCount = options.toolCall.oldContent.split('\n').length;
+    if (oldLineCount > MAX_OLD_CONTENT_LINES) {
+      const issueText = `编辑被拒绝：old 内容过长（${oldLineCount} 行，上限 ${MAX_OLD_CONTENT_LINES} 行）。`
+        + `请拆分为更小的编辑，或改用行号模式 edit_file（添加 start_line/end_line 属性）。`;
+      return {
+        filePath,
+        singleResult: {
+          toolCall: options.toolCall,
+          result: { success: false, content: issueText },
+        },
+        changeSummaryEntry: createWriteFailureSummaryEntry({
+          toolCall: options.toolCall,
+          filePath,
+          fileExistedBeforeWrite,
+          issueText,
+          stepId: options.stepId,
+          toDisplayPath,
+        }),
+      };
     }
   }
 
@@ -740,6 +813,37 @@ export async function executeToolCallBatch(options: {
         writeFailCount += 1;
         if (writeResult.changeSummaryEntry) {
           upsertChangeSummaryFile(batchWriteFiles, writeResult.changeSummaryEntry);
+        }
+
+        // edit_file 失败后自动重读文件，将最新内容注入错误反馈
+        // 帮助模型在下一轮用正确的行号或内容重试
+        if (toolCall.type === 'edit_file') {
+          const autoReadPath = resolveAndValidatePath(toolCall.path);
+          if (autoReadPath && fs.existsSync(autoReadPath)) {
+            try {
+              const freshContent = fs.readFileSync(autoReadPath, 'utf-8');
+              // 给内容加行号，便于模型直接使用行号模式
+              const numberedLines = freshContent.split('\n')
+                .map((line, i) => `${i + 1}\t${line}`)
+                .join('\n');
+              const AUTO_READ_MAX = 6000;
+              const truncatedContent = numberedLines.length > AUTO_READ_MAX
+                ? numberedLines.slice(0, AUTO_READ_MAX) + '\n...(已截断)'
+                : numberedLines;
+              singleResult.result.content += `\n\n[自动重读] 以下是 ${toolCall.path} 的当前内容（含行号），请基于这些行号使用行号模式重试编辑：\n${truncatedContent}`;
+
+              // 同步更新 fileReadStateCache，避免"先读后编"校验在下一轮拒绝
+              if (options.fileReadStateCache && autoReadPath) {
+                options.fileReadStateCache.set(autoReadPath, {
+                  content: freshContent,
+                  timestamp: Date.now(),
+                });
+              }
+              info(`edit_file 失败后自动重读: ${autoReadPath} (${freshContent.length} 字符)`);
+            } catch (readErr) {
+              info(`edit_file 失败后自动重读异常: ${readErr instanceof Error ? readErr.message : String(readErr)}`);
+            }
+          }
         }
       }
 

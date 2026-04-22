@@ -2482,3 +2482,64 @@ P0（readFileState）→ P1-B（unchanged stub）→ P1-A（LSP 诊断）→ P2-
 - [x] P3：LRU 缓存升级（P0 已包含，无需额外升级）
 - [x] 全部 171 条测试通过，0 失败
 
+---
+
+## 编辑可靠性增强：行号编辑 + 规模限制 + AST 最高优先 + 自动重读
+
+### 背景
+
+实际使用中发现 `edit_file` 的文本匹配模式经常失败（模型复现的 `old` 内容与文件实际内容不匹配），且模型倾向于生成大段 `old` 内容甚至整文件重写，进一步降低成功率。
+
+### 改进方案（全部已实现）
+
+| 方案 | 说明 | 涉及文件 |
+|------|------|----------|
+| 行号定位编辑 | `edit_file` 新增 `start_line/end_line` 属性，无需复现原始文本 | `toolParser.ts`、`fileOps.ts`、`toolExecutor.ts`、`ChatViewProvider_d_fileChanges.ts` |
+| 编辑规模限制 | 文本匹配模式下 `old` 内容超过 30 行时拒绝，引导拆分或改用行号模式 | `ChatViewProvider_d_fileChanges.ts` |
+| AST 最高优先级提示词 | 建立 AST > 行号 > 文本匹配 > write_file 的严格优先级；借鉴 Claude Code "2-4 行足以唯确定位"理念 | `system.ts` |
+| 编辑失败自动重读 | `edit_file` 失败后自动重读文件并附带行号注入反馈，帮助模型下一轮用行号模式重试 | `ChatViewProvider_d_fileChanges.ts` |
+
+### 详细实现
+
+#### 1. 行号定位编辑
+
+- `toolParser.ts`：`ParsedToolCall` 新增 `startLine`/`endLine` 字段；`parseSingleToolCall` 支持 `start_line`/`end_line` 属性解析；`stripToolCalls` 正则更新
+- `fileOps.ts`：新增 `buildLineBasedEditContent()` 纯函数，基于行号范围替换内容，支持 CRLF 保留、endLine 省略/超出截断、行号校验
+- `fileOps.ts`：`editFile()` 签名扩展 `options.startLine/endLine`，行号模式跳过文本匹配直接替换
+- `toolExecutor.ts`：`edit_file` case 传入 `startLine`/`endLine`，行号模式下 `oldContent` 可为空
+- `ChatViewProvider_d_fileChanges.ts`：`buildPreviewContent()` 增加行号编辑预览分支
+
+#### 2. 编辑规模限制
+
+- `ChatViewProvider_d_fileChanges.ts`：`executeWriteToolCall()` 在预览前检查 `oldContent` 行数，超过 30 行时返回错误信息引导拆分
+
+#### 3. AST 最高优先级提示词
+
+- `system.ts`：重构 `MODE_CODE_SECTION`，建立明确的工具选择优先级：
+  - 第一优先级：`ast_edit`（AST 结构化编辑）——所有支持语言的结构化修改必须优先
+  - 第二优先级：`edit_file` 行号定位模式——AST 不适用时使用
+  - 第三优先级：`edit_file` 文本匹配模式——old 内容 2-4 行即可唯确定位
+  - 最低优先级：`write_file`——仅用于创建新文件
+- 借鉴 Claude Code 最佳实践：最小化 old 内容、先读后编、失败后诊断再换策略、不做超出要求的改动
+
+#### 4. 编辑失败自动重读
+
+- `ChatViewProvider_d_fileChanges.ts`：`executeToolCallBatch` 写失败分支中，当 `edit_file` 失败时：
+  - 自动读取文件最新内容并加行号
+  - 附加到错误反馈中（截断上限 6000 字符）
+  - 同步更新 `fileReadStateCache`，避免下一轮"先读后编"校验拒绝
+  - 提示模型基于行号使用行号模式重试
+
+### 测试
+
+- 新增 `test/lineBasedEdit.test.ts`：16 个测试用例，覆盖行号编辑核心逻辑（单行/多行替换、省略 endLine、超出截断、无效范围、CRLF、插入扩展）和解析器行号模式（start_line/end_line、仅 start_line、stripToolCalls 行号属性）
+- 全部 188 条测试通过，0 失败
+
+### 当前执行状态
+
+- [x] 行号定位编辑（解析 + 核心函数 + editFile 分支 + 预览）
+- [x] 编辑规模限制（30 行 old 内容上限）
+- [x] AST 最高优先级提示词（重构 system.ts MODE_CODE_SECTION）
+- [x] 编辑失败自动重读（附带行号的文件内容注入反馈）
+- [x] 补充测试（188 条全通过）
+- [x] 编译验证（`npx tsc --noEmit` 通过)

@@ -40,10 +40,15 @@ test('vueAdapter.supportsFile 对 .vue 返回 true', () => {
   assert.equal(vueAdapter.supportsFile('C:\\Project\\Home.VUE'), true);
 });
 
-test('vueAdapter.supportsFile 对非 .vue 文件返回 false', () => {
+test('vueAdapter.supportsFile 对 .html 也返回 true（通过 <script> 块编辑）', () => {
+  assert.equal(vueAdapter.supportsFile('index.html'), true);
+  assert.equal(vueAdapter.supportsFile('/path/to/page.HTML'), true);
+});
+
+test('vueAdapter.supportsFile 对其他文件类型返回 false', () => {
   assert.equal(vueAdapter.supportsFile('app.ts'), false);
-  assert.equal(vueAdapter.supportsFile('index.html'), false);
   assert.equal(vueAdapter.supportsFile('style.css'), false);
+  assert.equal(vueAdapter.supportsFile('script.js'), false);
 });
 
 // ==================== add_import ====================

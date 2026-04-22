@@ -109,13 +109,21 @@ async function executeSingleToolCall(
       }
       return writeFile(toolCall.path, toolCall.content);
 
-    case 'edit_file':
-      if (!toolCall.oldContent || toolCall.newContent === undefined) {
+    case 'edit_file': {
+      // 行号模式只需 newContent + startLine，不需要 oldContent
+      const isLineMode = toolCall.startLine !== undefined;
+      if (!isLineMode && (!toolCall.oldContent || toolCall.newContent === undefined)) {
         return { success: false, content: '编辑操作缺少 old 或 new 内容' };
       }
-      return editFile(toolCall.path, toolCall.oldContent, toolCall.newContent, {
+      if (isLineMode && toolCall.newContent === undefined) {
+        return { success: false, content: '行号编辑模式缺少 new 内容' };
+      }
+      return editFile(toolCall.path, toolCall.oldContent || '', toolCall.newContent ?? '', {
         replaceAll: toolCall.replaceAll,
+        startLine: toolCall.startLine,
+        endLine: toolCall.endLine,
       });
+    }
 
     case 'list_dir':
       return listDir(toolCall.path);

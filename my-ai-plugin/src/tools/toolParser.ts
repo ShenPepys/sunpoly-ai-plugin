@@ -33,6 +33,12 @@ export interface ParsedToolCall {
   astParams?: Record<string, unknown>;
   /** 是否替换所有匹配（仅 edit_file，默认 false） */
   replaceAll?: boolean;
+  /** 行号编辑模式：替换起始行（1-indexed，含）（仅 edit_file） */
+  startLine?: number;
+  /** 行号编辑模式：替换结束行（1-indexed，含）（仅 edit_file） */
+  endLine?: number;
+  /** AST 绕过标记：为 true 时允许 edit_file 编辑 AST 支持的文件（仅 edit_file） */
+  astBypass?: boolean;
   /** 原始匹配文本（用于在回复中替换为执行结果） */
   rawMatch: string;
 }
@@ -87,7 +93,7 @@ function replaceToolCallsInPlainText(text: string): string {
   let result = text.replace(new RegExp(WRAPPED_TOOL_CALL_REGEX_SOURCE, 'g'), '');
   result = result.replace(/<(?:read_file|list_dir)\s+path\s*=\s*"[^"]+"\s*\/>/g, '');
   result = result.replace(/<write_file\s+path\s*=\s*"[^"]+">[\s\S]*?<\/write_file>/g, '');
-  result = result.replace(/<edit_file\s+path\s*=\s*"[^"]+">[\s\S]*?<\/edit_file>/g, '');
+  result = result.replace(/<edit_file\s+path\s*=\s*"[^"]+"(?:\s+[a-z_]+\s*=\s*"[^"]*")*>[\s\S]*?<\/edit_file>/g, '');
   result = result.replace(/<ast_edit\s+path\s*=\s*"[^"]+"\s+action\s*=\s*"[^"]+">[\s\S]*?<\/ast_edit>/g, '');
   return result;
 }
@@ -178,23 +184,47 @@ function parseSingleToolCall(inner: string, rawMatch: string): ParsedToolCall | 
   }
 
   // edit_file: <edit_file path="xxx" replace_all="true"><old>旧</old><new>新</new></edit_file>
-  // replace_all 属性可选，默认 false
+  // 也支持行号模式: <edit_file path="xxx" start_line="10" end_line="15"><new>新内容</new></edit_file>
+  // replace_all / start_line / end_line 属性均可选
   const editMatch = inner.match(/<edit_file\s+path\s*=\s*"([^"]+)"((?:\s+[a-z_]+\s*=\s*"[^"]*")*)>([\s\S]*?)<\/edit_file>/);
   if (editMatch) {
     const editAttrs = editMatch[2] || '';
     const editBody = editMatch[3];
+
+    // 解析通用属性
+    const replaceAllAttr = editAttrs.match(/\breplace_all\s*=\s*"([^"]*)"/);
+    const replaceAll = replaceAllAttr ? replaceAllAttr[1] === 'true' : false;
+    const astBypassAttr = editAttrs.match(/\bast_bypass\s*=\s*"([^"]*)"/);;
+    const startLineAttr = editAttrs.match(/\bstart_line\s*=\s*"(\d+)"/);
+    const endLineAttr = editAttrs.match(/\bend_line\s*=\s*"(\d+)"/);
+
+    // 行号编辑模式：有 start_line 时只需 <new>，不需要 <old>
+    if (startLineAttr) {
+      const newMatch = editBody.match(/<new>([\s\S]*?)<\/new>/);
+      if (newMatch) {
+        return {
+          type: 'edit_file',
+          path: editMatch[1],
+          newContent: newMatch[1],
+          startLine: parseInt(startLineAttr[1], 10),
+          endLine: endLineAttr ? parseInt(endLineAttr[1], 10) : undefined,
+          astBypass: astBypassAttr ? astBypassAttr[1] === 'true' : undefined,
+          rawMatch,
+        };
+      }
+    }
+
+    // 文本匹配编辑模式：需要 <old> + <new>
     const oldMatch = editBody.match(/<old>([\s\S]*?)<\/old>/);
     const newMatch = editBody.match(/<new>([\s\S]*?)<\/new>/);
     if (oldMatch && newMatch) {
-      // 解析 replace_all 属性
-      const replaceAllAttr = editAttrs.match(/\breplace_all\s*=\s*"([^"]*)"/);
-      const replaceAll = replaceAllAttr ? replaceAllAttr[1] === 'true' : false;
       return {
         type: 'edit_file',
         path: editMatch[1],
         oldContent: oldMatch[1],
         newContent: newMatch[1],
         replaceAll: replaceAll || undefined, // false 时不设置，保持向后兼容
+        astBypass: astBypassAttr ? astBypassAttr[1] === 'true' : undefined,
         rawMatch,
       };
     }

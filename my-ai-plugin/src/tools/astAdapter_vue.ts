@@ -129,8 +129,10 @@ function cleanupTempFile(tempPath: string): void {
 
 // ─── 适配器实现 ────────────────────────────────────────────
 
+const SUPPORTED_VUE_EXTENSIONS = new Set(['.vue', '.html']);
+
 function isSupportedVueFile(filePath: string): boolean {
-  return path.extname(filePath).toLowerCase() === '.vue';
+  return SUPPORTED_VUE_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
 
 async function executeVueAstEdit(
