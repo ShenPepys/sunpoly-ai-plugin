@@ -2,8 +2,12 @@
  * 工具系统入口
  * 统一导出文件操作、解析器、执行器
  */
-export { readFile, writeFile, editFile, listDir } from './fileOps';
+export { readFile, writeFile, editFile, listDir, addLineNumbers } from './fileOps';
 export type { FileOpResult } from './fileOps';
+export { searchFile, grepCode } from './searchTools';
+export type { SearchFileResult, GrepCodeResult, GrepMatch } from './searchTools';
+export { execCommand } from './terminalExec';
+export type { ExecCommandResult } from './terminalExec';
 export { parseToolCalls, hasToolCalls, stripToolCalls } from './toolParser';
 export type { ParsedToolCall, ToolCallType } from './toolParser';
 export { executeToolCalls, formatToolResults } from './toolExecutor';

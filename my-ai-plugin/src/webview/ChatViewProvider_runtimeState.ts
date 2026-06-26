@@ -1,5 +1,5 @@
-import type { ChatMessageParam } from '../api/types';
-import type { PendingRegenerateState } from './ChatViewProvider_g_regenerate';
+﻿import type { ChatMessageParam } from '../api/types';
+import type { PendingRegenerateState } from './ChatViewProvider_regenerate';
 import type { HistoryProcessSummary } from './messageTypes';
 import type { ParsedToolCall } from '../tools';
 

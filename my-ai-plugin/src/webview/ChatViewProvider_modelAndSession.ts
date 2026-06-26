@@ -1,11 +1,11 @@
-import type { ApiClientConfig } from '../api/client';
+﻿import type { ApiClientConfig } from '../api/client';
 import { detectVisionSupport, getCustomSystemPrompt } from '../config';
 import { info } from '../logger';
 import type { ChatMessageParam } from '../api/types';
 import { buildSystemPrompt } from '../prompts/system';
 import type { ModelConfig } from '../prompts/types';
 import { detectProjectType, getEnvContext, getGitStatus, getProjectContext } from '../utils/context';
-import { estimateMessagesTokenCount, trimHistoryToFitContextWindow } from './ChatViewProvider_a_contextUsage';
+import { estimateMessagesTokenCount, trimHistoryToFitContextWindow } from './ChatViewProvider_contextUsage';
 import type {
   UpdateModelsResponse,
   VisionNotSupportedResponse,

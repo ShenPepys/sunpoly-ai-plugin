@@ -1,4 +1,4 @@
-/// <reference types="node" />
+﻿/// <reference types="node" />
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -6,7 +6,7 @@ import {
   aggressivelyTrimMessagesAfterContextError,
   executeToolCallBatchRound,
   isContextLengthError,
-} from '../src/webview/ChatViewProvider_p_requestExecution';
+} from '../src/webview/ChatViewProvider_requestExecution';
 import type { HistoryProcessSummary, ChatSessionHistoryMessage } from '../src/webview/messageTypes';
 import type { ParsedToolCall } from '../src/tools';
 import type { ApiClientConfig } from '../src/api/client';
@@ -56,6 +56,7 @@ test('executeToolCallBatchRound 在写失败后直接 halted，不再进入 foll
     writeBackups: new Map(),
     turnWriteFiles: [],
     turnWriteRounds: 0,
+    recoverableWriteFailRounds: 0,
     activeHistoryProcessSummary: null,
     chatHistory,
     historyForFollowUp: [],

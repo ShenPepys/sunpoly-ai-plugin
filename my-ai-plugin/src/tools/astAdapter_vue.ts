@@ -40,7 +40,7 @@ interface VueScriptBlock {
  * 优先匹配 <script setup>，其次匹配普通 <script>
  * 通过正则匹配标签位置，避免引入额外 SFC parser 依赖
  */
-function extractScriptBlock(vueContent: string): VueScriptBlock | null {
+export function extractScriptBlock(vueContent: string): VueScriptBlock | null {
   // 匹配 <script ...> 标签（支持 setup、lang 等属性，不区分顺序）
   const scriptTagRegex = /<script(\s[^>]*)?>[\s\S]*?<\/script>/gi;
   const candidates: VueScriptBlock[] = [];
@@ -144,14 +144,14 @@ async function executeVueAstEdit(
   if (!scriptBlock) {
     return {
       success: false,
-      reason: `Vue 文件中未找到 <script> 块，无法执行 AST 编辑: ${request.filePath}`,
+      reason: `Vue/HTML 文件中未找到 <script> 块，无法执行 AST 编辑: ${request.filePath}。如果你要修改的是模板、HTML 结构或样式，请改用 edit_file。`,
     };
   }
 
   if (!scriptBlock.content.trim()) {
     return {
       success: false,
-      reason: `Vue 文件的 <script> 块内容为空: ${request.filePath}`,
+      reason: `Vue/HTML 文件的 <script> 块内容为空，无法执行 AST 编辑: ${request.filePath}。如果你要修改的是模板、HTML 结构或样式，请改用 edit_file。`,
     };
   }
 

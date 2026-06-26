@@ -1,4 +1,4 @@
-/// <reference types="node" />
+﻿/// <reference types="node" />
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -8,7 +8,7 @@ import {
   planClearCurrentSession,
   planDeleteSession,
   planSwitchSession,
-} from '../src/webview/ChatViewProvider_f_sessions';
+} from '../src/webview/ChatViewProvider_sessions';
 import type {
   ChatSession,
   ChatSessionDisplayMessage,

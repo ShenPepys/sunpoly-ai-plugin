@@ -1,32 +1,37 @@
-import * as vscode from 'vscode';
+﻿import * as vscode from 'vscode';
 import type { AbortStreamFn } from '../api/client';
+import { getAllModels, setActiveModelIndex } from '../config';
+import { info } from '../logger';
+import type { CommandType } from '../commands/handler';
 import {
   buildFinalTurnChangeSummaryResponse,
+} from './fileChanges';
+import type { ChangeSummaryFile } from './fileChanges';
+import {
   executeUndoAllWriteBackupsFlow,
   executeUndoSingleWriteBackupFlow,
-} from './ChatViewProvider_d_fileChanges';
-import type { ChangeSummaryFile } from './ChatViewProvider_d_fileChanges';
-import type { WriteBackupEntry } from './ChatViewProvider_d_fileChanges';
+} from './fileChanges';
+import type { WriteBackupEntry } from './fileChanges';
 import {
   discoverWorkflows,
   pickContextFiles,
   searchWorkspaceFiles as searchWorkspaceFilesHelper,
-} from './ChatViewProvider_e_workspaceContext';
+} from './ChatViewProvider_workspaceContext';
 import {
   planRetryRequestReplay,
-} from './ChatViewProvider_i_retryRequests';
+} from './ChatViewProvider_retryRequests';
 import type {
   RequestImageAttachment,
   RetryableRequestState,
-} from './ChatViewProvider_i_retryRequests';
+} from './ChatViewProvider_retryRequests';
 import {
   buildTerminalErrorAnalysisPrompt,
   openFilesInIde as openFilesInIdeHelper,
   selectWorkflowToRun,
-} from './ChatViewProvider_j_ideActions';
+} from './ChatViewProvider_ideActions';
 import {
   consumeStopGenerationRequest,
-} from './ChatViewProvider_k_runtimeState';
+} from './ChatViewProvider_runtimeState';
 import type {
   AddContextFileRequest,
   AnalyzeTerminalErrorRequest,
@@ -346,4 +351,99 @@ export async function handleRemainingWebviewMessage(
       });
     },
   });
+}
+
+export type LightweightWebviewDispatchOptions = {
+  sendModelList: () => void;
+  pushTokenCount: () => void;
+  applyModeChange: (mode: WorkMode) => void;
+  insertCodeToEditor: (code: string) => Promise<boolean>;
+  getContextFiles: () => string[];
+  setContextFiles: (filePaths: string[]) => void;
+  resolveCommandType: (command: string) => CommandType | null;
+  handleSlashCommand: (type: CommandType) => Promise<void>;
+  onModelSwitch?: (modelName: string) => void;
+};
+
+export async function tryHandleLightweightWebviewMessage(
+  message: WebviewMessage,
+  options: LightweightWebviewDispatchOptions,
+): Promise<boolean> {
+  switch (message.type) {
+    case 'copyCode':
+      await vscode.env.clipboard.writeText(message.code);
+      vscode.window.showInformationMessage('代码已复制到剪贴板');
+      return true;
+
+    case 'insertCode':
+      await options.insertCodeToEditor(message.code);
+      return true;
+
+    case 'requestModels':
+      options.sendModelList();
+      return true;
+
+    case 'switchModel': {
+      const models = getAllModels();
+      const normalizedIndex = Number.isFinite(message.index) ? Math.trunc(message.index) : 0;
+      const safeIndex = Math.max(0, Math.min(normalizedIndex, models.length - 1));
+      if (safeIndex !== message.index) {
+        info(`用户切换模型索引越界，已修正: ${message.index} -> ${safeIndex}`);
+      } else {
+        info(`用户切换模型到索引: ${safeIndex}`);
+      }
+
+      await setActiveModelIndex(safeIndex);
+      options.sendModelList();
+      options.pushTokenCount();
+      if (options.onModelSwitch && models[safeIndex]) {
+        options.onModelSwitch(models[safeIndex].name);
+      }
+      return true;
+    }
+
+    case 'switchMode':
+      info(`用户切换工作模式: ${message.mode}`);
+      options.applyModeChange(message.mode);
+      return true;
+
+    case 'removeContextFile': {
+      const nextFiles = options.getContextFiles().filter(filePath => filePath !== message.filePath);
+      options.setContextFiles(nextFiles);
+      info(`移除上下文文件: ${message.filePath}，剩余 ${nextFiles.length} 个`);
+      return true;
+    }
+
+    case 'addContextFile': {
+      const currentFiles = options.getContextFiles();
+      if (!currentFiles.includes(message.filePath)) {
+        options.setContextFiles([...currentFiles, message.filePath]);
+        info(`@ mention 添加上下文文件: ${message.filePath}`);
+      }
+      return true;
+    }
+
+    case 'openSettings':
+      await vscode.commands.executeCommand('my-ai-plugin.editModels');
+      return true;
+
+    case 'createNativeTab':
+      await vscode.commands.executeCommand('my-ai-plugin.newChatTab');
+      return true;
+
+    case 'executeCommand': {
+      const cmdType = options.resolveCommandType(message.command);
+      if (cmdType) {
+        info(`Slash 命令执行（走消息流）: ${cmdType}`);
+        await options.handleSlashCommand(cmdType);
+      } else {
+        info(`Slash 命令执行（直接调用）: ${message.command}`);
+        await vscode.commands.executeCommand(message.command);
+      }
+      return true;
+    }
+
+    default:
+      return false;
+  }
 }

@@ -1,4 +1,4 @@
-/// <reference types="node" />
+﻿/// <reference types="node" />
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -8,7 +8,7 @@ import {
   planRetryRequestReplay,
   rememberRetryableRequest,
   type RetryableRequestState,
-} from '../src/webview/ChatViewProvider_i_retryRequests';
+} from '../src/webview/ChatViewProvider_retryRequests';
 
 function createRetryableRequestState(overrides?: Partial<RetryableRequestState>): RetryableRequestState {
   return {

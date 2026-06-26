@@ -1,4 +1,4 @@
-import { getMaxTokens, getModelConfig } from '../config';
+﻿import { getMaxTokens, getModelConfig } from '../config';
 import { sendStreamRequest } from '../api/client';
 import type { AbortStreamFn, ApiClientConfig } from '../api/client';
 import type { ChatMessageParam } from '../api/types';
@@ -9,35 +9,36 @@ import {
   applyAssistantResponseDisplay,
   appendDisplayHistoryUserMessage,
   getUserDisplayContent,
-} from './ChatViewProvider_c_displayHistory';
-import type { DisplayMessageIdFactory } from './ChatViewProvider_c_displayHistory';
+} from './ChatViewProvider_displayHistory';
+import type { DisplayMessageIdFactory } from './ChatViewProvider_displayHistory';
 import {
   buildAppliedChangeSummaryResponses,
   executeToolCallBatch,
   upsertChangeSummaryFile,
-} from './ChatViewProvider_d_fileChanges';
-import type { ChangeSummaryFile, WriteBackupEntry } from './ChatViewProvider_d_fileChanges';
-import { buildUserContentWithContext } from './ChatViewProvider_e_workspaceContext';
+} from './fileChanges';
+import type { ChangeSummaryFile } from './fileChanges';
+import type { WriteBackupEntry } from './fileChanges';
+import { buildUserContentWithContext } from './ChatViewProvider_workspaceContext';
 import {
   cloneRequestImages,
   rememberRetryableRequest,
-} from './ChatViewProvider_i_retryRequests';
+} from './ChatViewProvider_retryRequests';
 import type {
   RequestImageAttachment,
   RetryableRequestState,
-} from './ChatViewProvider_i_retryRequests';
+} from './ChatViewProvider_retryRequests';
 import {
   beginStreamingRun,
   consumeRunCompletionState,
   consumeStreamingRunCompletionState,
   recordThinkingElapsedInActiveHistorySummary,
   recordToolStepInActiveHistorySummary,
-} from './ChatViewProvider_k_runtimeState';
+} from './ChatViewProvider_runtimeState';
 import {
   buildUserRequestContent,
   prepareChatRequestExecution,
   prepareRemindedMessages,
-} from './ChatViewProvider_n_modelAndSession';
+} from './ChatViewProvider_modelAndSession';
 import type {
   ChatSessionDisplayMessage,
   ChatSessionHistoryMessage,
@@ -148,6 +149,8 @@ export type ExecuteToolCallBatchRoundOptions = {
   toDisplayPath: (filePath: string) => string;
   /** 文件读取状态缓存，传递给 executeToolCallBatch */
   fileReadStateCache?: FileReadStateCache;
+  /** 可恢复写失败续轮计数 */
+  recoverableWriteFailRounds: number;
 };
 
 export type ExecuteToolCallBatchRoundResult =
@@ -157,6 +160,7 @@ export type ExecuteToolCallBatchRoundResult =
     nextTurnWriteRounds: number;
     nextActiveHistoryProcessSummary: HistoryProcessSummary | null;
     shouldFinalizeStoppedRun: boolean;
+    nextRecoverableWriteFailRounds: number;
   }
   | {
     kind: 'follow-up';
@@ -166,11 +170,115 @@ export type ExecuteToolCallBatchRoundResult =
     followUpSystemPrompt: string;
     followUpMessages: ChatMessageParam[];
     followUpApiConfig: ApiClientConfig;
+    nextRecoverableWriteFailRounds: number;
   };
 
  const MAX_TOOL_RESULT_SNIPPET_CHARS = 1600;
  const MAX_DIRECTORY_ENTRIES_IN_FEEDBACK = 40;
  const MAX_DEFERRED_TOOL_CALLS_IN_FEEDBACK = 12;
+
+ const MAX_RECOVERABLE_WRITE_FAILURE_FOLLOW_UP_ROUNDS = 2;
+
+ export type WriteFailureFollowUpState = {
+   writeFailCount: number;
+   recoverableWriteFailCount: number;
+   fatalWriteFailCount: number;
+   canContinueAfterWriteFailures: boolean;
+   nextRecoverableWriteFailRounds: number;
+   remainingRecoverableWriteFailureFollowUpRounds: number;
+   reachedRetryLimit: boolean;
+ };
+
+ function isWriteToolCallType(type: ParsedToolCall['type']): boolean {
+   return type === 'write_file' || type === 'edit_file' || type === 'ast_edit';
+ }
+
+ export function isRecoverableWriteFailureResult(result: ToolExecutionResult): boolean {
+   if (!isWriteToolCallType(result.toolCall.type) || result.result.success) {
+     return false;
+   }
+
+   const failureText = result.result.content || '';
+   if (/当前处于\s+(Ask|Plan)\s+模式/i.test(failureText)) {
+     return false;
+   }
+
+   if (/AST 编辑成功但写入文件失败/.test(failureText)) {
+     return false;
+   }
+
+   if (/写入文件失败:|编辑文件失败:/.test(failureText)) {
+     return false;
+   }
+
+   if (/无法写入文件:/.test(failureText)) {
+     return false;
+   }
+
+   if (result.toolCall.type === 'write_file') {
+     return /目标文件已存在|请先读取当前文件并改用 edit_file/.test(failureText);
+   }
+
+   return true;
+ }
+
+ export function resolveWriteFailureFollowUpState(options: {
+   toolResults: ToolExecutionResult[];
+   recoverableWriteFailRounds: number;
+ }): WriteFailureFollowUpState {
+   const failedWriteResults = options.toolResults.filter(result => {
+     return isWriteToolCallType(result.toolCall.type) && !result.result.success;
+   });
+
+   const recoverableWriteFailCount = failedWriteResults.filter(isRecoverableWriteFailureResult).length;
+   const fatalWriteFailCount = failedWriteResults.length - recoverableWriteFailCount;
+   if (failedWriteResults.length === 0) {
+     return {
+       writeFailCount: 0,
+       recoverableWriteFailCount: 0,
+       fatalWriteFailCount: 0,
+       canContinueAfterWriteFailures: false,
+       nextRecoverableWriteFailRounds: options.recoverableWriteFailRounds,
+       remainingRecoverableWriteFailureFollowUpRounds: Math.max(0, MAX_RECOVERABLE_WRITE_FAILURE_FOLLOW_UP_ROUNDS - options.recoverableWriteFailRounds),
+       reachedRetryLimit: false,
+     };
+   }
+
+   if (fatalWriteFailCount > 0) {
+     return {
+       writeFailCount: failedWriteResults.length,
+       recoverableWriteFailCount,
+       fatalWriteFailCount,
+       canContinueAfterWriteFailures: false,
+       nextRecoverableWriteFailRounds: options.recoverableWriteFailRounds,
+       remainingRecoverableWriteFailureFollowUpRounds: Math.max(0, MAX_RECOVERABLE_WRITE_FAILURE_FOLLOW_UP_ROUNDS - options.recoverableWriteFailRounds),
+       reachedRetryLimit: false,
+     };
+   }
+
+   if (options.recoverableWriteFailRounds >= MAX_RECOVERABLE_WRITE_FAILURE_FOLLOW_UP_ROUNDS) {
+     return {
+       writeFailCount: failedWriteResults.length,
+       recoverableWriteFailCount,
+       fatalWriteFailCount: 0,
+       canContinueAfterWriteFailures: false,
+       nextRecoverableWriteFailRounds: options.recoverableWriteFailRounds,
+       remainingRecoverableWriteFailureFollowUpRounds: 0,
+       reachedRetryLimit: true,
+     };
+   }
+
+   const nextRecoverableWriteFailRounds = options.recoverableWriteFailRounds + 1;
+   return {
+     writeFailCount: failedWriteResults.length,
+     recoverableWriteFailCount,
+     fatalWriteFailCount: 0,
+     canContinueAfterWriteFailures: true,
+     nextRecoverableWriteFailRounds,
+     remainingRecoverableWriteFailureFollowUpRounds: Math.max(0, MAX_RECOVERABLE_WRITE_FAILURE_FOLLOW_UP_ROUNDS - nextRecoverableWriteFailRounds),
+     reachedRetryLimit: false,
+   };
+ }
 
  function truncateFeedbackText(content: string, maxChars: number, suffix: string): string {
    if (content.length <= maxChars) {
@@ -266,11 +374,11 @@ export type ExecuteToolCallBatchRoundResult =
    const lines = visibleToolCalls.map(toolCall => `- ${toolCall.type} ${toolCall.path}`);
 
    if (toolCalls.length > visibleToolCalls.length) {
-     lines.push(`- ...(其余 ${toolCalls.length - visibleToolCalls.length} 个待读操作已省略)`);
+     lines.push(`- ...(其余 ${toolCalls.length - visibleToolCalls.length} 个待执行工具已省略)`);
    }
 
    return [
-     '## 待读取目标（上一轮计划但本轮未执行）',
+     '## 待执行工具（上一轮计划但本轮未执行）',
      ...lines,
    ].join('\n');
  }
@@ -279,6 +387,10 @@ export type ExecuteToolCallBatchRoundResult =
    toolResults: ToolExecutionResult[];
    deferredToolCalls: ParsedToolCall[];
    readOnlyBatchLimited: boolean;
+   sameFileToolCallLimited: boolean;
+   duplicateReadOnlyToolCallsSkippedCount: number;
+   recoverableWriteFailCount: number;
+   remainingRecoverableWriteFailureFollowUpRounds: number;
  }): string {
    const sections: string[] = [
      '以下是本轮工具执行后的阶段摘要。不要原样复述这些结果，请基于它们继续分析并决定下一步。',
@@ -290,6 +402,27 @@ export type ExecuteToolCallBatchRoundResult =
      );
    }
 
+   if (options.sameFileToolCallLimited) {
+     sections.push(
+       '同一轮中对同一文件的后续工具调用已被自动延后，避免基于旧内容连续修改同一文件。请先基于本轮已成功落盘的结果重新读取该文件，再决定下一步，不要在同一条回复里连续修改同一个文件。',
+     );
+   }
+
+   if (options.duplicateReadOnlyToolCallsSkippedCount > 0) {
+     sections.push(
+       `同一轮中重复的只读工具调用已经被系统自动合并，跳过了 ${options.duplicateReadOnlyToolCallsSkippedCount} 个重复 read_file / list_dir。不要在同一条回复里重复读取同一个文件或目录。`,
+     );
+   }
+
+   if (options.recoverableWriteFailCount > 0) {
+     const followUpHint = options.remainingRecoverableWriteFailureFollowUpRounds > 0
+       ? `当前还剩 ${options.remainingRecoverableWriteFailureFollowUpRounds} 次恢复续轮机会。`
+       : '当前已经用完恢复续轮额度；如果下一轮写操作仍失败，系统将停止本次自动续轮。';
+     sections.push(
+       `本轮有 ${options.recoverableWriteFailCount} 个可恢复的写失败，系统允许继续续轮自动修正。请优先基于失败结果里的真实文件内容、自动重读片段或降级提示修正，不要盲目重复相同参数。${followUpHint}`,
+     );
+   }
+
    sections.push('## 本轮执行结果');
    sections.push(
      options.toolResults.map(result => buildSingleToolResultSummary(result)).join('\n\n'),
@@ -297,7 +430,7 @@ export type ExecuteToolCallBatchRoundResult =
 
    if (options.deferredToolCalls.length > 0) {
      sections.push(buildDeferredToolCallsSummary(options.deferredToolCalls));
-     sections.push('如果信息仍然不足，请继续读取最关键的下一批文件；如果已经足够回答，再给出最终结论。');
+     sections.push('如果信息仍然不足，请继续读取最关键的下一批文件；如果已经足够答案，再给出最终结论。');
    }
 
    return sections.filter(Boolean).join('\n\n');
@@ -351,11 +484,27 @@ export async function executeToolCallBatchRound(
     }
   }
 
+  const writeFailureFollowUpState = resolveWriteFailureFollowUpState({
+    toolResults: batchExecution.toolResults,
+    recoverableWriteFailRounds: options.recoverableWriteFailRounds,
+  });
+
+  if (writeFailureFollowUpState.canContinueAfterWriteFailures) {
+    info(
+      `检测到 ${writeFailureFollowUpState.recoverableWriteFailCount} 个可恢复写失败，允许继续续轮；已使用 ${writeFailureFollowUpState.nextRecoverableWriteFailRounds}/${MAX_RECOVERABLE_WRITE_FAILURE_FOLLOW_UP_ROUNDS} 次恢复续轮额度`,
+    );
+  } else if (writeFailureFollowUpState.fatalWriteFailCount > 0) {
+    info(`检测到 ${writeFailureFollowUpState.fatalWriteFailCount} 个不可恢复写失败，停止本次自动续轮`);
+  } else if (writeFailureFollowUpState.reachedRetryLimit) {
+    info(`可恢复写失败已达到续轮上限（${MAX_RECOVERABLE_WRITE_FAILURE_FOLLOW_UP_ROUNDS} 次），停止本次自动续轮`);
+  }
+
   if (batchExecution.status === 'interrupted') {
     return {
       kind: 'halted',
       nextStepSequence: batchExecution.nextStepSequence,
       nextTurnWriteRounds,
+      nextRecoverableWriteFailRounds: writeFailureFollowUpState.nextRecoverableWriteFailRounds,
       nextActiveHistoryProcessSummary,
       shouldFinalizeStoppedRun: options.getActiveRunId() === null,
     };
@@ -366,16 +515,18 @@ export async function executeToolCallBatchRound(
       kind: 'halted',
       nextStepSequence: batchExecution.nextStepSequence,
       nextTurnWriteRounds,
+      nextRecoverableWriteFailRounds: writeFailureFollowUpState.nextRecoverableWriteFailRounds,
       nextActiveHistoryProcessSummary,
       shouldFinalizeStoppedRun: options.getActiveRunId() === null,
     };
   }
 
-  if (batchExecution.writeFailCount > 0) {
+  if (batchExecution.writeFailCount > 0 && !writeFailureFollowUpState.canContinueAfterWriteFailures) {
     return {
       kind: 'halted',
       nextStepSequence: batchExecution.nextStepSequence,
       nextTurnWriteRounds,
+      nextRecoverableWriteFailRounds: writeFailureFollowUpState.nextRecoverableWriteFailRounds,
       nextActiveHistoryProcessSummary,
       shouldFinalizeStoppedRun: true,
     };
@@ -385,6 +536,10 @@ export async function executeToolCallBatchRound(
     toolResults: batchExecution.toolResults,
     deferredToolCalls: batchExecution.deferredToolCalls,
     readOnlyBatchLimited: batchExecution.readOnlyBatchLimited,
+    sameFileToolCallLimited: batchExecution.sameFileToolCallLimited,
+    duplicateReadOnlyToolCallsSkippedCount: batchExecution.duplicateReadOnlyToolCallsSkippedCount,
+    recoverableWriteFailCount: writeFailureFollowUpState.recoverableWriteFailCount,
+    remainingRecoverableWriteFailureFollowUpRounds: writeFailureFollowUpState.remainingRecoverableWriteFailureFollowUpRounds,
   });
   options.chatHistory.push({ role: 'user', content: toolFeedback });
   options.saveChatHistory();
@@ -409,6 +564,7 @@ export async function executeToolCallBatchRound(
     kind: 'follow-up',
     nextStepSequence: batchExecution.nextStepSequence,
     nextTurnWriteRounds,
+    nextRecoverableWriteFailRounds: writeFailureFollowUpState.nextRecoverableWriteFailRounds,
     nextActiveHistoryProcessSummary,
     followUpSystemPrompt: followUpRequest.systemPrompt,
     followUpMessages: followUpRequest.messages,

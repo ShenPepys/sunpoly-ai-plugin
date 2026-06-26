@@ -1,4 +1,4 @@
-import { getUserDisplayContent, isToolFeedbackMessage } from './ChatViewProvider_c_displayHistory';
+﻿import { buildDisplayHistoryFromRawHistory, getUserDisplayContent, isToolFeedbackMessage, sanitizeDisplayHistory } from './ChatViewProvider_displayHistory';
 import type {
   ChatSession,
   ChatSessionDisplayMessage,
@@ -655,5 +655,23 @@ export function planDeleteSession(options: DeleteSessionPlanOptions): DeleteSess
     clearRetryableSessionId: options.targetSessionId,
     messages: shouldShowSessionLauncher ? buildShowSessionLauncherMessages() : [],
     deletedSessionId: options.targetSessionId,
+  };
+}
+
+export type SessionDisplayHistoryAccessors = {
+  sanitizeDisplayHistory: (displayHistory: ChatSessionDisplayMessage[]) => ChatSessionDisplayMessage[];
+  buildDisplayHistoryFromRawHistory: (history: ChatSessionHistoryMessage[]) => ChatSessionDisplayMessage[];
+};
+
+export function createSessionDisplayHistoryAccessors(options: {
+  createDisplayMessageId: SessionMessageIdFactory;
+  toChangedFileDisplayPath: (filePath: string) => string;
+}): SessionDisplayHistoryAccessors {
+  return {
+    sanitizeDisplayHistory: displayHistory => sanitizeDisplayHistory(displayHistory, options.createDisplayMessageId),
+    buildDisplayHistoryFromRawHistory: history => buildDisplayHistoryFromRawHistory(history, {
+      createDisplayMessageId: options.createDisplayMessageId,
+      toChangedFileDisplayPath: options.toChangedFileDisplayPath,
+    }),
   };
 }

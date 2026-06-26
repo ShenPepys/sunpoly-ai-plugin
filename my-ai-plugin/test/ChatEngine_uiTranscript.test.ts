@@ -1,15 +1,15 @@
-/// <reference types="node" />
+﻿/// <reference types="node" />
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { ChatEngine } from '../src/webview/ChatEngine';
 import { SessionStore } from '../src/webview/SessionStore';
 import * as configModule from '../src/config';
-import * as requestExecutionModule from '../src/webview/ChatViewProvider_p_requestExecution';
+import * as requestExecutionModule from '../src/webview/ChatViewProvider_requestExecution';
 import type { IChatHost } from '../src/webview/IChatHost';
 import type { ExtensionMessage, ChatSession, PersistedUiEntry, PersistedUiMessageEntry } from '../src/webview/messageTypes';
-import { rememberRetryableRequest } from '../src/webview/ChatViewProvider_i_retryRequests';
-import type { RetryableRequestState } from '../src/webview/ChatViewProvider_i_retryRequests';
+import { rememberRetryableRequest } from '../src/webview/ChatViewProvider_retryRequests';
+import type { RetryableRequestState } from '../src/webview/ChatViewProvider_retryRequests';
 
 // ==================== 最小 Mock 工具 ====================
 

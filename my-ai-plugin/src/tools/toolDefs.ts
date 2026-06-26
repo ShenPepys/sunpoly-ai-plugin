@@ -78,6 +78,30 @@ register({
   stepVerb: 'AST editing',
 });
 
+register({
+  type: 'search_file',
+  label: '搜索文件',
+  icon: '',
+  readOnly: true,
+  stepVerb: 'Searching',
+});
+
+register({
+  type: 'grep_code',
+  label: '搜索代码',
+  icon: '🔎',
+  readOnly: true,
+  stepVerb: 'Grep searching',
+});
+
+register({
+  type: 'run_command',
+  label: '执行命令',
+  icon: '💻',
+  readOnly: false,
+  stepVerb: 'Running command',
+});
+
 // ==================== 查询 API ====================
 
 /**

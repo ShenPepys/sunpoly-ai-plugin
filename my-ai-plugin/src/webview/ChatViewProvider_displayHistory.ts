@@ -442,7 +442,7 @@ function addToolRoundToHistorySummary(
     }
 
     if (isSuccess === true && (toolCall.type === 'write_file' || toolCall.type === 'edit_file')) {
-      addChangedFileToHistorySummary(summary, toolCall.path, toChangedFileDisplayPath);
+      addChangedFileToHistorySummary(summary, toolCall.path!, toChangedFileDisplayPath);
     }
   }
 }

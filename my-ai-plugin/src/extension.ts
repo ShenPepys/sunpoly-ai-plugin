@@ -162,15 +162,6 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
-  // 注册命令：[开发] 创建第二个独立聊天面板（用于验证跨 Tab 会话锁逻辑）
-  context.subscriptions.push(
-    vscode.commands.registerCommand('my-ai-plugin.devCreateSecondPanel', () => {
-      const tab = tabManager!.createTab();
-      tab.reveal();
-      info('开发者触发：创建第二个独立聊天面板');
-    })
-  );
-
   // 注册命令：Ctrl+Shift+P 搜索 "AI: 打开设置"
   context.subscriptions.push(
     vscode.commands.registerCommand('my-ai-plugin.openSettings', () => {

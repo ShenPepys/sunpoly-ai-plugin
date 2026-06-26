@@ -1,8 +1,8 @@
-import * as path from 'path';
+﻿import * as path from 'path';
 import * as vscode from 'vscode';
 import { error, info } from '../logger';
 import { buildErrorAnalysisPrompt, readErrorFromClipboard } from '../terminal/terminalCapture';
-import type { DiscoveredWorkflow } from './ChatViewProvider_e_workspaceContext';
+import type { DiscoveredWorkflow } from './ChatViewProvider_workspaceContext';
 
 export async function buildTerminalErrorAnalysisPrompt(): Promise<string | null> {
   const errorText = await readErrorFromClipboard();

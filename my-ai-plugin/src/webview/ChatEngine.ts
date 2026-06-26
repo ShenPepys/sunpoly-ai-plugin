@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 聊天引擎
  *
  * 持有所有聊天业务状态和方法，不依赖具体的 Webview 容器类型。
@@ -25,8 +25,8 @@ import type {
 } from './messageTypes';
 import type { ParsedToolCall } from '../tools';
 import { FileReadStateCache } from '../tools';
-import { buildContextUsageSnapshot, buildUpdateTokenCountResponse } from './ChatViewProvider_a_contextUsage';
-import { buildChatViewHtml } from './ChatViewProvider_b_html';
+import { buildContextUsageSnapshot, buildUpdateTokenCountResponse } from './ChatViewProvider_contextUsage';
+import { buildChatViewHtml } from './ChatViewProvider_html';
 import {
   applyAssistantResponseDisplay,
   analyzeAssistantResponseDisplay,
@@ -42,19 +42,19 @@ import {
   isToolFeedbackMessage,
   normalizeHistoryMessages,
   upsertAssistantDisplayHistoryMessage,
-} from './ChatViewProvider_c_displayHistory';
+} from './ChatViewProvider_displayHistory';
 import {
   buildExpiredChangeSummaryResponse,
   buildFinalTurnChangeSummaryResponse,
   collectWriteBackupMessageIds,
   getDisplayPath as getDisplayPathHelper,
   isChangeSummaryFileUndoable,
-} from './ChatViewProvider_d_fileChanges';
-import type { ChangeSummaryFile, WriteBackupEntry } from './ChatViewProvider_d_fileChanges';
+} from './fileChanges';
+import type { ChangeSummaryFile, WriteBackupEntry } from './fileChanges';
 import {
   buildChatExportMarkdown,
   saveChatExportMarkdown,
-} from './ChatViewProvider_e_workspaceContext';
+} from './ChatViewProvider_workspaceContext';
 import {
   clearSessionConversation,
   planInitialSessionBootstrap,
@@ -67,80 +67,69 @@ import {
   planRenameSession,
   planSwitchSession,
   prepareActiveSessionForSave,
-} from './ChatViewProvider_f_sessions';
-import {
   createSessionDisplayHistoryAccessors,
   getActiveSession as getActiveSessionHelper,
   getSessionDisplayHistoryForExport,
   resolveSessionDisplayHistory,
   setSessionDisplayHistory,
-} from './ChatViewProvider_o_sessionAccess';
-import { prepareRegenerateRequest } from './ChatViewProvider_g_regenerate';
-import type { PendingRegenerateState } from './ChatViewProvider_g_regenerate';
+} from './ChatViewProvider_sessions';
+import { prepareRegenerateRequest } from './ChatViewProvider_regenerate';
+import type { PendingRegenerateState } from './ChatViewProvider_regenerate';
 import {
   buildSlashCommandRequest,
   resolveCommandType as resolveCommandTypeHelper,
-} from './ChatViewProvider_h_commands';
+} from './ChatViewProvider_commands';
 import {
   clearRetryableRequestsForSession as clearRetryableRequestsForSessionHelper,
   cloneRequestImages as cloneRequestImagesHelper,
   createRetryRequestId as createRetryRequestIdHelper,
   rememberRetryableRequest as rememberRetryableRequestHelper,
-} from './ChatViewProvider_i_retryRequests';
-import type { RequestImageAttachment, RetryableRequestState } from './ChatViewProvider_i_retryRequests';
+} from './ChatViewProvider_retryRequests';
+import type { RequestImageAttachment, RetryableRequestState } from './ChatViewProvider_retryRequests';
 import {
   insertCodeToEditor as insertCodeToEditorHelper,
-} from './ChatViewProvider_j_ideActions';
+} from './ChatViewProvider_ideActions';
 import {
   consumeSessionScopedRuntimeReset,
   consumeRunCompletionState,
   consumeStreamingRunCompletionState,
   clearPendingRegenerateState as clearPendingRegenerateStateHelper,
   getClonedActiveHistoryProcessSummary as getClonedActiveHistoryProcessSummaryHelper,
-  hasRunningTask as hasRunningTaskHelper,
   resetActiveHistoryProcessSummary as resetActiveHistoryProcessSummaryHelper,
   rollbackPendingRegenerateState as rollbackPendingRegenerateStateHelper,
-} from './ChatViewProvider_k_runtimeState';
-import { tryHandleLightweightWebviewMessage } from './ChatViewProvider_l_webviewDispatch';
-import { handleRemainingWebviewMessage } from './ChatViewProvider_m_webviewRouting';
+} from './ChatViewProvider_runtimeState';
+import { SessionRuntimeManager } from './ChatViewProvider_runtimeAccess';
+import { tryHandleLightweightWebviewMessage, handleRemainingWebviewMessage } from './ChatViewProvider_webviewMessaging';
 import {
   prepareChatRequestExecution,
   prepareRemindedMessages,
   buildUpdateModelsResponse,
-} from './ChatViewProvider_n_modelAndSession';
+} from './ChatViewProvider_modelAndSession';
 import {
   beginAssistantStreamingRequest,
-  executeToolCallBatchRound,
-  prepareUserTurnRequest,
   startBasicAssistantStreamRequest,
-} from './ChatViewProvider_p_requestExecution';
+} from './ChatViewProvider_requestExecution';
+import { executeUserMessageFlow, executeToolCallsFlow } from './ChatViewProvider_requestFlow';
+import { createUiTranscriptBridge } from './ChatViewProvider_uiTranscriptBridge';
+import type { UiTranscriptBridge } from './ChatViewProvider_uiTranscriptBridge';
+import {
+  buildEngineHtml,
+  executeClearCurrentSession,
+  executeOpenSessionLauncher,
+  getEngineActiveModelName,
+  initializeEngineWebviewState,
+  runEngineCommandRequest,
+  sendEngineModelList,
+  switchEngineMode,
+} from './ChatViewProvider_engineHostApi';
 import type { IChatHost } from './IChatHost';
-import type { SessionRunLock, SessionStore } from './SessionStore';
+import type { SessionStore } from './SessionStore';
 
 type UserMessageRequestOptions = {
   userContentOverride?: string;
   retryRequestId?: string;
   requestMode?: WorkMode;
 };
-
-type SessionRuntimeState = {
-  activeRunId: string | null;
-  abortStream: AbortStreamFn | null;
-  toolCallsInProgress: boolean;
-  stepSequence: number;
-  toolCallRound: number;
-  turnWriteFiles: ChangeSummaryFile[];
-  turnWriteRounds: number;
-  activeHistoryProcessSummary: HistoryProcessSummary | null;
-  pendingRegenerateState: PendingRegenerateState | null;
-  writeBackups: Map<string, WriteBackupEntry>;
-  stepToMessageId: Map<string, string>;
-  summaryToMessageId: Map<string, string>;
-  currentMode: WorkMode;
-  contextFiles: string[];
-};
-
-const LAUNCHER_SESSION_RUNTIME_KEY = '__launcher__';
 
 export class ChatEngine {
 
@@ -153,6 +142,10 @@ export class ChatEngine {
   private store: SessionStore;
 
   private readonly engineId: string;
+
+  private readonly runtimeManager: SessionRuntimeManager;
+
+  private readonly uiBridge: UiTranscriptBridge;
 
   // ==================== 会话状态 ====================
 
@@ -246,8 +239,6 @@ export class ChatEngine {
 
   // ==================== 运行时状态 ====================
 
-  private readonly sessionRuntimeBySessionId: Map<string, SessionRuntimeState> = new Map();
-
   private sessionLauncherVisible = false;
 
   private retryableRequests: Map<string, RetryableRequestState> = new Map();
@@ -273,6 +264,28 @@ export class ChatEngine {
     this.engineId = `engine-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     this.host = host;
     this.store = store;
+    this.runtimeManager = new SessionRuntimeManager(this.engineId, this.store, () => this.activeSessionId);
+    this.uiBridge = createUiTranscriptBridge({
+      getActiveSessionId: () => this.activeSessionId,
+      getSessionById: sessionId => this.getSessionById(sessionId),
+      getUiTranscriptForSession: sessionId => this.getUiTranscriptForSession(sessionId),
+      getUiMessageIndexes: sessionId => {
+        const runtime = this.runtimeManager.getSessionRuntimeState(sessionId);
+        return {
+          stepToMessageId: runtime.stepToMessageId,
+          summaryToMessageId: runtime.summaryToMessageId,
+        };
+      },
+      postSessionMessage: (sessionId, message) => {
+        if (!sessionId || sessionId === this.activeSessionId) {
+          this.host.postMessage(message);
+        }
+      },
+      hostPostMessage: message => this.host.postMessage(message),
+      persistActiveSession: () => {
+        this.store.persist(this.activeSessionId);
+      },
+    });
     // 从共享存储加载会话数据（首个引擎实际读取 globalState，后续引擎复用缓存）
     this.loadSessions();
 
@@ -283,228 +296,112 @@ export class ChatEngine {
     }
   }
 
-  private createSessionRuntimeState(): SessionRuntimeState {
-    return {
-      activeRunId: null,
-      abortStream: null,
-      toolCallsInProgress: false,
-      stepSequence: 0,
-      toolCallRound: 0,
-      turnWriteFiles: [],
-      turnWriteRounds: 0,
-      activeHistoryProcessSummary: null,
-      pendingRegenerateState: null,
-      writeBackups: new Map(),
-      stepToMessageId: new Map(),
-      summaryToMessageId: new Map(),
-      currentMode: 'code',
-      contextFiles: [],
-    };
-  }
-
-  private getSessionRuntimeKey(sessionId: string): string {
-    return sessionId || LAUNCHER_SESSION_RUNTIME_KEY;
-  }
-
-  private getSessionRuntimeState(sessionId: string = this.activeSessionId): SessionRuntimeState {
-    const runtimeKey = this.getSessionRuntimeKey(sessionId);
-    const existingRuntime = this.sessionRuntimeBySessionId.get(runtimeKey);
-    if (existingRuntime) {
-      return existingRuntime;
-    }
-
-    const nextRuntime = this.createSessionRuntimeState();
-    this.sessionRuntimeBySessionId.set(runtimeKey, nextRuntime);
-    return nextRuntime;
-  }
-
-  private clearSessionRuntimeState(sessionId: string): void {
-    const runtimeKey = this.getSessionRuntimeKey(sessionId);
-    this.sessionRuntimeBySessionId.delete(runtimeKey);
-  }
-
   private get abortStream(): AbortStreamFn | null {
-    return this.getSessionRuntimeState().abortStream;
+    return this.runtimeManager.getSessionRuntimeState().abortStream;
   }
 
   private set abortStream(value: AbortStreamFn | null) {
-    this.getSessionRuntimeState().abortStream = value;
+    this.runtimeManager.getSessionRuntimeState().abortStream = value;
   }
 
   private get activeRunId(): string | null {
-    return this.getSessionRuntimeState().activeRunId;
+    return this.runtimeManager.getSessionRuntimeState().activeRunId;
   }
 
   private set activeRunId(value: string | null) {
-    this.getSessionRuntimeState().activeRunId = value;
+    this.runtimeManager.getSessionRuntimeState().activeRunId = value;
   }
 
   private get toolCallsInProgress(): boolean {
-    return this.getSessionRuntimeState().toolCallsInProgress;
+    return this.runtimeManager.getSessionRuntimeState().toolCallsInProgress;
   }
 
   private set toolCallsInProgress(value: boolean) {
-    this.getSessionRuntimeState().toolCallsInProgress = value;
+    this.runtimeManager.getSessionRuntimeState().toolCallsInProgress = value;
   }
 
   private get stepSequence(): number {
-    return this.getSessionRuntimeState().stepSequence;
+    return this.runtimeManager.getSessionRuntimeState().stepSequence;
   }
 
   private set stepSequence(value: number) {
-    this.getSessionRuntimeState().stepSequence = value;
+    this.runtimeManager.getSessionRuntimeState().stepSequence = value;
   }
 
   private get toolCallRound(): number {
-    return this.getSessionRuntimeState().toolCallRound;
+    return this.runtimeManager.getSessionRuntimeState().toolCallRound;
   }
 
   private set toolCallRound(value: number) {
-    this.getSessionRuntimeState().toolCallRound = value;
+    this.runtimeManager.getSessionRuntimeState().toolCallRound = value;
   }
 
   private get writeBackups(): Map<string, WriteBackupEntry> {
-    return this.getSessionRuntimeState().writeBackups;
+    return this.runtimeManager.getSessionRuntimeState().writeBackups;
   }
 
   private get turnWriteFiles(): ChangeSummaryFile[] {
-    return this.getSessionRuntimeState().turnWriteFiles;
+    return this.runtimeManager.getSessionRuntimeState().turnWriteFiles;
   }
 
   private set turnWriteFiles(value: ChangeSummaryFile[]) {
-    this.getSessionRuntimeState().turnWriteFiles = value;
+    this.runtimeManager.getSessionRuntimeState().turnWriteFiles = value;
   }
 
   private get turnWriteRounds(): number {
-    return this.getSessionRuntimeState().turnWriteRounds;
+    return this.runtimeManager.getSessionRuntimeState().turnWriteRounds;
   }
 
   private set turnWriteRounds(value: number) {
-    this.getSessionRuntimeState().turnWriteRounds = value;
+    this.runtimeManager.getSessionRuntimeState().turnWriteRounds = value;
   }
 
   private get activeHistoryProcessSummary(): HistoryProcessSummary | null {
-    return this.getSessionRuntimeState().activeHistoryProcessSummary;
+    return this.runtimeManager.getSessionRuntimeState().activeHistoryProcessSummary;
   }
 
   private set activeHistoryProcessSummary(value: HistoryProcessSummary | null) {
-    this.getSessionRuntimeState().activeHistoryProcessSummary = value;
+    this.runtimeManager.getSessionRuntimeState().activeHistoryProcessSummary = value;
   }
 
   private get pendingRegenerateState(): PendingRegenerateState | null {
-    return this.getSessionRuntimeState().pendingRegenerateState;
+    return this.runtimeManager.getSessionRuntimeState().pendingRegenerateState;
   }
 
   private set pendingRegenerateState(value: PendingRegenerateState | null) {
-    this.getSessionRuntimeState().pendingRegenerateState = value;
+    this.runtimeManager.getSessionRuntimeState().pendingRegenerateState = value;
   }
 
   private get currentMode(): WorkMode {
-    return this.getSessionRuntimeState().currentMode;
+    return this.runtimeManager.getSessionRuntimeState().currentMode;
   }
 
   private set currentMode(value: WorkMode) {
-    this.getSessionRuntimeState().currentMode = value;
+    this.runtimeManager.getSessionRuntimeState().currentMode = value;
   }
 
   private get contextFiles(): string[] {
-    return this.getSessionRuntimeState().contextFiles;
+    return this.runtimeManager.getSessionRuntimeState().contextFiles;
   }
 
   private set contextFiles(value: string[]) {
-    this.getSessionRuntimeState().contextFiles = value;
+    this.runtimeManager.getSessionRuntimeState().contextFiles = value;
   }
 
   private get stepToMessageId(): Map<string, string> {
-    return this.getSessionRuntimeState().stepToMessageId;
+    return this.runtimeManager.getSessionRuntimeState().stepToMessageId;
   }
 
   private get summaryToMessageId(): Map<string, string> {
-    return this.getSessionRuntimeState().summaryToMessageId;
-  }
-
-  private getGlobalRunLock(sessionId: string): SessionRunLock | null {
-    return this.store.getRunLock(sessionId);
-  }
-
-  private hasRunningTaskElsewhere(sessionId: string = this.activeSessionId): boolean {
-    const runLock = this.getGlobalRunLock(sessionId);
-    return !!runLock && runLock.ownerId !== this.engineId;
-  }
-
-  private isSessionRunningInOtherTab(sessionId: string): boolean {
-    if (!sessionId) {
-      return false;
-    }
-
-    const runLock = this.getGlobalRunLock(sessionId);
-    return !!runLock && runLock.ownerId !== this.engineId;
+    return this.runtimeManager.getSessionRuntimeState().summaryToMessageId;
   }
 
   private hasRunningTask(sessionId: string = this.activeSessionId): boolean {
-    const runtime = this.getSessionRuntimeState(sessionId);
-    return hasRunningTaskHelper({
-      activeRunId: runtime.activeRunId,
-      abortStream: runtime.abortStream,
-      toolCallsInProgress: runtime.toolCallsInProgress,
-    });
-  }
-
-  private setSessionActiveRunIdState(sessionId: string, nextActiveRunId: string | null): void {
-    const runtime = this.getSessionRuntimeState(sessionId);
-    if (nextActiveRunId === null) {
-      this.store.releaseRunLock({
-        ownerId: this.engineId,
-        sessionId,
-        runId: runtime.activeRunId ?? undefined,
-      });
-    }
-
-    runtime.activeRunId = nextActiveRunId;
+    return this.runtimeManager.hasRunningTask(sessionId);
   }
 
   private setActiveRunIdState(nextActiveRunId: string | null): void {
-    this.setSessionActiveRunIdState(this.activeSessionId, nextActiveRunId);
-  }
-
-  private getCrossTabRunConflictMessage(sessionId: string): string {
-    const runLock = this.getGlobalRunLock(sessionId);
-    if (runLock && runLock.ownerId !== this.engineId) {
-      return '当前会话正在其他聊天 Tab 中生成，请先停止当前任务后再继续。';
-    }
-
-    return '当前会话已有进行中的任务，请先停止当前任务后再继续。';
-  }
-
-  private tryAcquireSessionRunLock(sessionId: string, runId: string): string | null {
-    if (!sessionId) {
-      return '当前没有可用会话，请重新发送消息。';
-    }
-
-    const acquireResult = this.store.tryAcquireRunLock({
-      ownerId: this.engineId,
-      sessionId,
-      runId,
-    });
-    if (acquireResult.acquired) {
-      return null;
-    }
-
-    return this.getCrossTabRunConflictMessage(sessionId);
-  }
-
-  private tryAcquireCurrentSessionRunLock(runId: string): string | null {
-    return this.tryAcquireSessionRunLock(this.activeSessionId, runId);
-  }
-
-  private resetOwnedRunState(sessionId: string = this.activeSessionId): void {
-    const runtime = this.getSessionRuntimeState(sessionId);
-    this.setSessionActiveRunIdState(sessionId, null);
-    runtime.abortStream = null;
-    runtime.toolCallsInProgress = false;
-    runtime.stepSequence = 0;
-    runtime.toolCallRound = 0;
-    runtime.activeHistoryProcessSummary = null;
+    this.runtimeManager.setSessionActiveRunIdState(this.activeSessionId, nextActiveRunId);
   }
 
   private syncActiveSessionTransientState(): void {
@@ -555,7 +452,7 @@ export class ChatEngine {
   }
 
   private postSessionMessage(sessionId: string, message: ExtensionMessage): void {
-    this.capturePersistedUiState(sessionId, message);
+    this.uiBridge.capturePersistedUiState(sessionId, message);
     if (sessionId && sessionId !== this.activeSessionId) {
       return;
     }
@@ -563,712 +460,50 @@ export class ChatEngine {
     this.host.postMessage(message);
   }
 
-  private capturePersistedUiState(sessionId: string, message: ExtensionMessage): void {
-    if (!this.getSessionById(sessionId)) {
-      return;
-    }
-
-    switch (message.type) {
-      case 'addMessage':
-        this.setUiMessageContent(
-          message.messageId,
-          message.role,
-          message.createdAt ?? Date.now(),
-          message.content,
-          !!message.partial,
-          sessionId,
-        );
-        if (message.role === 'user' && !message.readOnly) {
-          this.persistUiTranscript(sessionId);
-        }
-        return;
-
-      case 'streamChunk': {
-        const createdAt = this.getUiMessageCreatedAt(message.messageId, message.createdAt ?? Date.now(), sessionId);
-        const entry = this.ensureUiMessageEntry(message.messageId, 'assistant', createdAt, sessionId);
-        if (!entry) {
-          return;
-        }
-
-        entry.content += message.chunk;
-        entry.partial = true;
-        return;
-      }
-
-      case 'streamDone': {
-        const entry = this.findUiMessageEntry(message.messageId, sessionId);
-        if (entry && entry.role === 'assistant') {
-          delete entry.partial;
-          this.persistUiTranscript(sessionId);
-        }
-        return;
-      }
-
-      case 'updateMessage':
-        this.setUiMessageContent(
-          message.messageId,
-          'assistant',
-          this.getUiMessageCreatedAt(message.messageId, Date.now(), sessionId),
-          message.content,
-          false,
-          sessionId,
-        );
-        this.persistUiTranscript(sessionId);
-        return;
-
-      case 'showError':
-        this.appendUiError(message.message, message.retryable, message.createdAt ?? Date.now(), sessionId);
-        this.persistUiTranscript(sessionId);
-        return;
-
-      case 'generationStopped':
-        if (message.messageId) {
-          this.markUiMessageStopped(message.messageId, sessionId);
-          this.persistUiTranscript(sessionId);
-        }
-        return;
-
-      case 'thinkingComplete':
-        this.appendUiEvent(message.messageId, {
-          type: 'thinkingComplete',
-          elapsed: message.elapsed,
-        }, sessionId);
-        this.persistUiTranscript(sessionId);
-        return;
-
-      case 'showHistoryProcessSummary':
-        this.appendUiEvent(message.messageId, {
-          type: 'showHistoryProcessSummary',
-          summary: message.summary,
-        }, sessionId);
-        this.persistUiTranscript(sessionId);
-        return;
-
-      case 'addStep':
-        this.appendUiEvent(message.messageId, {
-          type: 'addStep',
-          stepId: message.stepId,
-          icon: message.icon,
-          description: message.description,
-          status: message.status,
-        }, sessionId);
-        this.persistUiTranscript(sessionId);
-        return;
-
-      case 'updateStep': {
-        const messageId = this.findMessageIdByStepId(message.stepId, sessionId);
-        if (!messageId) {
-          return;
-        }
-
-        this.appendUiEvent(messageId, {
-          type: 'updateStep',
-          stepId: message.stepId,
-          status: message.status,
-          description: message.description,
-          elapsed: message.elapsed,
-        }, sessionId);
-        this.persistUiTranscript(sessionId);
-        return;
-      }
-
-      case 'showDiff':
-        this.appendUiEvent(message.messageId, {
-          type: 'showDiff',
-          stepId: message.stepId,
-          summaryId: message.summaryId,
-          filePath: message.filePath,
-          language: message.language,
-          additions: message.additions,
-          deletions: message.deletions,
-          oldContent: message.oldContent,
-          newContent: message.newContent,
-          noticeText: message.noticeText,
-          needsConfirm: message.needsConfirm,
-          collapsed: message.collapsed,
-          readOnly: message.readOnly,
-        }, sessionId);
-        this.persistUiTranscript(sessionId);
-        return;
-
-      case 'showChangeSummary':
-        this.appendUiEvent(message.messageId, {
-          type: 'showChangeSummary',
-          summaryId: message.summaryId,
-          needsConfirm: message.needsConfirm,
-          files: message.files,
-        }, sessionId);
-        this.persistUiTranscript(sessionId);
-        return;
-
-      case 'updateChangeSummary': {
-        const messageId = this.findMessageIdBySummaryId(message.summaryId, sessionId);
-        if (!messageId) {
-          return;
-        }
-
-        this.appendUiEvent(messageId, {
-          type: 'updateChangeSummary',
-          summaryId: message.summaryId,
-          status: message.status,
-          text: message.text,
-        }, sessionId);
-        this.persistUiTranscript(sessionId);
-        return;
-      }
-
-      case 'resetMessageState':
-        this.resetUiMessageState(message.messageId, sessionId);
-        this.persistUiTranscript(sessionId);
-        return;
-
-      case 'removeLastAssistantMessage':
-        this.removeLastAssistantUiMessage(sessionId);
-        this.persistUiTranscript(sessionId);
-        return;
-
-      default:
-        return;
-    }
-  }
-
-  private persistUiTranscript(sessionId: string = this.activeSessionId): void {
-    if (!this.getSessionById(sessionId)) {
-      return;
-    }
-
-    this.store.persist(this.activeSessionId);
-  }
-
-  private ensureUiMessageEntry(
-    messageId: string,
-    role: 'user' | 'assistant',
-    createdAt: number,
-    sessionId: string = this.activeSessionId,
-  ): PersistedUiMessageEntry | null {
-    if (!this.getSessionById(sessionId)) {
-      return null;
-    }
-
-    const transcript = this.getUiTranscriptForSession(sessionId);
-    const existing = transcript.find((entry): entry is PersistedUiMessageEntry => {
-      return entry.type === 'message' && entry.messageId === messageId;
-    });
-    if (existing) {
-      existing.role = role;
-      if (!existing.createdAt) {
-        existing.createdAt = createdAt;
-      }
-      if (!Array.isArray(existing.events)) {
-        existing.events = [];
-      }
-      return existing;
-    }
-
-    const entry: PersistedUiMessageEntry = {
-      type: 'message',
-      messageId,
-      role,
-      createdAt,
-      content: '',
-      events: [],
+  private buildEngineHostApiDeps() {
+    return {
+      postMessage: (message: ExtensionMessage) => this.postMessage(message),
+      hostPostMessage: (message: ExtensionMessage) => this.host.postMessage(message),
+      getSessions: () => this.sessions,
+      getActiveSessionId: () => this.activeSessionId,
+      setActiveSessionId: (sessionId: string) => {
+        this.activeSessionId = sessionId;
+      },
+      getSessionLauncherVisible: () => this.sessionLauncherVisible,
+      setSessionLauncherVisible: (visible: boolean) => {
+        this.sessionLauncherVisible = visible;
+      },
+      getDisplayHistory: () => this.displayHistory,
+      getChatHistory: () => this.chatHistory,
+      getUiTranscript: () => this.uiTranscript,
+      syncActiveSessionTransientState: () => this.syncActiveSessionTransientState(),
+      resetUiRuntimeState: () => this.uiBridge.resetUiRuntimeState(),
+      pushTokenCount: () => this.pushTokenCount(),
+      syncHostTitle: () => this.syncHostTitle(),
+      restoreUiTranscriptToWebview: () => this.uiBridge.restoreUiTranscriptToWebview(),
+      persistUiTranscript: () => this.uiBridge.persistUiTranscript(),
+      saveSessions: () => this.saveSessions(),
+      resetSessionScopedRuntimeState: () => this.resetSessionScopedRuntimeState(),
+      clearFileReadStateCache: () => this.fileReadStateCache.clear(),
+      clearRetryableForSession: (sessionId: string) => {
+        clearRetryableRequestsForSessionHelper(this.retryableRequests, sessionId);
+      },
+      hasRunningTask: () => this.hasRunningTask(),
+      isSessionRunningInOtherTab: (sessionId: string) => this.runtimeManager.isSessionRunningInOtherTab(sessionId),
+      hostReveal: () => this.host.reveal(),
+      handleUserMessage: async (
+        text: string,
+        images: undefined,
+        requestOptions: { userContentOverride: string; requestMode: WorkMode },
+      ) => {
+        await this.handleUserMessage(text, images, requestOptions);
+      },
+      getContextFiles: () => [...this.contextFiles],
+      setContextFiles: (filePaths: string[]) => {
+        this.contextFiles = filePaths;
+      },
+      getHost: () => this.host,
     };
-    transcript.push(entry);
-    return entry;
-  }
-
-  private findUiMessageEntry(messageId: string, sessionId: string = this.activeSessionId): PersistedUiMessageEntry | null {
-    const entry = this.getUiTranscriptForSession(sessionId).find((item): item is PersistedUiMessageEntry => {
-      return item.type === 'message' && item.messageId === messageId;
-    });
-    return entry ?? null;
-  }
-
-  private getUiMessageCreatedAt(messageId: string, fallback = Date.now(), sessionId: string = this.activeSessionId): number {
-    const entry = this.findUiMessageEntry(messageId, sessionId);
-    return entry?.createdAt ?? fallback;
-  }
-
-  private setUiMessageContent(
-    messageId: string,
-    role: 'user' | 'assistant',
-    createdAt: number,
-    content: string,
-    partial = false,
-    sessionId: string = this.activeSessionId,
-  ): void {
-    const entry = this.ensureUiMessageEntry(messageId, role, createdAt, sessionId);
-    if (!entry) {
-      return;
-    }
-
-    entry.content = content;
-    if (partial) {
-      entry.partial = true;
-      return;
-    }
-
-    delete entry.partial;
-  }
-
-  private appendUiError(
-    message: string,
-    retryable = true,
-    createdAt = Date.now(),
-    sessionId: string = this.activeSessionId,
-  ): void {
-    if (!this.getSessionById(sessionId)) {
-      return;
-    }
-
-    this.getUiTranscriptForSession(sessionId).push({
-      type: 'error',
-      createdAt,
-      message,
-      retryable: retryable ? true : undefined,
-    });
-  }
-
-  private appendUiEvent(
-    messageId: string,
-    event: PersistedUiEvent,
-    sessionId: string = this.activeSessionId,
-  ): void {
-    const entry = this.ensureUiMessageEntry(messageId, 'assistant', Date.now(), sessionId);
-    if (!entry) {
-      return;
-    }
-
-    if (!Array.isArray(entry.events)) {
-      entry.events = [];
-    }
-
-    entry.events.push(event);
-    const runtime = this.getSessionRuntimeState(sessionId);
-    if (event.type === 'addStep') {
-      runtime.stepToMessageId.set(event.stepId, messageId);
-    }
-    if (event.type === 'showDiff' && event.summaryId) {
-      runtime.summaryToMessageId.set(event.summaryId, messageId);
-    }
-    if (event.type === 'showChangeSummary') {
-      runtime.summaryToMessageId.set(event.summaryId, messageId);
-    }
-  }
-
-  private resetUiRuntimeState(sessionId: string = this.activeSessionId): void {
-    const runtime = this.getSessionRuntimeState(sessionId);
-    runtime.stepToMessageId.clear();
-    runtime.summaryToMessageId.clear();
-  }
-
-  private rebuildUiMessageIndexes(sessionId: string = this.activeSessionId): void {
-    const runtime = this.getSessionRuntimeState(sessionId);
-    this.resetUiRuntimeState(sessionId);
-
-    for (const entry of this.getUiTranscriptForSession(sessionId)) {
-      if (entry.type !== 'message' || !Array.isArray(entry.events)) {
-        continue;
-      }
-
-      for (const event of entry.events) {
-        if (event.type === 'addStep') {
-          runtime.stepToMessageId.set(event.stepId, entry.messageId);
-        }
-
-        if (event.type === 'showDiff' && event.summaryId) {
-          runtime.summaryToMessageId.set(event.summaryId, entry.messageId);
-        }
-
-        if (event.type === 'showChangeSummary') {
-          runtime.summaryToMessageId.set(event.summaryId, entry.messageId);
-        }
-      }
-    }
-  }
-
-  private findMessageIdByStepId(stepId: string, sessionId: string = this.activeSessionId): string | null {
-    const mappedMessageId = this.getSessionRuntimeState(sessionId).stepToMessageId.get(stepId);
-    if (mappedMessageId) {
-      return mappedMessageId;
-    }
-
-    for (const entry of this.getUiTranscriptForSession(sessionId)) {
-      if (entry.type !== 'message' || !Array.isArray(entry.events)) {
-        continue;
-      }
-
-      const hasStep = entry.events.some(event => {
-        if (event.type === 'addStep' || event.type === 'updateStep' || event.type === 'showDiff') {
-          return event.stepId === stepId;
-        }
-        return false;
-      });
-
-      if (hasStep) {
-        return entry.messageId;
-      }
-    }
-
-    return null;
-  }
-
-  private findMessageIdBySummaryId(summaryId: string, sessionId: string = this.activeSessionId): string | null {
-    const mappedMessageId = this.getSessionRuntimeState(sessionId).summaryToMessageId.get(summaryId);
-    if (mappedMessageId) {
-      return mappedMessageId;
-    }
-
-    for (const entry of this.getUiTranscriptForSession(sessionId)) {
-      if (entry.type !== 'message' || !Array.isArray(entry.events)) {
-        continue;
-      }
-
-      const hasSummary = entry.events.some(event => {
-        if (event.type === 'showDiff') {
-          return event.summaryId === summaryId;
-        }
-        if (event.type === 'showChangeSummary' || event.type === 'updateChangeSummary') {
-          return event.summaryId === summaryId;
-        }
-        return false;
-      });
-
-      if (hasSummary) {
-        return entry.messageId;
-      }
-    }
-
-    return null;
-  }
-
-  private collectUndoableSummaryIdsForMessage(messageId: string, sessionId: string = this.activeSessionId): string[] {
-    const entry = this.findUiMessageEntry(messageId, sessionId);
-    if (!entry || !Array.isArray(entry.events)) {
-      return [];
-    }
-
-    const summaryStates = new Map<string, { hasUndoableFiles: boolean; latestStatus: string | null }>();
-    for (const event of entry.events) {
-      if (event.type === 'showChangeSummary') {
-        const current = summaryStates.get(event.summaryId);
-        summaryStates.set(event.summaryId, {
-          hasUndoableFiles: event.files.some(file => isChangeSummaryFileUndoable(file)),
-          latestStatus: current?.latestStatus ?? null,
-        });
-        continue;
-      }
-
-      if (event.type === 'updateChangeSummary') {
-        const current = summaryStates.get(event.summaryId);
-        summaryStates.set(event.summaryId, {
-          hasUndoableFiles: current?.hasUndoableFiles ?? false,
-          latestStatus: event.status,
-        });
-      }
-    }
-
-    const summaryIds: string[] = [];
-    for (const [summaryId, state] of summaryStates.entries()) {
-      if (!state.hasUndoableFiles) {
-        continue;
-      }
-
-      if (state.latestStatus === 'undone' || state.latestStatus === 'cancelled') {
-        continue;
-      }
-
-      summaryIds.push(summaryId);
-    }
-
-    return summaryIds;
-  }
-
-  private expireUndoableSummariesForMessageIds(
-    messageIds: string[],
-    sessionId: string,
-    options?: { excludeSummaryIds?: string[]; text?: string },
-  ): void {
-    const excludeSummaryIds = new Set(options?.excludeSummaryIds ?? []);
-    const postedSummaryIds = new Set<string>();
-
-    for (const messageId of messageIds) {
-      for (const summaryId of this.collectUndoableSummaryIdsForMessage(messageId, sessionId)) {
-        if (excludeSummaryIds.has(summaryId) || postedSummaryIds.has(summaryId)) {
-          continue;
-        }
-
-        postedSummaryIds.add(summaryId);
-        this.postSessionMessage(sessionId, buildExpiredChangeSummaryResponse(summaryId, options?.text));
-      }
-    }
-  }
-
-  private expireUndoableSummariesForWriteBackups(
-    writeBackups: Map<string, WriteBackupEntry>,
-    sessionId: string,
-    text = 'Undo expired',
-  ): void {
-    const messageIds = collectWriteBackupMessageIds(writeBackups);
-    if (messageIds.length === 0) {
-      return;
-    }
-
-    this.expireUndoableSummariesForMessageIds(messageIds, sessionId, { text });
-  }
-
-  private expireUndoableSiblingSummaries(summaryId: string, sessionId: string): void {
-    const messageId = this.findMessageIdBySummaryId(summaryId, sessionId);
-    if (!messageId) {
-      return;
-    }
-
-    this.expireUndoableSummariesForMessageIds([messageId], sessionId, { excludeSummaryIds: [summaryId] });
-  }
-
-  private resetUiMessageState(messageId: string, sessionId: string = this.activeSessionId): void {
-    const entry = this.findUiMessageEntry(messageId, sessionId);
-    if (!entry) {
-      return;
-    }
-
-    delete entry.partial;
-    entry.events = [];
-    this.rebuildUiMessageIndexes(sessionId);
-  }
-
-  private removeLastAssistantUiMessage(sessionId: string = this.activeSessionId): void {
-    const transcript = this.getUiTranscriptForSession(sessionId);
-    for (let index = transcript.length - 1; index >= 0; index--) {
-      const entry = transcript[index];
-      if (entry.type === 'message' && entry.role === 'assistant') {
-        transcript.splice(index, 1);
-        this.rebuildUiMessageIndexes(sessionId);
-        return;
-      }
-    }
-  }
-
-  private markUiMessageStopped(messageId: string, sessionId: string = this.activeSessionId): void {
-    const entry = this.findUiMessageEntry(messageId, sessionId);
-    if (!entry) {
-      return;
-    }
-
-    entry.partial = true;
-    const events = entry.events ?? [];
-    const stepStates = new Map<string, { status: 'running' | 'done' | 'error'; description: string }>();
-    const pendingSummaryIds = new Set<string>();
-
-    for (const event of events) {
-      if (event.type === 'addStep') {
-        stepStates.set(event.stepId, {
-          status: event.status,
-          description: event.description,
-        });
-        continue;
-      }
-
-      if (event.type === 'updateStep') {
-        const current = stepStates.get(event.stepId);
-        stepStates.set(event.stepId, {
-          status: event.status,
-          description: event.description ?? current?.description ?? '',
-        });
-        continue;
-      }
-
-      if (event.type === 'showChangeSummary' && event.needsConfirm) {
-        pendingSummaryIds.add(event.summaryId);
-        continue;
-      }
-
-      if (event.type === 'updateChangeSummary') {
-        pendingSummaryIds.delete(event.summaryId);
-      }
-    }
-
-    for (const [stepId, stepState] of stepStates.entries()) {
-      if (stepState.status !== 'running') {
-        continue;
-      }
-
-      const cancelledDescription = stepState.description.includes('(已取消)')
-        ? stepState.description
-        : `${stepState.description} (已取消)`;
-
-      this.appendUiEvent(messageId, {
-        type: 'updateStep',
-        stepId,
-        status: 'error',
-        description: cancelledDescription,
-      }, sessionId);
-    }
-
-    for (const summaryId of pendingSummaryIds) {
-      this.appendUiEvent(messageId, {
-        type: 'updateChangeSummary',
-        summaryId,
-        status: 'cancelled',
-        text: '✗ Cancelled',
-      }, sessionId);
-    }
-  }
-
-  private restoreUiTranscriptToWebview(sessionId: string = this.activeSessionId): boolean {
-    const transcript = this.getUiTranscriptForSession(sessionId);
-    if (transcript.length === 0) {
-      return false;
-    }
-
-    this.resetUiRuntimeState(sessionId);
-    info(`恢复 ${transcript.length} 条 UI 历史到界面`);
-
-    for (const entry of transcript) {
-      if (entry.type === 'error') {
-        this.host.postMessage({
-          type: 'showError',
-          message: entry.message,
-          retryable: entry.retryable,
-          createdAt: entry.createdAt,
-          readOnly: true,
-        });
-        continue;
-      }
-
-      this.host.postMessage({
-        type: 'addMessage',
-        role: entry.role,
-        content: entry.content,
-        messageId: entry.messageId,
-        createdAt: entry.createdAt,
-        partial: entry.partial,
-        readOnly: true,
-      });
-
-      if (entry.role === 'assistant') {
-        this.host.postMessage({ type: 'streamDone', messageId: entry.messageId });
-      }
-
-      for (const event of entry.events ?? []) {
-        switch (event.type) {
-          case 'thinkingComplete':
-            this.host.postMessage({
-              type: 'thinkingComplete',
-              messageId: entry.messageId,
-              elapsed: event.elapsed,
-              isExecutionMessage: false,
-            });
-            break;
-
-          case 'showHistoryProcessSummary':
-            this.host.postMessage({
-              type: 'showHistoryProcessSummary',
-              messageId: entry.messageId,
-              summary: event.summary,
-            });
-            break;
-
-          case 'addStep':
-            this.host.postMessage({
-              type: 'addStep',
-              messageId: entry.messageId,
-              stepId: event.stepId,
-              icon: event.icon,
-              description: event.description,
-              status: event.status,
-            });
-            break;
-
-          case 'updateStep':
-            this.host.postMessage({
-              type: 'updateStep',
-              stepId: event.stepId,
-              status: event.status,
-              description: event.description,
-              elapsed: event.elapsed,
-            });
-            break;
-
-          case 'showDiff':
-            this.host.postMessage({
-              type: 'showDiff',
-              messageId: entry.messageId,
-              stepId: event.stepId,
-              summaryId: event.summaryId,
-              filePath: event.filePath,
-              language: event.language,
-              additions: event.additions,
-              deletions: event.deletions,
-              oldContent: event.oldContent,
-              newContent: event.newContent,
-              noticeText: event.noticeText,
-              needsConfirm: event.needsConfirm,
-              collapsed: event.collapsed,
-              readOnly: true,
-            });
-            break;
-
-          case 'showChangeSummary':
-            this.host.postMessage({
-              type: 'showChangeSummary',
-              messageId: entry.messageId,
-              summaryId: event.summaryId,
-              needsConfirm: event.needsConfirm,
-              files: event.files,
-              readOnly: true,
-            });
-            break;
-
-          case 'updateChangeSummary':
-            this.host.postMessage({
-              type: 'updateChangeSummary',
-              summaryId: event.summaryId,
-              status: event.status,
-              text: event.text,
-            });
-            break;
-        }
-      }
-    }
-
-    this.rebuildUiMessageIndexes(sessionId);
-    return true;
-  }
-
-  private cloneUiTranscript(uiTranscript: PersistedUiEntry[]): PersistedUiEntry[] {
-    return uiTranscript.map(entry => {
-      if (entry.type === 'error') {
-        return { ...entry };
-      }
-
-      const clonedEvents = Array.isArray(entry.events)
-        ? entry.events.map(event => this.cloneUiEvent(event))
-        : undefined;
-
-      return {
-        ...entry,
-        events: clonedEvents,
-      };
-    });
-  }
-
-  private cloneUiEvent(event: PersistedUiEvent): PersistedUiEvent {
-    if (event.type === 'showChangeSummary') {
-      return {
-        ...event,
-        files: event.files.map(file => ({ ...file })),
-      };
-    }
-
-    if (event.type === 'showHistoryProcessSummary') {
-      return {
-        ...event,
-        summary: cloneHistoryProcessSummary(event.summary),
-      };
-    }
-
-    return { ...event };
   }
 
   /** 获取当前工作模式 */
@@ -1278,29 +513,19 @@ export class ChatEngine {
 
   /** 切换工作模式 */
   public switchMode(mode: WorkMode): void {
-    this.currentMode = mode;
-    this.postMessage({ type: 'updateMode', mode });
+    switchEngineMode(mode, nextMode => {
+      this.currentMode = nextMode;
+    }, message => this.postMessage(message));
   }
 
   /** 获取当前活跃模型名称（用于状态栏同步） */
   public getActiveModelName(): string {
-    const models = getAllModels();
-    const activeIndex = getActiveModelIndex();
-    const safeIndex = Math.max(0, Math.min(activeIndex, models.length - 1));
-    return models[safeIndex]?.name || 'AI';
+    return getEngineActiveModelName();
   }
 
   /** 推送模型列表到前端 */
   public sendModelList(): void {
-    const models = getAllModels();
-    const activeIndex = getActiveModelIndex();
-    const safeIndex = Math.max(0, Math.min(activeIndex, models.length - 1));
-    const modelConfig = getModelConfig();
-    this.postMessage(buildUpdateModelsResponse({
-      models,
-      activeIndex: safeIndex,
-      supportsVision: modelConfig.supportsVision ?? false,
-    }));
+    sendEngineModelList(message => this.postMessage(message));
   }
 
   /**
@@ -1308,132 +533,24 @@ export class ChatEngine {
    * 包括模型列表、工作模式、会话列表和历史消息恢复
    */
   public initializeWebviewState(): void {
-    this.sendModelList();
-    this.syncActiveSessionTransientState();
-    this.resetUiRuntimeState();
-
-    const activeSession = getActiveSessionHelper(this.sessions, this.activeSessionId);
-    const hasUiTranscript = Array.isArray(activeSession?.uiTranscript) && activeSession.uiTranscript.length > 0;
-
-    if (!this.sessionLauncherVisible && hasUiTranscript) {
-      this.postMessage(buildUpdateSessionsResponse(this.sessions, this.activeSessionId));
-      this.pushTokenCount();
-      this.restoreUiTranscriptToWebview();
-      this.syncHostTitle();
-      return;
-    }
-
-    const initialSessionBootstrapPlan = planInitialSessionBootstrap({
-      sessions: this.sessions,
-      activeSessionId: this.activeSessionId,
-      sessionLauncherVisible: this.sessionLauncherVisible,
-      displayHistory: this.displayHistory,
-      rawHistoryCount: this.chatHistory.length,
-      createDisplayMessageId: createDisplayMessageIdHelper,
-    });
-    this.postMessage(initialSessionBootstrapPlan.sessionListResponse);
-    this.pushTokenCount();
-
-    if (initialSessionBootstrapPlan.kind === 'restore') {
-      info(`恢复 ${initialSessionBootstrapPlan.restoredDisplayHistoryCount} 条历史消息到界面（原始 ${initialSessionBootstrapPlan.restoredRawHistoryCount} 条）`);
-    }
-    for (const message of initialSessionBootstrapPlan.renderMessages) {
-      this.postMessage(message);
-    }
-
-    if (!this.sessionLauncherVisible && !hasUiTranscript && this.uiTranscript.length > 0) {
-      this.persistUiTranscript();
-    }
-
-    // 初始化完成后同步宿主标题（Tab 标签文字显示当前会话名）
-    this.syncHostTitle();
+    initializeEngineWebviewState(this.buildEngineHostApiDeps());
   }
 
   /** 获取面板 HTML（供宿主设置到 Webview） */
   public buildHtml(): string {
-    const webview = this.host.getWebview();
-    if (!webview) {
-      return '';
-    }
-    return buildChatViewHtml({
-      webview,
-      extensionUri: this.host.getExtensionUri(),
-      panelTitle: getPanelTitle(),
-      shouldShowWelcomeOnInitialRender: !this.sessionLauncherVisible && this.displayHistory.length === 0 && this.uiTranscript.length === 0,
-    });
+    return buildEngineHtml(this.buildEngineHostApiDeps());
   }
 
   public async runCommandRequest(commandRequest: CommandExecutionRequest): Promise<void> {
-    if (this.hasRunningTask()) {
-      const message = '当前仍在生成，请先停止当前任务后再执行新的命令。';
-      this.postMessage({ type: 'showError', message });
-      vscode.window.showWarningMessage(message);
-      return;
-    }
-
-    this.host.reveal();
-    await this.handleUserMessage(commandRequest.displayText, undefined, {
-      userContentOverride: commandRequest.userMessage,
-      requestMode: commandRequest.requestMode,
-    });
+    await runEngineCommandRequest(commandRequest, this.buildEngineHostApiDeps());
   }
 
   public clearCurrentSession(): void {
-    if (this.hasRunningTask()) {
-      this.postMessage({
-        type: 'showError',
-        message: '当前会话仍在生成，请先停止当前任务后再清空对话。',
-      });
-      return;
-    }
-
-    if (this.isSessionRunningInOtherTab(this.activeSessionId)) {
-      this.postMessage({
-        type: 'showError',
-        message: '当前会话正在其他聊天 Tab 中生成，请先停止当前任务后再清空对话。',
-      });
-      return;
-    }
-
-    const clearPlan = planClearCurrentSession({
-      sessionLauncherVisible: this.sessionLauncherVisible,
-      activeSessionId: this.activeSessionId,
-    });
-
-    if (clearPlan.kind === 'blocked') {
-      this.postMessage({
-        type: 'showError',
-        message: clearPlan.errorMessage,
-      });
-      return;
-    }
-
-    this.resetSessionScopedRuntimeState();
-    this.fileReadStateCache.clear();
-    clearSessionConversation(getActiveSessionHelper(this.sessions, this.activeSessionId));
-    const sessionListResponse = this.saveSessions();
-    this.postMessage(sessionListResponse);
-    this.syncHostTitle();
-    info('对话历史已清空');
-
-    clearRetryableRequestsForSessionHelper(this.retryableRequests, clearPlan.clearRetryableSessionId);
-    for (const message of clearPlan.messages) {
-      this.postMessage(message);
-    }
+    executeClearCurrentSession(this.buildEngineHostApiDeps());
   }
 
   public openSessionLauncher(): void {
-    this.activeSessionId = '';
-    this.sessionLauncherVisible = true;
-    this.contextFiles = [];
-    const sessionListResponse = this.saveSessions();
-    this.host.postMessage(sessionListResponse);
-    this.syncActiveSessionTransientState();
-    this.host.postMessage({ type: 'setSessionLauncher', visible: true });
-    this.host.postMessage({ type: 'clearChat' });
-    this.host.postMessage({ type: 'setLoading', loading: false });
-    this.host.postMessage({ type: 'focusInput' });
-    this.syncHostTitle();
+    executeOpenSessionLauncher(this.buildEngineHostApiDeps());
   }
 
   // ==================== Webview 消息处理 ====================
@@ -1525,11 +642,11 @@ export class ChatEngine {
         getTurnWriteRounds: () => this.turnWriteRounds,
         getTurnWriteFiles: () => this.turnWriteFiles,
         onUndoAllCompleted: summaryId => {
-          this.expireUndoableSiblingSummaries(summaryId, this.activeSessionId);
+          this.uiBridge.expireUndoableSiblingSummaries(summaryId, this.activeSessionId);
         },
         onUndoSingleCompleted: (summaryId, remainingCount) => {
           if (remainingCount === 0) {
-            this.expireUndoableSiblingSummaries(summaryId, this.activeSessionId);
+            this.uiBridge.expireUndoableSiblingSummaries(summaryId, this.activeSessionId);
           }
         },
         postMessage: messageToPost => this.postMessage(messageToPost),
@@ -1564,20 +681,18 @@ export class ChatEngine {
     const initialSessionId = this.activeSessionId;
     const initialMode = this.currentMode;
     const initialContextFiles = this.contextFiles.slice();
-    info(`[锁诊断] handleUserMessage 入口: engineId=${this.engineId}, initialSessionId=${initialSessionId}, launcherVisible=${this.sessionLauncherVisible}`);
+
     if (this.hasRunningTask(initialSessionId)) {
       const message = '当前仍在生成，请先停止当前任务后再发送新的消息。';
       this.postSessionMessage(initialSessionId, { type: 'showError', message });
       return;
     }
 
-    if (initialSessionId && this.hasRunningTaskElsewhere(initialSessionId)) {
-      info(`[锁诊断] hasRunningTaskElsewhere 命中: engineId=${this.engineId}, sessionId=${initialSessionId}`);
-      const message = this.getCrossTabRunConflictMessage(initialSessionId);
+    if (initialSessionId && this.runtimeManager.hasRunningTaskElsewhere(initialSessionId)) {
+      const message = this.runtimeManager.getCrossTabRunConflictMessage(initialSessionId);
       this.postSessionMessage(initialSessionId, { type: 'showError', message });
       return;
     }
-    info(`[锁诊断] hasRunningTaskElsewhere 未命中: engineId=${this.engineId}, sessionId=${initialSessionId}, 全局锁快照=${JSON.stringify(this.store.runLocks)}`);
 
     if (this.sessionLauncherVisible || !getActiveSessionHelper(this.sessions, initialSessionId)) {
       const createSessionPlan = planCreateSession({
@@ -1589,7 +704,7 @@ export class ChatEngine {
       if (typeof createSessionPlan.nextSessionLauncherVisible === 'boolean') {
         this.sessionLauncherVisible = createSessionPlan.nextSessionLauncherVisible;
       }
-      const createdSessionRuntime = this.getSessionRuntimeState(this.activeSessionId);
+      const createdSessionRuntime = this.runtimeManager.getSessionRuntimeState(this.activeSessionId);
       createdSessionRuntime.currentMode = initialMode;
       createdSessionRuntime.contextFiles = initialContextFiles;
       const sessionListResponse = this.saveSessions();
@@ -1601,23 +716,9 @@ export class ChatEngine {
     }
 
     const sessionId = this.activeSessionId;
-    const sessionRuntime = this.getSessionRuntimeState(sessionId);
+    const sessionRuntime = this.runtimeManager.getSessionRuntimeState(sessionId);
     const sessionChatHistory = this.getChatHistoryForSession(sessionId) as ChatSessionHistoryMessage[];
     const sessionDisplayHistory = this.getDisplayHistoryForSession(sessionId);
-
-    const assistantMsgId = `assistant-${Date.now()}`;
-    info(`[锁诊断] tryAcquireSessionRunLock: engineId=${this.engineId}, sessionId=${sessionId}, runId=${assistantMsgId}`);
-    const runLockError = this.tryAcquireSessionRunLock(sessionId, assistantMsgId);
-    if (runLockError) {
-      info(`[锁诊断] tryAcquireSessionRunLock 被拒: engineId=${this.engineId}, sessionId=${sessionId}, error=${runLockError}`);
-      this.postSessionMessage(sessionId, { type: 'showError', message: runLockError });
-      return;
-    }
-    info(`[锁诊断] tryAcquireSessionRunLock 成功: engineId=${this.engineId}, sessionId=${sessionId}, 当前全局锁=${JSON.stringify(this.store.runLocks)}`);
-
-    sessionRuntime.turnWriteFiles = [];
-    sessionRuntime.turnWriteRounds = 0;
-    sessionRuntime.activeHistoryProcessSummary = resetActiveHistoryProcessSummaryHelper();
 
     const userMsgId = `user-${Date.now()}`;
     this.postSessionMessage(sessionId, {
@@ -1626,8 +727,6 @@ export class ChatEngine {
       content: text,
       messageId: userMsgId,
     });
-
-    this.postSessionMessage(sessionId, { type: 'setLoading', loading: true });
 
     const retryRequestId = requestOptions?.retryRequestId || createRetryRequestIdHelper();
     const requestMode = requestOptions?.requestMode || sessionRuntime.currentMode;
@@ -1641,152 +740,62 @@ export class ChatEngine {
     });
     const contextFilePaths = requestOptions?.userContentOverride ? [] : sessionRuntime.contextFiles.slice();
 
-    try {
-
-      const apiKey = await ensureApiKey();
-      if (!apiKey) {
-        this.resetOwnedRunState(sessionId);
-        this.postSessionMessage(sessionId, { type: 'setLoading', loading: false });
-        this.postSessionMessage(sessionId, {
-          type: 'showError',
-          message: '未配置 API Key，请在设置中配置 myAiPlugin.apiKey',
-          retryRequestId,
-        });
-        return;
-      }
-
-      const modelConfig = getModelConfig();
-
-      const preparedUserTurn = prepareUserTurnRequest({
-        text,
-        retryRequestId,
-        requestMode,
-        activeSessionId: sessionId,
-        images,
-        userContentOverride: requestOptions?.userContentOverride,
-        contextFilePaths,
-        chatHistory: sessionChatHistory,
-        displayHistory: sessionDisplayHistory,
-        retryableRequests: this.retryableRequests,
-        modelConfig,
-        allModels: getAllModels(),
-        createDisplayMessageId: createDisplayMessageIdHelper,
-      });
-
-      if (contextFilePaths.length > 0) {
+    await executeUserMessageFlow({
+      sessionId,
+      userText: text,
+      requestMode,
+      images,
+      chatHistory: sessionChatHistory,
+      displayHistory: sessionDisplayHistory,
+      contextFilePaths,
+      retryableRequests: this.retryableRequests,
+      userContentOverride: requestOptions?.userContentOverride,
+      retryRequestId,
+      setSessionActiveRunIdState: (sid, runId) => this.runtimeManager.setSessionActiveRunIdState(sid, runId),
+      setSessionAbortStream: (sid, fn) => {
+        this.runtimeManager.getSessionRuntimeState(sid).abortStream = fn;
+      },
+      setSessionStepSequence: (sid, seq) => {
+        this.runtimeManager.getSessionRuntimeState(sid).stepSequence = seq;
+      },
+      setSessionToolCallRound: (sid, round) => {
+        this.runtimeManager.getSessionRuntimeState(sid).toolCallRound = round;
+      },
+      setSessionToolCallsInProgress: (sid, value) => {
+        this.runtimeManager.getSessionRuntimeState(sid).toolCallsInProgress = value;
+      },
+      setSessionTurnWriteFiles: (sid, files) => {
+        this.runtimeManager.getSessionRuntimeState(sid).turnWriteFiles = files;
+      },
+      setSessionTurnWriteRounds: (sid, rounds) => {
+        this.runtimeManager.getSessionRuntimeState(sid).turnWriteRounds = rounds;
+      },
+      setSessionRecoverableWriteFailRounds: (sid, rounds) => {
+        this.runtimeManager.getSessionRuntimeState(sid).recoverableWriteFailRounds = rounds;
+      },
+      setSessionActiveHistoryProcessSummary: (sid, summary) => {
+        this.runtimeManager.getSessionRuntimeState(sid).activeHistoryProcessSummary = summary;
+      },
+      getSessionActiveRunId: sid => this.runtimeManager.getSessionRuntimeState(sid).activeRunId,
+      getSessionActiveHistoryProcessSummary: sid => this.runtimeManager.getSessionRuntimeState(sid).activeHistoryProcessSummary,
+      getSessionAbortStream: () => this.abortStream,
+      postSessionMessage: (sid, message) => this.postSessionMessage(sid, message),
+      postMessage: message => this.postMessage(message),
+      tryAcquireSessionRunLock: (sid, runId) => this.runtimeManager.tryAcquireSessionRunLock(sid, runId),
+      saveChatHistory: sid => this.saveChatHistory(sid),
+      clearContextFiles: () => {
         sessionRuntime.contextFiles = [];
         this.postMessage({ type: 'clearContextFiles' });
-      }
-
-      this.saveChatHistory(sessionId);
-
-      if (preparedUserTurn.visionWarning) {
-        this.postSessionMessage(sessionId, preparedUserTurn.visionWarning);
-      }
-      const finalUserContent = preparedUserTurn.finalUserContent;
-
-      this.postSessionMessage(sessionId, { type: 'clearImageAttachments' });
-
-      const requestExecution = prepareChatRequestExecution({
-        modelConfig,
-        requestMode,
-        remindedMessages: prepareRemindedMessages({
-          history: sessionChatHistory as ChatMessageParam[],
-          requestMode,
-          contextWindow: modelConfig.contextWindow,
-          maxTokens: getMaxTokens(),
-          excludeLastMessage: true,
-        }),
-        apiKey,
-        maxTokens: getMaxTokens(),
-        temperature: getTemperature(),
-        userContent: finalUserContent,
-        appendUserContentMode: 'always',
-        includeProjectContext: true,
-      });
-      info('首轮系统提示词模式', {
-        requestMode,
-        systemPromptModePreview: requestExecution.systemPrompt.slice(0, 120),
-      });
-      const messages = requestExecution.messages;
-      const apiConfig: ApiClientConfig = requestExecution.apiConfig;
-
-      beginAssistantStreamingRequest({
-        abortStream: sessionRuntime.abortStream,
-        runId: assistantMsgId,
-        runtime: {
-          setAbortStream: abortStream => {
-            sessionRuntime.abortStream = abortStream;
-          },
-          setToolCallsInProgress: toolCallsInProgress => {
-            sessionRuntime.toolCallsInProgress = toolCallsInProgress;
-          },
-          setActiveRunId: activeRunId => {
-            this.setSessionActiveRunIdState(sessionId, activeRunId);
-          },
-          setStepSequence: stepSequence => {
-            sessionRuntime.stepSequence = stepSequence;
-          },
-          setToolCallRound: toolCallRound => {
-            sessionRuntime.toolCallRound = toolCallRound;
-          },
-        },
-        clearWriteBackups: () => {
-          this.expireUndoableSummariesForWriteBackups(sessionRuntime.writeBackups, sessionId);
-          sessionRuntime.writeBackups.clear();
-        },
-      });
-
-      sessionRuntime.abortStream = startBasicAssistantStreamRequest({
-        apiConfig,
-        messages,
-        messageId: assistantMsgId,
-        chatHistory: sessionChatHistory,
-        displayHistory: sessionDisplayHistory,
-        runtime: {
-          getActiveRunId: () => this.getSessionRuntimeState(sessionId).activeRunId,
-          getActiveHistoryProcessSummary: () => this.getSessionRuntimeState(sessionId).activeHistoryProcessSummary,
-          setAbortStream: abortStream => {
-            this.getSessionRuntimeState(sessionId).abortStream = abortStream;
-          },
-          setActiveRunId: activeRunId => {
-            this.setSessionActiveRunIdState(sessionId, activeRunId);
-          },
-          setStepSequence: stepSequence => {
-            this.getSessionRuntimeState(sessionId).stepSequence = stepSequence;
-          },
-          setActiveHistoryProcessSummary: summary => {
-            this.getSessionRuntimeState(sessionId).activeHistoryProcessSummary = summary;
-          },
-        },
-        postMessage: message => this.postSessionMessage(sessionId, message),
-        saveChatHistory: () => this.saveChatHistory(sessionId),
-        createDisplayMessageId: createDisplayMessageIdHelper,
-        createHistoryProcessSummary,
-        retryRequestId,
-        onToolCalls: ({ fullContent, parsedToolCalls }) => {
-          this.handleToolCalls(sessionId, fullContent, apiConfig, assistantMsgId, requestMode, parsedToolCalls, retryRequestId)
-            .catch(err => error('工具调用处理异常:', err instanceof Error ? err.message : String(err)));
-        },
-        onDoneLog: (fullContent, thinkingElapsed) => {
-          info(`AI 回复完成，长度: ${fullContent.length}，耗时: ${thinkingElapsed}ms`);
-        },
-        onErrorLog: rawErrorMessage => {
-          error('AI API 调用失败:', rawErrorMessage);
-        },
-      });
-
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      this.resetOwnedRunState(sessionId);
-      error('启动用户消息请求失败:', errMsg);
-      this.postSessionMessage(sessionId, { type: 'setLoading', loading: false });
-      this.postSessionMessage(sessionId, {
-        type: 'showError',
-        message: `请求启动失败：${errMsg}`,
-        retryRequestId,
-      });
-    }
+      },
+      expireUndoableSummariesForWriteBackups: () => {
+        this.uiBridge.expireUndoableSummariesForWriteBackups(sessionRuntime.writeBackups, sessionId);
+      },
+      clearWriteBackups: () => {
+        sessionRuntime.writeBackups.clear();
+      },
+      handleToolCalls: (sid, fullContent, apiConfig, assistantMsgId, mode, parsedToolCalls, retryId) =>
+        this.handleToolCalls(sid, fullContent, apiConfig, assistantMsgId, mode, parsedToolCalls, retryId),
+    });
   }
 
   // ==================== 工具调用处理 ====================
@@ -1800,221 +809,72 @@ export class ChatEngine {
     parsedToolCalls?: ParsedToolCall[],
     retryRequestId?: string,
   ): Promise<void> {
-    const sessionRuntime = this.getSessionRuntimeState(sessionId);
-    const sessionChatHistory = this.getChatHistoryForSession(sessionId) as ChatSessionHistoryMessage[];
-    const sessionDisplayHistory = this.getDisplayHistoryForSession(sessionId);
-    const toolCallAnalysis = parsedToolCalls
-      ? { kind: 'tool-calls' as const, parsedToolCalls }
-      : analyzeAssistantResponseDisplay(aiResponse);
-    const toolCalls = toolCallAnalysis.kind === 'tool-calls'
-      ? toolCallAnalysis.parsedToolCalls
-      : [];
-    if (toolCalls.length === 0) {
-      if (sessionRuntime.activeRunId === reuseMsgId) {
-        this.postSessionMessage(sessionId, { type: 'setLoading', loading: false });
-        const completionState = consumeRunCompletionState({
-          activeHistoryProcessSummary: sessionRuntime.activeHistoryProcessSummary,
-          resetActiveHistoryProcessSummary: false,
-        });
-        this.setSessionActiveRunIdState(sessionId, completionState.nextActiveRunId);
-        sessionRuntime.stepSequence = completionState.nextStepSequence;
-        sessionRuntime.activeHistoryProcessSummary = completionState.nextActiveHistoryProcessSummary;
-      }
-      return;
-    }
+    const sessionRuntime = this.runtimeManager.getSessionRuntimeState(sessionId);
 
-    if (sessionRuntime.activeRunId !== reuseMsgId) {
-      if (sessionRuntime.activeRunId === null) {
-        this.postSessionMessage(sessionId, { type: 'setLoading', loading: false });
-        const completionState = consumeRunCompletionState({
-          activeHistoryProcessSummary: sessionRuntime.activeHistoryProcessSummary,
-        });
-        this.setSessionActiveRunIdState(sessionId, completionState.nextActiveRunId);
-        sessionRuntime.stepSequence = completionState.nextStepSequence;
-        sessionRuntime.activeHistoryProcessSummary = completionState.nextActiveHistoryProcessSummary;
-      }
-      return;
-    }
-
-    if (sessionRuntime.toolCallsInProgress) {
-      info('handleToolCalls 已在执行中，跳过重复调用');
-      return;
-    }
-    sessionRuntime.toolCallsInProgress = true;
-    sessionRuntime.toolCallRound += 1;
-    sessionRuntime.currentMode = requestMode;
-    if (sessionId === this.activeSessionId) {
-      this.postMessage({ type: 'updateMode', mode: requestMode });
-    }
-    info('handleToolCalls 模式快照', { reuseMsgId, requestMode, currentMode: sessionRuntime.currentMode, toolCallRound: sessionRuntime.toolCallRound });
-
-    try {
-
-      info(`检测到 ${toolCalls.length} 个工具调用，立即执行，当前轮次: ${sessionRuntime.toolCallRound}`);
-
-      const batchRound = await executeToolCallBatchRound({
-        toolCalls,
-        requestMode,
-        messageId: reuseMsgId,
-        apiConfig,
-        stepSequenceStart: sessionRuntime.stepSequence,
-        writeBackups: sessionRuntime.writeBackups,
-        turnWriteFiles: sessionRuntime.turnWriteFiles,
-        turnWriteRounds: sessionRuntime.turnWriteRounds,
-        activeHistoryProcessSummary: sessionRuntime.activeHistoryProcessSummary,
-        chatHistory: sessionChatHistory,
-        historyForFollowUp: sessionChatHistory as ChatMessageParam[],
-        postMessage: message => this.postSessionMessage(sessionId, message),
-        canContinue: () => this.getSessionRuntimeState(sessionId).activeRunId === reuseMsgId,
-        getActiveRunId: () => this.getSessionRuntimeState(sessionId).activeRunId,
-        saveChatHistory: () => this.saveChatHistory(sessionId),
-        createHistoryProcessSummary,
-        toDisplayPath: getDisplayPathHelper,
-        fileReadStateCache: this.fileReadStateCache,
-      });
-      sessionRuntime.stepSequence = batchRound.nextStepSequence;
-      sessionRuntime.turnWriteRounds = batchRound.nextTurnWriteRounds;
-      sessionRuntime.activeHistoryProcessSummary = batchRound.nextActiveHistoryProcessSummary;
-
-      if (batchRound.kind === 'halted') {
-        if (batchRound.shouldFinalizeStoppedRun) {
-          this.postSessionMessage(sessionId, { type: 'setLoading', loading: false });
-          const completionState = consumeRunCompletionState({
-            activeHistoryProcessSummary: sessionRuntime.activeHistoryProcessSummary,
-          });
-          this.setSessionActiveRunIdState(sessionId, completionState.nextActiveRunId);
-          sessionRuntime.stepSequence = completionState.nextStepSequence;
-          sessionRuntime.activeHistoryProcessSummary = completionState.nextActiveHistoryProcessSummary;
-        }
-        return;
-      }
-
-      info('续轮系统提示词模式', {
-        requestMode,
-        systemPromptModePreview: batchRound.followUpSystemPrompt.slice(0, 120),
-      });
-
-      sessionRuntime.abortStream = startBasicAssistantStreamRequest({
-        apiConfig: batchRound.followUpApiConfig,
-        messages: batchRound.followUpMessages,
-        messageId: reuseMsgId,
-        chatHistory: sessionChatHistory,
-        displayHistory: sessionDisplayHistory,
-        runtime: {
-          getActiveRunId: () => this.getSessionRuntimeState(sessionId).activeRunId,
-          getActiveHistoryProcessSummary: () => this.getSessionRuntimeState(sessionId).activeHistoryProcessSummary,
-          setAbortStream: abortStream => {
-            this.getSessionRuntimeState(sessionId).abortStream = abortStream;
-          },
-          setActiveRunId: activeRunId => {
-            this.setSessionActiveRunIdState(sessionId, activeRunId);
-          },
-          setStepSequence: stepSequence => {
-            this.getSessionRuntimeState(sessionId).stepSequence = stepSequence;
-          },
-          setActiveHistoryProcessSummary: summary => {
-            this.getSessionRuntimeState(sessionId).activeHistoryProcessSummary = summary;
-          },
-        },
-        postMessage: message => this.postSessionMessage(sessionId, message),
-        saveChatHistory: () => this.saveChatHistory(sessionId),
-        createDisplayMessageId: createDisplayMessageIdHelper,
-        createHistoryProcessSummary,
-        retryRequestId,
-        emitEmptyChunkOnFirstChunk: true,
-        toolCallTransitionStreamDoneBeforeUpdate: true,
-        processSummaryResolver: () => getClonedActiveHistoryProcessSummaryHelper(
-          this.getSessionRuntimeState(sessionId).activeHistoryProcessSummary,
-          cloneHistoryProcessSummary,
-        ),
-        onToolCalls: ({ fullContent, parsedToolCalls, displayContent, assistantTimestamp }) => {
-          if (this.getSessionRuntimeState(sessionId).toolCallRound < 200) {
-            this.handleToolCalls(sessionId, fullContent, batchRound.followUpApiConfig, reuseMsgId, requestMode, parsedToolCalls, retryRequestId)
-              .catch(err => error('续轮工具调用处理异常:', err instanceof Error ? err.message : String(err)));
-            return;
-          }
-
-          const finalProcessSummary = getClonedActiveHistoryProcessSummaryHelper(
-            this.getSessionRuntimeState(sessionId).activeHistoryProcessSummary,
-            cloneHistoryProcessSummary,
-          );
-          const rolledBack = this.rollbackPendingRegenerateState(reuseMsgId, sessionId);
-          if (!rolledBack) {
-            upsertAssistantDisplayHistoryMessage(sessionDisplayHistory, {
-              content: displayContent,
-              timestamp: assistantTimestamp,
-              processSummary: finalProcessSummary,
-              messageId: reuseMsgId,
-              createDisplayMessageId: createDisplayMessageIdHelper,
-            });
-            this.saveChatHistory(sessionId);
-            for (const message of buildAssistantDisplayCompletionMessages({
-              messageId: reuseMsgId,
-              displayContent,
-              processSummary: finalProcessSummary,
-            })) {
-              this.postSessionMessage(sessionId, message);
-            }
-          }
-
-          this.postSessionMessage(sessionId, {
-            type: 'showError',
-            message: '工具调用轮次已达上限（200 轮），已自动停止。请缩小任务范围后重试。',
-            retryRequestId,
-          });
-          this.postSessionMessage(sessionId, { type: 'setLoading', loading: false });
-          const completionState = consumeRunCompletionState({
-            activeHistoryProcessSummary: this.getSessionRuntimeState(sessionId).activeHistoryProcessSummary,
-          });
-          this.setSessionActiveRunIdState(sessionId, completionState.nextActiveRunId);
-          this.getSessionRuntimeState(sessionId).stepSequence = completionState.nextStepSequence;
-          this.getSessionRuntimeState(sessionId).activeHistoryProcessSummary = completionState.nextActiveHistoryProcessSummary;
-        },
-        onPlainCompleted: () => {
-          const latestRuntime = this.getSessionRuntimeState(sessionId);
-          if (latestRuntime.turnWriteRounds >= 2) {
-            this.postSessionMessage(sessionId, buildFinalTurnChangeSummaryResponse(reuseMsgId, latestRuntime.turnWriteFiles));
-          }
-          latestRuntime.pendingRegenerateState = clearPendingRegenerateStateHelper(latestRuntime.pendingRegenerateState, reuseMsgId);
-        },
-        onErrorBeforeNotify: () => {
-          const rolledBack = this.rollbackPendingRegenerateState(reuseMsgId, sessionId);
-          const finalProcessSummary = getClonedActiveHistoryProcessSummaryHelper(
-            this.getSessionRuntimeState(sessionId).activeHistoryProcessSummary,
-            cloneHistoryProcessSummary,
-          );
-          if (rolledBack) {
-            return;
-          }
-
-          upsertAssistantDisplayHistoryMessage(sessionDisplayHistory, {
-            content: '⚠️ 工具执行出错，请重试。',
-            timestamp: Date.now(),
-            processSummary: finalProcessSummary,
-            messageId: reuseMsgId,
-            createDisplayMessageId: createDisplayMessageIdHelper,
-          });
-          this.saveChatHistory(sessionId);
-          for (const message of buildAssistantDisplayCompletionMessages({
-            messageId: reuseMsgId,
-            displayContent: '⚠️ 工具执行出错，请重试。',
-            processSummary: finalProcessSummary,
-            includeUpdateMessage: true,
-          })) {
-            this.postSessionMessage(sessionId, message);
-          }
-        },
-        onDoneLog: fullContent => {
-          info(`续轮回复完成，长度: ${fullContent.length}`);
-        },
-        onErrorLog: errorMessage => {
-          error('续轮 AI 调用失败:', errorMessage);
-        },
-      });
-
-    } finally {
-      this.getSessionRuntimeState(sessionId).toolCallsInProgress = false;
-    }
+    await executeToolCallsFlow({
+      sessionId,
+      aiResponse,
+      apiConfig,
+      reuseMsgId,
+      requestMode,
+      parsedToolCalls,
+      retryRequestId,
+      chatHistory: this.getChatHistoryForSession(sessionId) as ChatSessionHistoryMessage[],
+      displayHistory: this.getDisplayHistoryForSession(sessionId),
+      getSessionActiveRunId: sid => this.runtimeManager.getSessionRuntimeState(sid).activeRunId,
+      getSessionActiveHistoryProcessSummary: sid => this.runtimeManager.getSessionRuntimeState(sid).activeHistoryProcessSummary,
+      getSessionToolCallsInProgress: sid => this.runtimeManager.getSessionRuntimeState(sid).toolCallsInProgress,
+      getSessionToolCallRound: sid => this.runtimeManager.getSessionRuntimeState(sid).toolCallRound,
+      getSessionStepSequence: sid => this.runtimeManager.getSessionRuntimeState(sid).stepSequence,
+      getSessionTurnWriteFiles: sid => this.runtimeManager.getSessionRuntimeState(sid).turnWriteFiles,
+      getSessionTurnWriteRounds: sid => this.runtimeManager.getSessionRuntimeState(sid).turnWriteRounds,
+      getSessionRecoverableWriteFailRounds: sid => this.runtimeManager.getSessionRuntimeState(sid).recoverableWriteFailRounds,
+      getSessionPendingRegenerateState: sid => this.runtimeManager.getSessionRuntimeState(sid).pendingRegenerateState,
+      getSessionAbortStream: sid => this.runtimeManager.getSessionRuntimeState(sid).abortStream,
+      setSessionActiveRunIdState: (sid, runId) => this.runtimeManager.setSessionActiveRunIdState(sid, runId),
+      setSessionStepSequence: (sid, seq) => {
+        this.runtimeManager.getSessionRuntimeState(sid).stepSequence = seq;
+      },
+      setSessionToolCallRound: (sid, round) => {
+        this.runtimeManager.getSessionRuntimeState(sid).toolCallRound = round;
+      },
+      setSessionToolCallsInProgress: (sid, value) => {
+        this.runtimeManager.getSessionRuntimeState(sid).toolCallsInProgress = value;
+      },
+      setSessionActiveHistoryProcessSummary: (sid, summary) => {
+        this.runtimeManager.getSessionRuntimeState(sid).activeHistoryProcessSummary = summary;
+      },
+      setSessionAbortStream: (sid, fn) => {
+        this.runtimeManager.getSessionRuntimeState(sid).abortStream = fn;
+      },
+      setSessionTurnWriteRounds: (sid, rounds) => {
+        this.runtimeManager.getSessionRuntimeState(sid).turnWriteRounds = rounds;
+      },
+      setSessionRecoverableWriteFailRounds: (sid, rounds) => {
+        this.runtimeManager.getSessionRuntimeState(sid).recoverableWriteFailRounds = rounds;
+      },
+      setSessionPendingRegenerateState: (sid, state) => {
+        this.runtimeManager.getSessionRuntimeState(sid).pendingRegenerateState = state;
+      },
+      setSessionCurrentMode: (sid, mode) => {
+        this.runtimeManager.getSessionRuntimeState(sid).currentMode = mode;
+      },
+      postSessionMessage: (sid, message) => this.postSessionMessage(sid, message),
+      postMessage: message => this.postMessage(message),
+      saveChatHistory: sid => this.saveChatHistory(sid),
+      isActiveSession: sid => sid === this.activeSessionId,
+      rollbackPendingRegenerateState: (runId, sid) => this.rollbackPendingRegenerateState(runId, sid),
+      expireUndoableSummariesForWriteBackups: () => {
+        this.uiBridge.expireUndoableSummariesForWriteBackups(sessionRuntime.writeBackups, sessionId);
+      },
+      clearWriteBackups: () => {
+        sessionRuntime.writeBackups.clear();
+      },
+      getWriteBackups: sid => this.runtimeManager.getSessionRuntimeState(sid).writeBackups,
+      fileReadStateCache: this.fileReadStateCache,
+      handleToolCalls: (sid, fullContent, config, msgId, mode, calls, retryId) =>
+        this.handleToolCalls(sid, fullContent, config, msgId, mode, calls, retryId),
+    });
   }
 
   // ==================== 重新生成 ====================
@@ -2027,8 +887,8 @@ export class ChatEngine {
       return;
     }
 
-    if (sessionId && this.hasRunningTaskElsewhere(sessionId)) {
-      const message = this.getCrossTabRunConflictMessage(sessionId);
+    if (sessionId && this.runtimeManager.hasRunningTaskElsewhere(sessionId)) {
+      const message = this.runtimeManager.getCrossTabRunConflictMessage(sessionId);
       this.postSessionMessage(sessionId, { type: 'showError', message });
       return;
     }
@@ -2037,13 +897,13 @@ export class ChatEngine {
     const prepareResult = prepareRegenerateRequest({
       history,
       displayHistory: this.getDisplayHistoryForSession(sessionId),
-      uiTranscript: this.cloneUiTranscript(this.getUiTranscriptForSession(sessionId)),
+      uiTranscript: this.uiBridge.cloneUiTranscript(this.getUiTranscriptForSession(sessionId)),
       targetAssistantMessageId,
       isToolFeedbackMessage,
       getDisplayHistoryMessageById,
       getLastAssistantDisplayHistoryMessage,
       cloneDisplayHistoryMessages,
-      cloneUiTranscript: uiTranscript => this.cloneUiTranscript(uiTranscript),
+      cloneUiTranscript: uiTranscript => this.uiBridge.cloneUiTranscript(uiTranscript),
       cloneHistoryProcessSummary,
     });
 
@@ -2052,11 +912,11 @@ export class ChatEngine {
       return;
     }
 
-    this.getSessionRuntimeState(sessionId).pendingRegenerateState = prepareResult.pendingState;
+    this.runtimeManager.getSessionRuntimeState(sessionId).pendingRegenerateState = prepareResult.pendingState;
     this.setChatHistoryForSession(sessionId, prepareResult.trimmedHistory as ChatMessageParam[]);
 
     info('重新生成回复，参考用户消息长度:', prepareResult.userText.length);
-    await this.regenerateResponse(sessionId, prepareResult.userText, this.getSessionRuntimeState(sessionId).currentMode, targetAssistantMessageId);
+    await this.regenerateResponse(sessionId, prepareResult.userText, this.runtimeManager.getSessionRuntimeState(sessionId).currentMode, targetAssistantMessageId);
   }
 
   private async regenerateResponse(
@@ -2065,7 +925,7 @@ export class ChatEngine {
     requestMode: WorkMode,
     reuseMessageId?: string,
   ): Promise<void> {
-    const sessionRuntime = this.getSessionRuntimeState(sessionId);
+    const sessionRuntime = this.runtimeManager.getSessionRuntimeState(sessionId);
     const sessionChatHistory = this.getChatHistoryForSession(sessionId) as ChatSessionHistoryMessage[];
     const sessionDisplayHistory = this.getDisplayHistoryForSession(sessionId);
     sessionRuntime.turnWriteFiles = [];
@@ -2075,7 +935,7 @@ export class ChatEngine {
 
     const regenMsgId = reuseMessageId || `ai-regen-${Date.now()}`;
     const retryRequestId = createRetryRequestIdHelper();
-    const runLockError = this.tryAcquireSessionRunLock(sessionId, regenMsgId);
+    const runLockError = this.runtimeManager.tryAcquireSessionRunLock(sessionId, regenMsgId);
     if (runLockError) {
       this.rollbackPendingRegenerateState(regenMsgId, sessionId);
       this.postSessionMessage(sessionId, { type: 'setLoading', loading: false });
@@ -2087,7 +947,7 @@ export class ChatEngine {
 
       const apiKey = await ensureApiKey();
       if (!apiKey) {
-        this.resetOwnedRunState(sessionId);
+        this.runtimeManager.resetOwnedRunState(sessionId);
         this.postSessionMessage(sessionId, { type: 'setLoading', loading: false });
         this.rollbackPendingRegenerateState(regenMsgId, sessionId);
         this.postSessionMessage(sessionId, { type: 'showError', message: '未配置 API Key，请在设置中配置 myAiPlugin.apiKey', retryRequestId });
@@ -2125,7 +985,7 @@ export class ChatEngine {
             sessionRuntime.toolCallsInProgress = toolCallsInProgress;
           },
           setActiveRunId: activeRunId => {
-            this.setSessionActiveRunIdState(sessionId, activeRunId);
+            this.runtimeManager.setSessionActiveRunIdState(sessionId, activeRunId);
           },
           setStepSequence: stepSequence => {
             sessionRuntime.stepSequence = stepSequence;
@@ -2135,7 +995,7 @@ export class ChatEngine {
           },
         },
         clearWriteBackups: () => {
-          this.expireUndoableSummariesForWriteBackups(sessionRuntime.writeBackups, sessionId);
+          this.uiBridge.expireUndoableSummariesForWriteBackups(sessionRuntime.writeBackups, sessionId);
           sessionRuntime.writeBackups.clear();
         },
       });
@@ -2153,19 +1013,19 @@ export class ChatEngine {
         chatHistory: sessionChatHistory,
         displayHistory: sessionDisplayHistory,
         runtime: {
-          getActiveRunId: () => this.getSessionRuntimeState(sessionId).activeRunId,
-          getActiveHistoryProcessSummary: () => this.getSessionRuntimeState(sessionId).activeHistoryProcessSummary,
+          getActiveRunId: () => this.runtimeManager.getSessionRuntimeState(sessionId).activeRunId,
+          getActiveHistoryProcessSummary: () => this.runtimeManager.getSessionRuntimeState(sessionId).activeHistoryProcessSummary,
           setAbortStream: abortStream => {
-            this.getSessionRuntimeState(sessionId).abortStream = abortStream;
+            this.runtimeManager.getSessionRuntimeState(sessionId).abortStream = abortStream;
           },
           setActiveRunId: activeRunId => {
-            this.setSessionActiveRunIdState(sessionId, activeRunId);
+            this.runtimeManager.setSessionActiveRunIdState(sessionId, activeRunId);
           },
           setStepSequence: stepSequence => {
-            this.getSessionRuntimeState(sessionId).stepSequence = stepSequence;
+            this.runtimeManager.getSessionRuntimeState(sessionId).stepSequence = stepSequence;
           },
           setActiveHistoryProcessSummary: summary => {
-            this.getSessionRuntimeState(sessionId).activeHistoryProcessSummary = summary;
+            this.runtimeManager.getSessionRuntimeState(sessionId).activeHistoryProcessSummary = summary;
           },
         },
         postMessage: message => this.postSessionMessage(sessionId, message),
@@ -2190,7 +1050,7 @@ export class ChatEngine {
 
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      this.resetOwnedRunState(sessionId);
+      this.runtimeManager.resetOwnedRunState(sessionId);
       this.rollbackPendingRegenerateState(regenMsgId, sessionId);
       this.postSessionMessage(sessionId, { type: 'setLoading', loading: false });
       this.postSessionMessage(sessionId, {
@@ -2225,7 +1085,7 @@ export class ChatEngine {
     }
     this.pendingRegenerateState = resetResult.nextPendingRegenerateState;
     this.activeHistoryProcessSummary = resetResult.nextActiveHistoryProcessSummary;
-    this.resetUiRuntimeState();
+    this.uiBridge.resetUiRuntimeState();
 
     if (resetResult.shouldClearContextFiles) {
       this.contextFiles = resetResult.nextContextFiles;
@@ -2237,13 +1097,13 @@ export class ChatEngine {
 
   private rollbackPendingRegenerateState(runId: string, sessionId: string = this.activeSessionId): boolean {
     const rollbackResult = rollbackPendingRegenerateStateHelper({
-      pendingState: this.getSessionRuntimeState(sessionId).pendingRegenerateState,
+      pendingState: this.runtimeManager.getSessionRuntimeState(sessionId).pendingRegenerateState,
       runId,
       cloneDisplayHistoryMessages,
-      cloneUiTranscript: uiTranscript => this.cloneUiTranscript(uiTranscript),
+      cloneUiTranscript: uiTranscript => this.uiBridge.cloneUiTranscript(uiTranscript),
       cloneHistoryProcessSummary,
     });
-    this.getSessionRuntimeState(sessionId).pendingRegenerateState = rollbackResult.nextPendingState;
+    this.runtimeManager.getSessionRuntimeState(sessionId).pendingRegenerateState = rollbackResult.nextPendingState;
 
     if (!rollbackResult.rolledBack) {
       return false;
@@ -2252,13 +1112,13 @@ export class ChatEngine {
     this.setChatHistoryForSession(sessionId, rollbackResult.restoredHistory as ChatMessageParam[]);
     this.setDisplayHistoryForSession(sessionId, rollbackResult.restoredDisplayHistory);
     this.setUiTranscriptForSession(sessionId, rollbackResult.restoredUiTranscript);
-    this.rebuildUiMessageIndexes(sessionId);
+    this.uiBridge.rebuildUiMessageIndexes(sessionId);
     this.saveChatHistory(sessionId);
 
     if (rollbackResult.restoredUiTranscript.length > 0) {
       if (sessionId === this.activeSessionId) {
         this.postMessage({ type: 'clearChat' });
-        this.restoreUiTranscriptToWebview(sessionId);
+        this.uiBridge.restoreUiTranscriptToWebview(sessionId);
       }
       return true;
     }
@@ -2312,8 +1172,8 @@ export class ChatEngine {
   }
 
   private switchSession(sessionId: string): void {
-    info(`[锁诊断] switchSession: engineId=${this.engineId}, targetSessionId=${sessionId}, 全局锁快照=${JSON.stringify(this.store.runLocks)}`);
-    if (this.isSessionRunningInOtherTab(sessionId)) {
+
+    if (this.runtimeManager.isSessionRunningInOtherTab(sessionId)) {
       this.postMessage({
         type: 'showError',
         message: '目标会话正在其他聊天 Tab 中生成，请先停止当前任务后再切换。',
@@ -2359,7 +1219,7 @@ export class ChatEngine {
     if (hasUiTranscript) {
       this.host.postMessage({ type: 'clearChat' });
       this.host.postMessage({ type: 'setSessionLauncher', visible: false });
-      this.restoreUiTranscriptToWebview(this.activeSessionId);
+      this.uiBridge.restoreUiTranscriptToWebview(this.activeSessionId);
     } else {
       for (const message of switchPlan.messages) {
         this.host.postMessage(message);
@@ -2380,7 +1240,7 @@ export class ChatEngine {
       return;
     }
 
-    if (this.isSessionRunningInOtherTab(sessionId)) {
+    if (this.runtimeManager.isSessionRunningInOtherTab(sessionId)) {
       this.postMessage({
         type: 'showError',
         message: '目标会话正在其他聊天 Tab 中生成，请先停止当前任务后再删除。',
@@ -2408,7 +1268,7 @@ export class ChatEngine {
     }
 
     clearRetryableRequestsForSessionHelper(this.retryableRequests, deletePlan.clearRetryableSessionId);
-    this.clearSessionRuntimeState(deletePlan.deletedSessionId);
+    this.runtimeManager.clearSessionRuntimeState(deletePlan.deletedSessionId);
     this.sessions = deletePlan.nextSessions;
     if (deletePlan.shouldResetSessionRuntime) {
       this.resetSessionScopedRuntimeState();

@@ -6,6 +6,7 @@
  */
 import * as vscode from 'vscode';
 import * as fs from 'fs';
+import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { info, error } from '../logger';
 
@@ -40,6 +41,23 @@ const SKIP_EXTENSIONS = new Set([
 
 /** 单个文件返回给模型的最大字符数，超出部分截断 */
 const MAX_CONTENT_CHARS = 8192;
+
+/**
+ * 为文件内容添加行号。
+ * 格式：右对齐行号 + tab + 代码行，例如 "  1\timport { foo } from 'bar';"
+ * 行号列宽根据总行数自动计算（如 100 行文件用 3 位列宽）。
+ *
+ * @param content 原始文件内容（不含行号）
+ * @returns 带行号的内容
+ */
+export function addLineNumbers(content: string): string {
+  const lines = content.split('\n');
+  const totalLines = lines.length;
+  const width = String(totalLines).length;
+  return lines
+    .map((line, i) => `${String(i + 1).padStart(width)}\t${line}`)
+    .join('\n');
+}
 
 /**
  * 获取工作区根目录路径
@@ -240,6 +258,66 @@ function tryWhitespaceNormalizedLineMatch(
   return applyPreferredLineEnding(updatedLines.join('\n'), lineEnding);
 }
 
+/**
+ * 模糊匹配：在文件内容中找到与 old 最接近的连续行片段。
+ * 当三级容错匹配全部失败时，用于自动降级为行号替换。
+ *
+ * 算法：滑动窗口（窗口大小 = old 行数），逐窗口计算 trimStart 后的行匹配率，
+ * 返回匹配率最高的窗口。只有匹配率 > 40% 才认为找到了。
+ *
+ * @param fileContent 文件当前内容
+ * @param oldContent 模型给出的“要替换的内容”（可能不准确）
+ * @returns 最接近的匹配信息，或 null（未找到足够接近的内容）
+ */
+export function findClosestMatch(
+  fileContent: string,
+  oldContent: string,
+): { startLine: number; endLine: number; matchRate: number } | null {
+  const fileLines = normalizeLineEndings(fileContent).split('\n');
+  let oldLines = normalizeLineEndings(oldContent).split('\n');
+
+  // 去掉 old 首尾空行
+  while (oldLines.length > 0 && oldLines[oldLines.length - 1].trim() === '') {
+    oldLines.pop();
+  }
+  while (oldLines.length > 0 && oldLines[0].trim() === '') {
+    oldLines.shift();
+  }
+
+  if (oldLines.length === 0 || oldLines.length > fileLines.length) {
+    return null;
+  }
+
+  const trimmedOldLines = oldLines.map(l => l.trimStart());
+  const windowSize = trimmedOldLines.length;
+  let bestStart = -1;
+  let bestScore = 0;
+
+  for (let i = 0; i <= fileLines.length - windowSize; i++) {
+    let matchCount = 0;
+    for (let j = 0; j < windowSize; j++) {
+      if (fileLines[i + j].trimStart() === trimmedOldLines[j]) {
+        matchCount += 1;
+      }
+    }
+    if (matchCount > bestScore) {
+      bestScore = matchCount;
+      bestStart = i;
+    }
+  }
+
+  const matchRate = bestScore / windowSize;
+  if (matchRate < 0.4 || bestStart < 0) {
+    return null;
+  }
+
+  return {
+    startLine: bestStart + 1,       // 1-indexed
+    endLine: bestStart + windowSize, // 1-indexed, inclusive
+    matchRate,
+  };
+}
+
 export function buildEditedContent(
   fileContent: string,
   oldContent: string,
@@ -390,11 +468,13 @@ export async function readFile(filePath: string): Promise<FileOpResult> {
   }
 
   try {
-    if (!fs.existsSync(safePath)) {
+    try {
+      await fsp.access(safePath);
+    } catch {
       return { success: false, content: `文件不存在: ${safePath}` };
     }
 
-    const stat = fs.statSync(safePath);
+    const stat = await fsp.stat(safePath);
     // 限制读取大小，防止读取超大文件导致内存溢出
     const MAX_SIZE = 512 * 1024; // 512KB
     if (stat.size > MAX_SIZE) {
@@ -414,7 +494,7 @@ export async function readFile(filePath: string): Promise<FileOpResult> {
       return { success: true, content: `[已跳过] ${fileName} 是二进制或编译产物文件` };
     }
 
-    const content = fs.readFileSync(safePath, 'utf-8');
+    const content = await fsp.readFile(safePath, 'utf-8');
 
     // 超长文件截断，避免单个文件占用过多模型上下文
     if (content.length > MAX_CONTENT_CHARS) {
@@ -448,11 +528,9 @@ export async function writeFile(filePath: string, content: string): Promise<File
   try {
     // 自动创建父目录
     const dir = path.dirname(safePath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
+    await fsp.mkdir(dir, { recursive: true });
 
-    fs.writeFileSync(safePath, content, 'utf-8');
+    await fsp.writeFile(safePath, content, 'utf-8');
     info(`写入文件: ${safePath} (${content.length} 字符)`);
     return { success: true, content: `文件已写入: ${safePath}` };
   } catch (err) {
@@ -482,11 +560,13 @@ export async function editFile(
   }
 
   try {
-    if (!fs.existsSync(safePath)) {
+    try {
+      await fsp.access(safePath);
+    } catch {
       return { success: false, content: `文件不存在: ${safePath}` };
     }
 
-    const fileContent = fs.readFileSync(safePath, 'utf-8');
+    const fileContent = await fsp.readFile(safePath, 'utf-8');
 
     // 行号定位模式：用 start_line/end_line 直接替换指定行
     if (options?.startLine !== undefined) {
@@ -494,7 +574,7 @@ export async function editFile(
       if (!lineResult.success) {
         return { success: false, content: `${lineResult.message}: ${safePath}` };
       }
-      fs.writeFileSync(safePath, lineResult.updatedContent, 'utf-8');
+      await fsp.writeFile(safePath, lineResult.updatedContent, 'utf-8');
       const rangeDesc = options.endLine ? `L${options.startLine}-L${options.endLine}` : `L${options.startLine}`;
       info(`编辑文件(行号模式): ${safePath} (${rangeDesc})`);
       return { success: true, content: `文件已编辑(行号模式 ${rangeDesc}): ${safePath}` };
@@ -508,6 +588,26 @@ export async function editFile(
       }
 
       if (editResult.reason === 'not-found') {
+        // 自动降级：用模糊匹配找到最接近的位置，转换为行号模式完成编辑
+        const closest = findClosestMatch(fileContent, oldContent);
+        if (closest) {
+          const lineResult = buildLineBasedEditContent(
+            fileContent,
+            closest.startLine,
+            closest.endLine,
+            newContent,
+          );
+          if (lineResult.success) {
+            await fsp.writeFile(safePath, lineResult.updatedContent, 'utf-8');
+            const pct = Math.round(closest.matchRate * 100);
+            const rangeDesc = `L${closest.startLine}-L${closest.endLine}`;
+            info(`编辑文件(自动降级行号模式 ${rangeDesc}, 匹配率 ${pct}%): ${safePath}`);
+            return {
+              success: true,
+              content: `文件已编辑(自动转换为行号模式 ${rangeDesc}，匹配率 ${pct}%): ${safePath}`,
+            };
+          }
+        }
         return { success: false, content: `未找到要替换的内容，文件未修改: ${safePath}` };
       }
 
@@ -520,7 +620,7 @@ export async function editFile(
     const replaceInfo = editResult.replacedCount
       ? `，共替换 ${editResult.replacedCount} 处`
       : '';
-    fs.writeFileSync(safePath, editResult.updatedContent, 'utf-8');
+    await fsp.writeFile(safePath, editResult.updatedContent, 'utf-8');
     info(`编辑文件: ${safePath} (替换 ${oldContent.length} → ${newContent.length} 字符${editResult.usedNormalizedMatch ? '，已自动兼容换行差异' : ''}${replaceInfo})`);
     const resultMessage = editResult.replacedCount
       ? `文件已编辑: ${safePath}（已替换全部 ${editResult.replacedCount} 处匹配）`
@@ -543,16 +643,18 @@ export async function listDir(dirPath: string): Promise<FileOpResult> {
   }
 
   try {
-    if (!fs.existsSync(safePath)) {
+    try {
+      await fsp.access(safePath);
+    } catch {
       return { success: false, content: `目录不存在: ${safePath}` };
     }
 
-    const stat = fs.statSync(safePath);
+    const stat = await fsp.stat(safePath);
     if (!stat.isDirectory()) {
       return { success: false, content: `不是目录: ${safePath}` };
     }
 
-    const entries = fs.readdirSync(safePath, { withFileTypes: true });
+    const entries = await fsp.readdir(safePath, { withFileTypes: true });
 
     // 格式化输出：目录用 📁 前缀，文件用 📄 前缀
     const lines = entries.map(entry => {

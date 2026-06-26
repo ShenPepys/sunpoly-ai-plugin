@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 会话数据共享存储
  *
  * 所有 ChatEngine 实例共享同一个 sessions 池，
@@ -12,7 +12,7 @@ import {
   loadSessionsState,
   sortSessionsByUpdatedAt,
   buildUpdateSessionsResponse,
-} from './ChatViewProvider_f_sessions';
+} from './ChatViewProvider_sessions';
 
 /** 首次加载所需的回调（用于旧数据迁移和 displayHistory 初始化） */
 export type SessionStoreLoadCallbacks = {

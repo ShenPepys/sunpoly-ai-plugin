@@ -1,11 +1,41 @@
-import * as fs from 'fs';
+﻿import * as fs from 'fs';
 import * as vscode from 'vscode';
-import { error, info } from '../logger';
-import { executeToolCalls, readFile, validateFileReadState, buildReadFileStubIfUnchanged, isToolReadOnly, getToolIcon, getToolStepText } from '../tools';
-import type { ParsedToolCall, ToolCallType, ToolExecutionResult } from '../tools';
-import type { FileReadStateCache } from '../tools';
-import { collectDiagnosticsAfterEdit } from '../tools/lspDiagnostics';
-import { buildEditedContent, buildLineBasedEditContent, resolveAndValidatePath } from '../tools/fileOps';
+import { info } from '../../logger';
+import { buildDiffOperationTypes, splitContentToLines } from './diff';
+
+// Undo/Backup system — extracted to u_undo
+export {
+  isChangeSummaryFileUndoable,
+  collectWriteBackupMessageIds,
+  executeUndoAllWriteBackupsWithFeedback,
+  executeUndoSingleWriteBackupWithFeedback,
+  executeUndoAllWriteBackupsFlow,
+  executeUndoSingleWriteBackupFlow,
+  undoAllWriteBackups,
+  undoSingleWriteBackup,
+  buildUndoAllStartLogMessage,
+  buildUndoAllChangeSummaryResponse,
+  buildUndoAllResultFeedback,
+  buildUndoSingleChangeSummaryResponse,
+  buildExpiredChangeSummaryResponse,
+} from './undo';
+export type {
+  UndoAllWriteBackupsResult,
+  UndoAllWriteBackupsFeedback,
+  UndoSingleWriteBackupResult,
+  UndoExecutionNotification,
+  UndoAllWriteBackupsExecution,
+  UndoSingleWriteBackupExecution,
+} from './undo';
+
+// Diff algorithm — extracted to diff.ts
+export { splitContentToLines, buildDiffOperationTypes } from './diff';
+import { executeToolCalls, readFile, validateFileReadState, buildReadFileStubIfUnchanged, isToolReadOnly, getToolIcon, getToolStepText, addLineNumbers } from '../../tools';
+import type { ParsedToolCall, ToolCallType, ToolExecutionResult } from '../../tools';
+import type { FileReadStateCache } from '../../tools';
+import { extractScriptBlock } from '../../tools/astAdapter_vue';
+import { collectDiagnosticsAfterEdit } from '../../tools/lspDiagnostics';
+import { buildEditedContent, buildLineBasedEditContent, resolveAndValidatePath, findClosestMatch } from '../../tools/fileOps';
 import type {
   AddStepResponse,
   ShowChangeSummaryResponse,
@@ -13,7 +43,7 @@ import type {
   UpdateChangeSummaryResponse,
   UpdateStepResponse,
   WorkMode,
-} from './messageTypes';
+} from '../messageTypes';
 
 export type ChangeSummaryFile = {
   path: string;
@@ -42,68 +72,11 @@ export type PreviewBuildResult = {
   issueText?: string;
 };
 
-export type UndoAllWriteBackupsResult = {
-  undoneCount: number;
-  failCount: number;
-  restoredFiles: string[];
-  deletedFiles: string[];
-};
-
-export type UndoAllWriteBackupsFeedback = {
-  restoredLogMessage?: string;
-  deletedLogMessage?: string;
-  notificationMessage: string;
-  notificationKind: 'info' | 'error';
-};
-
-export type UndoSingleWriteBackupResult =
-  | { status: 'missing' }
-  | { status: 'failed'; errorMessage: string }
-  | { status: 'success'; remainingCount: number };
-
-export type UndoExecutionNotification = {
-  kind: 'info' | 'error' | 'warning';
-  message: string;
-};
-
-export type UndoAllWriteBackupsExecution =
-  | {
-    status: 'empty';
-    logMessages: string[];
-    notification: UndoExecutionNotification;
-  }
-  | {
-    status: 'completed';
-    logMessages: string[];
-    notification: UndoExecutionNotification;
-    summaryResponse: UpdateChangeSummaryResponse;
-  };
-
-export type UndoSingleWriteBackupExecution =
-  | {
-    status: 'missing';
-    logMessages: string[];
-    notification: UndoExecutionNotification;
-  }
-  | {
-    status: 'failed';
-    logMessages: string[];
-    notification: UndoExecutionNotification;
-  }
-  | {
-    status: 'success';
-    logMessages: string[];
-    notification?: UndoExecutionNotification;
-    remainingCount: number;
-    summaryResponse: UpdateChangeSummaryResponse;
-  };
-
 export type ExecuteWriteToolCallResult = {
   filePath: string;
   singleResult: ToolExecutionResult;
   diffResponse?: ShowDiffResponse;
   changeSummaryEntry?: ChangeSummaryFile;
-  /** AST 多文件修改（如 rename_symbol）产生的额外 diff 和汇总条目 */
   additionalDiffs?: ShowDiffResponse[];
   additionalChangeSummaryEntries?: ChangeSummaryFile[];
 };
@@ -125,12 +98,16 @@ export type ExecuteToolCallBatchResult = {
   executedToolCalls: ParsedToolCall[];
   deferredToolCalls: ParsedToolCall[];
   readOnlyBatchLimited: boolean;
+  sameFileToolCallLimited: boolean;
+  duplicateReadOnlyToolCallsSkippedCount: number;
 };
 
 type ToolCallExecutionPlan = {
   executableToolCalls: ParsedToolCall[];
   deferredToolCalls: ParsedToolCall[];
   readOnlyBatchLimited: boolean;
+  sameFileToolCallLimited: boolean;
+  duplicateReadOnlyToolCallsSkippedCount: number;
 };
 
 const MAX_READ_ONLY_TOOL_CALLS_PER_ROUND = 3;
@@ -148,27 +125,6 @@ type BuildAppliedChangeSummaryResponsesOptions = {
   writeSuccessCount: number;
   writeFailCount: number;
 };
-
-export function isChangeSummaryFileUndoable(
-  file: Pick<ChangeSummaryFile, 'status' | 'undoable' | 'issueText'>,
-): boolean {
-  if (typeof file.undoable === 'boolean') {
-    return file.undoable;
-  }
-
-  const isWriteFile = file.status === 'created' || file.status === 'modified';
-  return isWriteFile && !file.issueText;
-}
-
-export function collectWriteBackupMessageIds(writeBackups: Map<string, WriteBackupEntry>): string[] {
-  const messageIds = new Set<string>();
-  for (const backup of writeBackups.values()) {
-    if (backup.messageId) {
-      messageIds.add(backup.messageId);
-    }
-  }
-  return [...messageIds];
-}
 
 export function readFileTextSafely(filePath: string, fallback = ''): string {
   try {
@@ -191,7 +147,7 @@ export function upsertChangeSummaryFile(targetFiles: ChangeSummaryFile[], entry:
 }
 
 export function getToolStepDescription(tc: ParsedToolCall): string {
-  const fileName = tc.path.split(/[/\\]/).pop() || tc.path;
+  const fileName = tc.path!.split(/[/\\]/).pop() || tc.path!;
   return getToolStepText(tc.type, fileName);
 }
 
@@ -221,28 +177,132 @@ function isReadOnlyToolCall(toolCall: ParsedToolCall): boolean {
   return isToolReadOnly(toolCall.type);
 }
 
-function buildToolCallExecutionPlan(toolCalls: ParsedToolCall[]): ToolCallExecutionPlan {
-  if (toolCalls.length <= MAX_READ_ONLY_TOOL_CALLS_PER_ROUND) {
+function isWriteToolCall(toolCall: ParsedToolCall): boolean {
+  return toolCall.type === 'write_file' || toolCall.type === 'edit_file' || toolCall.type === 'ast_edit';
+}
+
+function normalizeToolCallPath(filePath: string): string {
+  const resolvedPath = resolveAndValidatePath(filePath) || filePath;
+  const normalizedPath = resolvedPath.replace(/\\/g, '/');
+  return process.platform === 'win32' ? normalizedPath.toLowerCase() : normalizedPath;
+}
+
+function getReadOnlyToolCallDedupKey(toolCall: ParsedToolCall): string | null {
+  if (toolCall.type !== 'read_file' && toolCall.type !== 'list_dir') {
+    return null;
+  }
+
+  return `${toolCall.type}:${normalizeToolCallPath(toolCall.path!)}`;
+}
+
+function getFileExtension(filePath: string): string {
+  return filePath.includes('.') ? `.${filePath.split('.').pop()!.toLowerCase()}` : '';
+}
+
+function offsetToLineNumber(content: string, offset: number): number {
+  return content.slice(0, offset).split('\n').length;
+}
+
+export function shouldForceAstForEditFile(toolCall: ParsedToolCall, filePath: string, currentContent: string): boolean {
+  const fileExt = getFileExtension(filePath);
+  const STRICT_AST_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.py', '.cs', '.java']);
+  if (STRICT_AST_EXTENSIONS.has(fileExt)) {
+    return true;
+  }
+
+  if (fileExt !== '.vue' && fileExt !== '.html') {
+    return false;
+  }
+
+  const scriptBlock = extractScriptBlock(currentContent);
+  if (!scriptBlock || !scriptBlock.content.trim()) {
+    return false;
+  }
+
+  if (toolCall.startLine !== undefined) {
+    const editStartLine = toolCall.startLine;
+    const editEndLine = toolCall.endLine ?? toolCall.startLine;
+    const scriptStartLine = offsetToLineNumber(currentContent, scriptBlock.contentStart);
+    const scriptEndLine = offsetToLineNumber(currentContent, scriptBlock.contentEnd);
+    return editStartLine <= scriptEndLine && editEndLine >= scriptStartLine;
+  }
+
+  if (toolCall.oldContent) {
+    return scriptBlock.content.includes(toolCall.oldContent);
+  }
+
+  return false;
+}
+
+export function buildToolCallExecutionPlan(toolCalls: ParsedToolCall[]): ToolCallExecutionPlan {
+  const hasWriteOperation = toolCalls.some(toolCall => isWriteToolCall(toolCall));
+  if (!hasWriteOperation) {
+    const dedupedToolCalls: ParsedToolCall[] = [];
+    const seenReadOnlyKeys = new Set<string>();
+    let duplicateReadOnlyToolCallsSkippedCount = 0;
+
+    for (const toolCall of toolCalls) {
+      const dedupKey = getReadOnlyToolCallDedupKey(toolCall);
+      if (dedupKey && seenReadOnlyKeys.has(dedupKey)) {
+        duplicateReadOnlyToolCallsSkippedCount += 1;
+        continue;
+      }
+
+      if (dedupKey) {
+        seenReadOnlyKeys.add(dedupKey);
+      }
+
+      dedupedToolCalls.push(toolCall);
+    }
+
+    if (dedupedToolCalls.length <= MAX_READ_ONLY_TOOL_CALLS_PER_ROUND) {
+      return {
+        executableToolCalls: dedupedToolCalls,
+        deferredToolCalls: [],
+        readOnlyBatchLimited: false,
+        sameFileToolCallLimited: false,
+        duplicateReadOnlyToolCallsSkippedCount,
+      };
+    }
+
     return {
-      executableToolCalls: toolCalls,
-      deferredToolCalls: [],
-      readOnlyBatchLimited: false,
+      executableToolCalls: dedupedToolCalls.slice(0, MAX_READ_ONLY_TOOL_CALLS_PER_ROUND),
+      deferredToolCalls: dedupedToolCalls.slice(MAX_READ_ONLY_TOOL_CALLS_PER_ROUND),
+      readOnlyBatchLimited: true,
+      sameFileToolCallLimited: false,
+      duplicateReadOnlyToolCallsSkippedCount,
     };
   }
 
-  const hasWriteOperation = toolCalls.some(toolCall => !isReadOnlyToolCall(toolCall));
-  if (hasWriteOperation) {
-    return {
-      executableToolCalls: toolCalls,
-      deferredToolCalls: [],
-      readOnlyBatchLimited: false,
-    };
+  const executableToolCalls: ParsedToolCall[] = [];
+  const deferredToolCalls: ParsedToolCall[] = [];
+  const lockedFilePaths = new Set<string>();
+  let sameFileToolCallLimited = false;
+
+  for (const toolCall of toolCalls) {
+    const normalizedPath = toolCall.type === 'list_dir'
+      ? undefined
+      : normalizeToolCallPath(toolCall.path!);
+
+    if (normalizedPath && lockedFilePaths.has(normalizedPath)) {
+      deferredToolCalls.push(toolCall);
+      sameFileToolCallLimited = true;
+      continue;
+    }
+
+    executableToolCalls.push(toolCall);
+
+    if (normalizedPath && isWriteToolCall(toolCall)) {
+      lockedFilePaths.add(normalizedPath);
+    }
   }
 
   return {
-    executableToolCalls: toolCalls.slice(0, MAX_READ_ONLY_TOOL_CALLS_PER_ROUND),
-    deferredToolCalls: toolCalls.slice(MAX_READ_ONLY_TOOL_CALLS_PER_ROUND),
-    readOnlyBatchLimited: true,
+    executableToolCalls,
+    deferredToolCalls,
+    readOnlyBatchLimited: false,
+    sameFileToolCallLimited,
+    duplicateReadOnlyToolCallsSkippedCount: 0,
   };
 }
 
@@ -329,7 +389,23 @@ export function buildPreviewContent(toolCall: ParsedToolCall, currentContent: st
     }
 
     if (editResult.reason === 'not-found') {
-      // 附带文件开头片段，帮助模型在重试时看到真实内容
+      // 自动降级：尝试模糊匹配，如果找到接近的内容则允许通过（实际执行时 editFile 会自动转换）
+      const closest = findClosestMatch(currentContent, oldSegment || '');
+      if (closest) {
+        const lineResult = buildLineBasedEditContent(
+          currentContent,
+          closest.startLine,
+          closest.endLine,
+          newSegment,
+        );
+        if (lineResult.success) {
+          return {
+            newContent: lineResult.updatedContent,
+            canApply: true,
+          };
+        }
+      }
+      // 模糊匹配也没找到，返回原有的错误提示
       const SNIPPET_MAX = 800;
       const snippet = currentContent.length > SNIPPET_MAX
         ? currentContent.slice(0, SNIPPET_MAX) + '\n...(已截断)'
@@ -449,7 +525,7 @@ export async function executeWriteToolCall(options: {
   /** 文件读取状态缓存，用于 edit_file 执行前校验"先读后编" */
   fileReadStateCache?: FileReadStateCache;
 }): Promise<ExecuteWriteToolCallResult> {
-  const requestedFilePath = options.toolCall.path;
+  const requestedFilePath = options.toolCall.path!;
   const resolvedFilePath = resolveAndValidatePath(requestedFilePath);
   const filePath = resolvedFilePath ?? requestedFilePath;
   const toDisplayPath = options.toDisplayPath ?? getDisplayPath;
@@ -511,14 +587,16 @@ export async function executeWriteToolCall(options: {
     }
   }
 
-  // AST 强制拦截：对 AST 支持的文件，edit_file 必须带 ast_bypass="true" 才允许通过
-  const AST_SUPPORTED_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.py', '.cs', '.java', '.vue', '.html']);
   if (options.toolCall.type === 'edit_file' && !options.toolCall.astBypass) {
-    const fileExt = filePath.includes('.') ? ('.' + filePath.split('.').pop()!.toLowerCase()) : '';
-    if (AST_SUPPORTED_EXTENSIONS.has(fileExt)) {
-      const issueText = `编辑被拒绝：${filePath} 是 AST 支持的文件类型（${fileExt}），必须优先使用 ast_edit 工具。`
-        + `\n\nast_edit 支持的操作：add_import / remove_import / insert_function / edit_function_body / add_function_param / add_object_property / add_class_member / rename_symbol`
-        + `\n\n如果此修改确实不适合 AST（如修改字符串常量、条件表达式、模板等非结构化内容），请在 edit_file 标签中添加 ast_bypass="true" 属性来绕过此检查。`;
+    const fileExt = getFileExtension(filePath);
+    const currentContent = fileExistedBeforeWrite ? readFileTextSafely(filePath) : '';
+    if (shouldForceAstForEditFile(options.toolCall, filePath, currentContent)) {
+      const issueText = (fileExt === '.vue' || fileExt === '.html')
+        ? `编辑被拒绝：${filePath} 的修改目标位于 <script> 块内，必须优先使用 ast_edit 工具。`
+          + `\n\n如果你要修改的是模板、HTML 结构或样式，请改用 edit_file，并添加 ast_bypass="true"。`
+        : `编辑被拒绝：${filePath} 是 AST 支持的文件类型（${fileExt}），必须优先使用 ast_edit 工具。`
+          + `\n\nast_edit 支持的操作：add_import / remove_import / insert_function / edit_function_body / add_function_param / add_object_property / add_class_member / rename_symbol`
+          + `\n\n如果此修改确实不适合 AST（如修改字符串常量、条件表达式、模板等非结构化内容），请在 edit_file 标签中添加 ast_bypass="true" 属性来绕过此检查。`;
       return {
         filePath,
         singleResult: {
@@ -747,6 +825,18 @@ export async function executeToolCallBatch(options: {
     );
   }
 
+  if (executionPlan.sameFileToolCallLimited) {
+    info(
+      `同一轮中同一文件的后续工具调用已延后，本轮执行 ${executionPlan.executableToolCalls.length} 个，延后 ${executionPlan.deferredToolCalls.length} 个`,
+    );
+  }
+
+  if (executionPlan.duplicateReadOnlyToolCallsSkippedCount > 0) {
+    info(
+      `同一轮中重复的只读工具调用已合并，跳过 ${executionPlan.duplicateReadOnlyToolCallsSkippedCount} 个重复 read_file/list_dir`,
+    );
+  }
+
   for (const toolCall of executionPlan.executableToolCalls) {
     if (options.canContinue && !options.canContinue()) {
       return {
@@ -760,6 +850,8 @@ export async function executeToolCallBatch(options: {
         executedToolCalls: executionPlan.executableToolCalls,
         deferredToolCalls: executionPlan.deferredToolCalls,
         readOnlyBatchLimited: executionPlan.readOnlyBatchLimited,
+        sameFileToolCallLimited: executionPlan.sameFileToolCallLimited,
+        duplicateReadOnlyToolCallsSkippedCount: executionPlan.duplicateReadOnlyToolCallsSkippedCount,
       };
     }
 
@@ -818,18 +910,16 @@ export async function executeToolCallBatch(options: {
         // edit_file 失败后自动重读文件，将最新内容注入错误反馈
         // 帮助模型在下一轮用正确的行号或内容重试
         if (toolCall.type === 'edit_file') {
-          const autoReadPath = resolveAndValidatePath(toolCall.path);
+          const autoReadPath = resolveAndValidatePath(toolCall.path!);
           if (autoReadPath && fs.existsSync(autoReadPath)) {
             try {
               const freshContent = fs.readFileSync(autoReadPath, 'utf-8');
-              // 给内容加行号，便于模型直接使用行号模式
-              const numberedLines = freshContent.split('\n')
-                .map((line, i) => `${i + 1}\t${line}`)
-                .join('\n');
+              // 使用 addLineNumbers 给内容加行号，便于模型直接使用行号模式
+              const numberedContent = addLineNumbers(freshContent);
               const AUTO_READ_MAX = 6000;
-              const truncatedContent = numberedLines.length > AUTO_READ_MAX
-                ? numberedLines.slice(0, AUTO_READ_MAX) + '\n...(已截断)'
-                : numberedLines;
+              const truncatedContent = numberedContent.length > AUTO_READ_MAX
+                ? numberedContent.slice(0, AUTO_READ_MAX) + '\n...(已截断)'
+                : numberedContent;
               singleResult.result.content += `\n\n[自动重读] 以下是 ${toolCall.path} 的当前内容（含行号），请基于这些行号使用行号模式重试编辑：\n${truncatedContent}`;
 
               // 同步更新 fileReadStateCache，避免"先读后编"校验在下一轮拒绝
@@ -867,9 +957,9 @@ export async function executeToolCallBatch(options: {
     const result = await executeToolCalls([toolCall], options.requestMode);
     const singleResult = result[0];
 
-    // read_file 成功后：检测文件是否未变（返回 stub）+ 更新缓存
+    // read_file 成功后：检测文件是否未变（返回 stub）+ 更新缓存 + 添加行号
     if (toolCall.type === 'read_file' && singleResult.result.success && options.fileReadStateCache) {
-      const resolvedPath = resolveAndValidatePath(toolCall.path);
+      const resolvedPath = resolveAndValidatePath(toolCall.path!);
       if (resolvedPath) {
         // 先检测是否可以返回 stub（比较新旧内容）
         const stubResult = buildReadFileStubIfUnchanged(resolvedPath, singleResult.result.content, options.fileReadStateCache);
@@ -878,14 +968,22 @@ export async function executeToolCallBatch(options: {
           singleResult.result.content = stubResult.stubContent;
         }
 
-        // 无论是否返回 stub，都更新缓存（刷新时间戳，保持最新内容）
+        // 用原始内容（无行号）更新缓存，保证与 validateFileReadState 中磁盘内容对比兼容
         options.fileReadStateCache.set(resolvedPath, {
           content: stubResult.useStub
             ? options.fileReadStateCache.get(resolvedPath)!.content  // stub 时保留原始完整内容
-            : singleResult.result.content,  // 内容变了则更新
+            : singleResult.result.content,  // 原始内容（readFile 返回无行号）
           timestamp: Date.now(),
         });
+
+        // 缓存更新后，对返回给模型的内容添加行号（stub 消息不加行号）
+        if (!stubResult.useStub) {
+          singleResult.result.content = addLineNumbers(singleResult.result.content);
+        }
       }
+    } else if (toolCall.type === 'read_file' && singleResult.result.success) {
+      // 无缓存时也要添加行号
+      singleResult.result.content = addLineNumbers(singleResult.result.content);
     }
 
     toolResults.push(singleResult);
@@ -913,6 +1011,8 @@ export async function executeToolCallBatch(options: {
     executedToolCalls: executionPlan.executableToolCalls,
     deferredToolCalls: executionPlan.deferredToolCalls,
     readOnlyBatchLimited: executionPlan.readOnlyBatchLimited,
+    sameFileToolCallLimited: executionPlan.sameFileToolCallLimited,
+    duplicateReadOnlyToolCallsSkippedCount: executionPlan.duplicateReadOnlyToolCallsSkippedCount,
   };
 }
 
@@ -938,293 +1038,6 @@ export function buildAppliedChangeSummaryResponses(
   ];
 }
 
-export function executeUndoAllWriteBackupsWithFeedback(options: {
-  writeBackups: Map<string, WriteBackupEntry>;
-  summaryId: string;
-}): UndoAllWriteBackupsExecution {
-  if (options.writeBackups.size === 0) {
-    return {
-      status: 'empty',
-      logMessages: ['Undo all：备份为空，无需操作'],
-      notification: {
-        kind: 'warning',
-        message: '⚠ Undo：没有可撤销的备份（可能已发送新消息导致备份清空，或插件已重载）',
-      },
-    };
-  }
-
-  const logMessages = [buildUndoAllStartLogMessage(options.writeBackups)];
-  const undoResult = undoAllWriteBackups(options.writeBackups);
-  const feedback = buildUndoAllResultFeedback(undoResult);
-  if (feedback.restoredLogMessage) {
-    logMessages.push(feedback.restoredLogMessage);
-  }
-  if (feedback.deletedLogMessage) {
-    logMessages.push(feedback.deletedLogMessage);
-  }
-
-  return {
-    status: 'completed',
-    logMessages,
-    notification: {
-      kind: feedback.notificationKind,
-      message: feedback.notificationMessage,
-    },
-    summaryResponse: buildUndoAllChangeSummaryResponse(options.summaryId, undoResult),
-  };
-}
-
-export function executeUndoSingleWriteBackupWithFeedback(options: {
-  writeBackups: Map<string, WriteBackupEntry>;
-  filePath: string;
-  summaryId: string;
-}): UndoSingleWriteBackupExecution {
-  const undoResult = undoSingleWriteBackup(options.writeBackups, options.filePath);
-  if (undoResult.status === 'missing') {
-    return {
-      status: 'missing',
-      logMessages: [`单文件 Undo：未找到 ${options.filePath} 的备份，可能已撤销或未被修改`],
-      notification: {
-        kind: 'warning',
-        message: '未找到该文件的可撤销备份，可能已经撤销，或该文件不是本轮写入产生的改动',
-      },
-    };
-  }
-
-  if (undoResult.status === 'failed') {
-    return {
-      status: 'failed',
-      logMessages: [`单文件 Undo：恢复 ${options.filePath} 失败 -> ${undoResult.errorMessage}`],
-      notification: {
-        kind: 'error',
-        message: '单文件 Undo 失败，请查看 Output 面板日志',
-      },
-    };
-  }
-
-  return {
-    status: 'success',
-    logMessages: [],
-    remainingCount: undoResult.remainingCount,
-    summaryResponse: buildUndoSingleChangeSummaryResponse(options.summaryId, undoResult.remainingCount),
-  };
-}
-
-export function executeUndoAllWriteBackupsFlow(options: {
-  writeBackups: Map<string, WriteBackupEntry>;
-  summaryId: string;
-  postMessage: (message: UpdateChangeSummaryResponse) => void;
-  onCompleted?: (undoExecution: Extract<UndoAllWriteBackupsExecution, { status: 'completed' }>) => void;
-}): void {
-  const undoExecution = executeUndoAllWriteBackupsWithFeedback({
-    writeBackups: options.writeBackups,
-    summaryId: options.summaryId,
-  });
-
-  for (const logMessage of undoExecution.logMessages) {
-    info(logMessage);
-  }
-
-  if (undoExecution.notification.kind === 'info') {
-    vscode.window.showInformationMessage(undoExecution.notification.message);
-  } else if (undoExecution.notification.kind === 'warning') {
-    vscode.window.showWarningMessage(undoExecution.notification.message);
-  } else {
-    vscode.window.showErrorMessage(undoExecution.notification.message);
-  }
-
-  if (undoExecution.status === 'completed') {
-    options.postMessage(undoExecution.summaryResponse);
-    options.onCompleted?.(undoExecution);
-  }
-}
-
-export function executeUndoSingleWriteBackupFlow(options: {
-  writeBackups: Map<string, WriteBackupEntry>;
-  filePath: string;
-  summaryId: string;
-  postMessage: (message: UpdateChangeSummaryResponse) => void;
-  onSuccess?: (undoExecution: Extract<UndoSingleWriteBackupExecution, { status: 'success' }>) => void;
-}): void {
-  const undoExecution = executeUndoSingleWriteBackupWithFeedback({
-    writeBackups: options.writeBackups,
-    filePath: options.filePath,
-    summaryId: options.summaryId,
-  });
-
-  for (const logMessage of undoExecution.logMessages) {
-    info(logMessage);
-  }
-
-  if (undoExecution.notification) {
-    if (undoExecution.notification.kind === 'info') {
-      vscode.window.showInformationMessage(undoExecution.notification.message);
-    } else if (undoExecution.notification.kind === 'warning') {
-      vscode.window.showWarningMessage(undoExecution.notification.message);
-    } else {
-      vscode.window.showErrorMessage(undoExecution.notification.message);
-    }
-  }
-
-  if (undoExecution.status !== 'success') {
-    return;
-  }
-
-  options.postMessage(undoExecution.summaryResponse);
-  options.onSuccess?.(undoExecution);
-}
-
-export function undoAllWriteBackups(
-  writeBackups: Map<string, WriteBackupEntry>,
-): UndoAllWriteBackupsResult {
-  let undoneCount = 0;
-  let failCount = 0;
-  const restoredFiles: string[] = [];
-  const deletedFiles: string[] = [];
-
-  for (const [filePath, backup] of writeBackups.entries()) {
-    try {
-      const originalContent = backup.originalContent;
-      if (originalContent === null) {
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-          info(`Undo：已删除新建文件 ${filePath}`);
-          deletedFiles.push(filePath);
-        } else {
-          info(`Undo：新建文件已不存在，视为已撤销 ${filePath}`);
-        }
-      } else {
-        fs.writeFileSync(filePath, originalContent, 'utf-8');
-        info(`Undo：已恢复文件 ${filePath}`);
-        restoredFiles.push(filePath);
-      }
-
-      undoneCount += 1;
-    } catch (err) {
-      error(`Undo 失败 ${filePath}:`, err);
-      failCount += 1;
-    }
-  }
-
-  writeBackups.clear();
-
-  return {
-    undoneCount,
-    failCount,
-    restoredFiles,
-    deletedFiles,
-  };
-}
-
-export function undoSingleWriteBackup(
-  writeBackups: Map<string, WriteBackupEntry>,
-  filePath: string,
-): UndoSingleWriteBackupResult {
-  const backup = writeBackups.get(filePath);
-  if (!backup) {
-    return { status: 'missing' };
-  }
-
-  try {
-    const originalContent = backup.originalContent;
-    if (originalContent === null) {
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-        info(`单文件 Undo：已删除新建文件 ${filePath}`);
-      } else {
-        info(`单文件 Undo：新建文件已不存在，视为已撤销 ${filePath}`);
-      }
-    } else {
-      fs.writeFileSync(filePath, originalContent, 'utf-8');
-      info(`单文件 Undo：已恢复文件 ${filePath}`);
-    }
-
-    writeBackups.delete(filePath);
-    return {
-      status: 'success',
-      remainingCount: writeBackups.size,
-    };
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    error(`单文件 Undo 失败 ${filePath}:`, err);
-    return {
-      status: 'failed',
-      errorMessage: errMsg,
-    };
-  }
-}
-
-export function buildUndoAllStartLogMessage(writeBackups: Map<string, WriteBackupEntry>): string {
-  const fileList = [...writeBackups.keys()]
-    .map(filePath => filePath.split(/[\\/]/).pop() || filePath)
-    .join(', ');
-
-  return `Undo all：开始恢复 ${writeBackups.size} 个文件：${fileList}`;
-}
-
-export function buildUndoAllChangeSummaryResponse(
-  summaryId: string,
-  undoResult: UndoAllWriteBackupsResult,
-): UpdateChangeSummaryResponse {
-  const text = undoResult.failCount === 0
-    ? `↩ Undone ${undoResult.undoneCount} change${undoResult.undoneCount > 1 ? 's' : ''}`
-    : `↩ Undone ${undoResult.undoneCount}, ${undoResult.failCount} failed`;
-
-  return {
-    type: 'updateChangeSummary',
-    summaryId,
-    status: undoResult.failCount > 0 ? 'partial-undone' : 'undone',
-    text,
-  };
-}
-
-export function buildUndoAllResultFeedback(
-  undoResult: UndoAllWriteBackupsResult,
-): UndoAllWriteBackupsFeedback {
-  const restoredLogMessage = undoResult.restoredFiles.length > 0
-    ? `Undo all：已恢复原内容文件 -> ${undoResult.restoredFiles.join(' | ')}`
-    : undefined;
-  const deletedLogMessage = undoResult.deletedFiles.length > 0
-    ? `Undo all：已删除新建文件 -> ${undoResult.deletedFiles.join(' | ')}`
-    : undefined;
-  const notificationMessage = undoResult.failCount === 0
-    ? `✓ Undo 成功：已还原 ${undoResult.undoneCount} 个文件（恢复 ${undoResult.restoredFiles.length} 个，删除 ${undoResult.deletedFiles.length} 个）`
-    : `⚠ Undo 部分失败：${undoResult.undoneCount} 成功，${undoResult.failCount} 失败（查看 Output 面板日志）`;
-
-  return {
-    restoredLogMessage,
-    deletedLogMessage,
-    notificationMessage,
-    notificationKind: undoResult.failCount === 0 ? 'info' : 'error',
-  };
-}
-
-export function buildUndoSingleChangeSummaryResponse(
-  summaryId: string,
-  remainingCount: number,
-): UpdateChangeSummaryResponse {
-  return {
-    type: 'updateChangeSummary',
-    summaryId,
-    status: remainingCount === 0 ? 'undone' : 'partial-undone',
-    text: remainingCount === 0
-      ? '↩ All changes undone'
-      : `↩ Undone 1 file (${remainingCount} remaining)`,
-  };
-}
-
- export function buildExpiredChangeSummaryResponse(
-   summaryId: string,
-   text = 'Undo expired',
- ): UpdateChangeSummaryResponse {
-   return {
-     type: 'updateChangeSummary',
-     summaryId,
-     status: 'cancelled',
-     text,
-   };
- }
-
 export function buildFinalTurnChangeSummaryResponse(
   messageId: string,
   files: ChangeSummaryFile[],
@@ -1236,188 +1049,4 @@ export function buildFinalTurnChangeSummaryResponse(
     needsConfirm: false,
     files,
   };
-}
-
-function splitContentToLines(content: string): string[] {
-  if (!content) {
-    return [];
-  }
-
-  let normalized = content.replace(/\r\n/g, '\n');
-  if (normalized.endsWith('\n')) {
-    normalized = normalized.slice(0, -1);
-  }
-
-  if (!normalized) {
-    return [];
-  }
-
-  return normalized.split('\n');
-}
-
-function buildDiffOperationTypes(oldLines: string[], newLines: string[]): Array<'context' | 'add' | 'del'> {
-  let prefixLength = 0;
-  while (
-    prefixLength < oldLines.length
-    && prefixLength < newLines.length
-    && oldLines[prefixLength] === newLines[prefixLength]
-  ) {
-    prefixLength += 1;
-  }
-
-  let oldSuffixIndex = oldLines.length - 1;
-  let newSuffixIndex = newLines.length - 1;
-  while (
-    oldSuffixIndex >= prefixLength
-    && newSuffixIndex >= prefixLength
-    && oldLines[oldSuffixIndex] === newLines[newSuffixIndex]
-  ) {
-    oldSuffixIndex -= 1;
-    newSuffixIndex -= 1;
-  }
-
-  const operations: Array<'context' | 'add' | 'del'> = [];
-
-  for (let index = 0; index < prefixLength; index += 1) {
-    operations.push('context');
-  }
-
-  const middleOldLines = oldLines.slice(prefixLength, oldSuffixIndex + 1);
-  const middleNewLines = newLines.slice(prefixLength, newSuffixIndex + 1);
-  operations.push(...buildMiddleDiffOperationTypes(middleOldLines, middleNewLines));
-
-  const suffixLength = oldLines.length - (oldSuffixIndex + 1);
-  for (let index = 0; index < suffixLength; index += 1) {
-    operations.push('context');
-  }
-
-  return operations;
-}
-
-function buildMiddleDiffOperationTypes(oldLines: string[], newLines: string[]): Array<'context' | 'add' | 'del'> {
-  if (oldLines.length === 0) {
-    return newLines.map(() => 'add');
-  }
-
-  if (newLines.length === 0) {
-    return oldLines.map(() => 'del');
-  }
-
-  if (oldLines.length * newLines.length <= 120000) {
-    return buildMiddleDiffOperationTypesByLcs(oldLines, newLines);
-  }
-
-  return buildMiddleDiffOperationTypesByLookahead(oldLines, newLines);
-}
-
-function buildMiddleDiffOperationTypesByLcs(oldLines: string[], newLines: string[]): Array<'context' | 'add' | 'del'> {
-  const rowCount = oldLines.length;
-  const columnCount = newLines.length;
-  const lcsTable: number[][] = [];
-
-  for (let row = 0; row <= rowCount; row += 1) {
-    lcsTable.push(new Array(columnCount + 1).fill(0));
-  }
-
-  for (let row = rowCount - 1; row >= 0; row -= 1) {
-    for (let column = columnCount - 1; column >= 0; column -= 1) {
-      if (oldLines[row] === newLines[column]) {
-        lcsTable[row][column] = lcsTable[row + 1][column + 1] + 1;
-      } else {
-        lcsTable[row][column] = Math.max(lcsTable[row + 1][column], lcsTable[row][column + 1]);
-      }
-    }
-  }
-
-  const operations: Array<'context' | 'add' | 'del'> = [];
-  let oldIndex = 0;
-  let newIndex = 0;
-
-  while (oldIndex < rowCount && newIndex < columnCount) {
-    if (oldLines[oldIndex] === newLines[newIndex]) {
-      operations.push('context');
-      oldIndex += 1;
-      newIndex += 1;
-    } else if (lcsTable[oldIndex + 1][newIndex] >= lcsTable[oldIndex][newIndex + 1]) {
-      operations.push('del');
-      oldIndex += 1;
-    } else {
-      operations.push('add');
-      newIndex += 1;
-    }
-  }
-
-  while (oldIndex < rowCount) {
-    operations.push('del');
-    oldIndex += 1;
-  }
-
-  while (newIndex < columnCount) {
-    operations.push('add');
-    newIndex += 1;
-  }
-
-  return operations;
-}
-
-function buildMiddleDiffOperationTypesByLookahead(oldLines: string[], newLines: string[]): Array<'context' | 'add' | 'del'> {
-  const operations: Array<'context' | 'add' | 'del'> = [];
-  let oldIndex = 0;
-  let newIndex = 0;
-  const lookaheadSize = 20;
-
-  while (oldIndex < oldLines.length && newIndex < newLines.length) {
-    if (oldLines[oldIndex] === newLines[newIndex]) {
-      operations.push('context');
-      oldIndex += 1;
-      newIndex += 1;
-      continue;
-    }
-
-    const nextNewMatch = findNextMatchingLine(newLines, newIndex + 1, oldLines[oldIndex], lookaheadSize);
-    const nextOldMatch = findNextMatchingLine(oldLines, oldIndex + 1, newLines[newIndex], lookaheadSize);
-
-    if (nextNewMatch !== -1 && (nextOldMatch === -1 || nextNewMatch - newIndex <= nextOldMatch - oldIndex)) {
-      while (newIndex < nextNewMatch) {
-        operations.push('add');
-        newIndex += 1;
-      }
-      continue;
-    }
-
-    if (nextOldMatch !== -1) {
-      while (oldIndex < nextOldMatch) {
-        operations.push('del');
-        oldIndex += 1;
-      }
-      continue;
-    }
-
-    operations.push('del');
-    operations.push('add');
-    oldIndex += 1;
-    newIndex += 1;
-  }
-
-  while (oldIndex < oldLines.length) {
-    operations.push('del');
-    oldIndex += 1;
-  }
-
-  while (newIndex < newLines.length) {
-    operations.push('add');
-    newIndex += 1;
-  }
-
-  return operations;
-}
-
-function findNextMatchingLine(lines: string[], startIndex: number, targetLine: string, lookaheadSize: number): number {
-  const maxIndex = Math.min(lines.length, startIndex + lookaheadSize);
-  for (let index = startIndex; index < maxIndex; index += 1) {
-    if (lines[index] === targetLine) {
-      return index;
-    }
-  }
-  return -1;
 }

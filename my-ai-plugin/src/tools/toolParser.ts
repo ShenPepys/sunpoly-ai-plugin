@@ -13,14 +13,14 @@
 import type { AstEditAction } from './astEditorTypes';
 
 /** 工具调用类型 */
-export type ToolCallType = 'read_file' | 'write_file' | 'edit_file' | 'list_dir' | 'ast_edit';
+export type ToolCallType = 'read_file' | 'write_file' | 'edit_file' | 'list_dir' | 'ast_edit' | 'search_file' | 'grep_code' | 'run_command';
 
 /** 解析后的工具调用结构 */
 export interface ParsedToolCall {
   /** 工具类型 */
   type: ToolCallType;
   /** 文件/目录路径 */
-  path: string;
+  path?: string;
   /** 写入内容（仅 write_file） */
   content?: string;
   /** 旧内容（仅 edit_file） */
@@ -39,6 +39,18 @@ export interface ParsedToolCall {
   endLine?: number;
   /** AST 绕过标记：为 true 时允许 edit_file 编辑 AST 支持的文件（仅 edit_file） */
   astBypass?: boolean;
+  /** 搜索模式（仅 search_file） */
+  pattern?: string;
+  /** 正则表达式（仅 grep_code） */
+  regex?: string;
+  /** 包含模式（仅 grep_code） */
+  includePattern?: string;
+  /** 是否区分大小写（仅 grep_code） */
+  caseSensitive?: boolean;
+  /** 要执行的命令（仅 run_command） */
+  command?: string;
+  /** 命令超时毫秒数（仅 run_command） */
+  timeout?: number;
   /** 原始匹配文本（用于在回复中替换为执行结果） */
   rawMatch: string;
 }
@@ -46,9 +58,9 @@ export interface ParsedToolCall {
 type TextRange = [number, number];
 
 const WRAPPED_TOOL_CALL_REGEX_SOURCE = '<tool_call>([\\s\\S]*?)</tool_call>';
-const BARE_TOOL_NAMES = ['read_file', 'write_file', 'edit_file', 'list_dir', 'ast_edit'];
+const BARE_TOOL_NAMES = ['read_file', 'write_file', 'edit_file', 'list_dir', 'ast_edit', 'search_file', 'grep_code', 'run_command'];
 const BARE_TOOL_CALL_REGEX_SOURCE = `<(${BARE_TOOL_NAMES.join('|')})[\\s>][\\s\\S]*?(?:\\/>|<\\/\\1>)`;
-const BARE_TOOL_CALL_QUICK_CHECK_REGEX = /<(?:read_file|write_file|edit_file|list_dir|ast_edit)\s/;
+const BARE_TOOL_CALL_QUICK_CHECK_REGEX = /<(?:read_file|write_file|edit_file|list_dir|ast_edit|search_file|grep_code|run_command)\s/;
 const FENCED_CODE_BLOCK_REGEX_SOURCE = '(^|\\r?\\n)(`{3,}|~{3,})[^\\n\\r]*\\r?\\n[\\s\\S]*?\\r?\\n\\2[^\\n\\r]*(?=\\r?\\n|$)';
 
 function collectFencedCodeBlockRanges(text: string): TextRange[] {
@@ -95,6 +107,9 @@ function replaceToolCallsInPlainText(text: string): string {
   result = result.replace(/<write_file\s+path\s*=\s*"[^"]+">[\s\S]*?<\/write_file>/g, '');
   result = result.replace(/<edit_file\s+path\s*=\s*"[^"]+"(?:\s+[a-z_]+\s*=\s*"[^"]*")*>[\s\S]*?<\/edit_file>/g, '');
   result = result.replace(/<ast_edit\s+path\s*=\s*"[^"]+"\s+action\s*=\s*"[^"]+">[\s\S]*?<\/ast_edit>/g, '');
+  result = result.replace(/<search_file\s+pattern\s*=\s*"[^"]+"\s*\/>/g, '');
+  result = result.replace(/<grep_code\s+regex\s*=\s*"[^"]+"(?:\s+[a-z_]+\s*=\s*"[^"]*")*\s*\/>/g, '');
+  result = result.replace(/<run_command(?:\s+[a-z_]+\s*=\s*"[^"]*")*>([\s\S]*?)<\/run_command>/g, '');
   return result;
 }
 
@@ -240,6 +255,41 @@ function parseSingleToolCall(inner: string, rawMatch: string): ParsedToolCall | 
     if (astParams) {
       return { type: 'ast_edit', path: astPath, astAction, astParams, rawMatch };
     }
+  }
+
+  // search_file: <search_file pattern="*.ts" />
+  const searchMatch = inner.match(/<search_file\s+pattern\s*=\s*"([^"]+)"\s*\/>/);
+  if (searchMatch) {
+    return { type: 'search_file', pattern: searchMatch[1], rawMatch };
+  }
+
+  // grep_code: <grep_code regex="func\\s+test" include_pattern="*.ts" case_sensitive="false" />
+  const grepMatch = inner.match(/<grep_code\s+regex\s*=\s*"([^"]+)"((?:\s+[a-z_]+\s*=\s*"[^"]*")*)\s*\/>/);
+  if (grepMatch) {
+    const grepAttrs = grepMatch[2] || '';
+    const includePatternAttr = grepAttrs.match(/\binclude_pattern\s*=\s*"([^"]*)"/);
+    const caseSensitiveAttr = grepAttrs.match(/\bcase_sensitive\s*=\s*"([^"]*)"/);
+    return {
+      type: 'grep_code',
+      regex: grepMatch[1],
+      includePattern: includePatternAttr ? includePatternAttr[1] : undefined,
+      caseSensitive: caseSensitiveAttr ? caseSensitiveAttr[1] === 'true' : false,
+      rawMatch,
+    };
+  }
+
+  // run_command: <run_command timeout="30000">npm install</run_command>
+  const cmdMatch = inner.match(/<run_command((?:\s+[a-z_]+\s*=\s*"[^"]*")*)>([\s\S]*?)<\/run_command>/);
+  if (cmdMatch) {
+    const cmdAttrs = cmdMatch[1] || '';
+    const cmdBody = cmdMatch[2].trim();
+    const timeoutAttr = cmdAttrs.match(/\btimeout\s*=\s*"(\d+)"/);
+    return {
+      type: 'run_command',
+      command: cmdBody,
+      timeout: timeoutAttr ? parseInt(timeoutAttr[1], 10) : undefined,
+      rawMatch,
+    };
   }
 
   return null;

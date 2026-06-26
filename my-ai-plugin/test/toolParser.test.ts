@@ -184,3 +184,37 @@ test('parseToolCalls replace_all="false" 时 replaceAll 为 undefined', () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0].replaceAll, undefined, 'replace_all="false" 不应设置 replaceAll');
 });
+
+test('parseToolCalls 能解析 run_command（带 tool_call 包裹）', () => {
+  const content = '<tool_call><run_command>npm install</run_command></tool_call>';
+  const calls = parseToolCalls(content);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].type, 'run_command');
+  assert.equal(calls[0].command, 'npm install');
+  assert.equal(calls[0].timeout, undefined);
+});
+
+test('parseToolCalls 能解析带 timeout 属性的 run_command', () => {
+  const content = '<tool_call><run_command timeout="60000">npm run build</run_command></tool_call>';
+  const calls = parseToolCalls(content);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].type, 'run_command');
+  assert.equal(calls[0].command, 'npm run build');
+  assert.equal(calls[0].timeout, 60000);
+});
+
+test('parseToolCalls 能解析裸 run_command 标签', () => {
+  const content = '<run_command>git status</run_command>';
+  const calls = parseToolCalls(content);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].type, 'run_command');
+  assert.equal(calls[0].command, 'git status');
+});
+
+test('stripToolCalls 能正确剥离 run_command 标签', () => {
+  const content = '我来执行安装命令：<tool_call><run_command>npm install</run_command></tool_call>\n安装完成。';
+  const stripped = stripToolCalls(content);
+  assert.doesNotMatch(stripped, /run_command/);
+  assert.match(stripped, /我来执行安装命令/);
+  assert.match(stripped, /安装完成/);
+});

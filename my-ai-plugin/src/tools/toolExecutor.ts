@@ -5,8 +5,11 @@
  * 并返回执行结果，供 ChatViewProvider 将结果反馈给 AI。
  */
 import * as fs from 'fs';
+import * as fsp from 'fs/promises';
 import { info, error } from '../logger';
 import { readFile, writeFile, editFile, listDir } from './fileOps';
+import { searchFile, grepCode } from './searchTools';
+import { execCommand } from './terminalExec';
 import { routeAstEdit } from './astRouter';
 import { isToolReadOnly, getToolLabel } from './toolDefs';
 import type { AstEditRequest } from './astEditorTypes';
@@ -87,8 +90,8 @@ async function executeSingleToolCall(
   toolCall: ParsedToolCall,
   mode: WorkMode,
 ): Promise<FileOpResult> {
-  // 权限控制：Ask 和 Plan 模式下禁止写操作
-  const isWriteOp = toolCall.type === 'write_file' || toolCall.type === 'edit_file' || toolCall.type === 'ast_edit';
+  // 权限控制：Ask 和 Plan 模式下禁止写操作和命令执行
+  const isWriteOp = toolCall.type === 'write_file' || toolCall.type === 'edit_file' || toolCall.type === 'ast_edit' || toolCall.type === 'run_command';
   if (isWriteOp && mode !== 'code') {
     const modeName = mode === 'ask' ? 'Ask' : 'Plan';
     return {
@@ -97,17 +100,17 @@ async function executeSingleToolCall(
     };
   }
 
-  info(`执行工具调用: ${toolCall.type} → ${toolCall.path}`);
+  info(`执行工具调用: ${toolCall.type}${toolCall.path ? ` → ${toolCall.path}` : ''}`);
 
   switch (toolCall.type) {
     case 'read_file':
-      return readFile(toolCall.path);
+      return readFile(toolCall.path!);
 
     case 'write_file':
       if (!toolCall.content && toolCall.content !== '') {
         return { success: false, content: '写入内容为空' };
       }
-      return writeFile(toolCall.path, toolCall.content);
+      return writeFile(toolCall.path!, toolCall.content);
 
     case 'edit_file': {
       // 行号模式只需 newContent + startLine，不需要 oldContent
@@ -118,7 +121,7 @@ async function executeSingleToolCall(
       if (isLineMode && toolCall.newContent === undefined) {
         return { success: false, content: '行号编辑模式缺少 new 内容' };
       }
-      return editFile(toolCall.path, toolCall.oldContent || '', toolCall.newContent ?? '', {
+      return editFile(toolCall.path!, toolCall.oldContent || '', toolCall.newContent ?? '', {
         replaceAll: toolCall.replaceAll,
         startLine: toolCall.startLine,
         endLine: toolCall.endLine,
@@ -126,10 +129,31 @@ async function executeSingleToolCall(
     }
 
     case 'list_dir':
-      return listDir(toolCall.path);
+      return listDir(toolCall.path!);
 
     case 'ast_edit':
       return executeAstEdit(toolCall);
+
+    case 'search_file':
+      if (!toolCall.pattern) {
+        return { success: false, content: 'search_file 缺少 pattern 参数' };
+      }
+      const searchResult = await searchFile(toolCall.pattern);
+      return { success: searchResult.success, content: searchResult.files ? JSON.stringify(searchResult.files, null, 2) : searchResult.content || '' };
+
+    case 'grep_code':
+      if (!toolCall.regex) {
+        return { success: false, content: 'grep_code 缺少 regex 参数' };
+      }
+      const grepResult = await grepCode(toolCall.regex, toolCall.includePattern, toolCall.caseSensitive);
+      return { success: grepResult.success, content: grepResult.matches ? JSON.stringify(grepResult.matches, null, 2) : grepResult.content || '' };
+
+    case 'run_command':
+      if (!toolCall.command) {
+        return { success: false, content: 'run_command 缺少命令内容' };
+      }
+      const cmdResult = await execCommand(toolCall.command, toolCall.timeout);
+      return { success: cmdResult.success, content: cmdResult.content || '' };
 
     default:
       error(`未知的工具类型: ${toolCall.type}`);
@@ -150,7 +174,10 @@ export function formatToolResults(results: ToolExecutionResult[]): string {
     const status = result.success ? '✅ 成功' : '❌ 失败';
     const typeLabel = getToolLabel(toolCall.type);
     const safeContent = formatToolResultContent(toolCall, result.content);
-    return `### ${typeLabel} ${toolCall.path}\n**${status}**\n\`\`\`\n${safeContent}\n\`\`\``;
+    const target = toolCall.type === 'run_command'
+      ? `\`${toolCall.command || ''}\``
+      : toolCall.path || '';
+    return `### ${typeLabel} ${target}\n**${status}**\n\`\`\`\n${safeContent}\n\`\`\``;
   });
 
   return lines.join('\n\n');
@@ -194,7 +221,7 @@ async function executeAstEdit(toolCall: ParsedToolCall): Promise<FileOpResult> {
   } as AstEditRequest;
 
   // 读取文件当前内容
-  const readResult = await readFile(toolCall.path);
+  const readResult = await readFile(toolCall.path!);
   if (!readResult.success) {
     return readResult;
   }
@@ -218,15 +245,15 @@ async function executeAstEdit(toolCall: ParsedToolCall): Promise<FileOpResult> {
   }
 
   // 写入前先读取所有受影响文件的原始内容，用于上层备份和 diff
-  const astAffectedFiles: AstAffectedFile[] = editResult.files.map((file) => {
+  const astAffectedFiles: AstAffectedFile[] = await Promise.all(editResult.files.map(async (file) => {
     let originalContent = '';
     try {
-      originalContent = fs.readFileSync(file.filePath, 'utf-8');
+      originalContent = await fsp.readFile(file.filePath, 'utf-8');
     } catch {
       // 文件可能不存在（新建场景），原始内容为空
     }
     return { filePath: file.filePath, originalContent, newContent: file.newContent };
-  });
+  }));
 
   // 将修改后的内容写回磁盘
   const writeErrors: string[] = [];
