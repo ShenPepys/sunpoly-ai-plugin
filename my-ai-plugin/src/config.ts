@@ -18,6 +18,10 @@ const CONFIG_PREFIX = 'myAiPlugin';
 /** .env 文件缓存，避免每次读取都去读文件 */
 let envCache: Record<string, string> | null = null;
 
+/** .env 文件监听器，修改后自动清除缓存 */
+const envWatchers: vscode.FileSystemWatcher[] = [];
+const watchedEnvPaths = new Set<string>();
+
 /** 插件安装目录（由 extension.ts 在激活时设置） */
 let extensionPath = '';
 
@@ -91,6 +95,9 @@ function loadEnvFile(): Record<string, string> {
     return envCache;
   }
 
+  // 监听 .env 文件变更，自动清除缓存
+  watchEnvFile(envPath);
+
   try {
     const content = fs.readFileSync(envPath, 'utf-8');
     for (const line of content.split('\n')) {
@@ -120,10 +127,40 @@ function loadEnvFile(): Record<string, string> {
 }
 
 /**
+ * 监听 .env 文件变更，修改后自动清除缓存以便下次读取最新内容
+ */
+function watchEnvFile(envPath: string): void {
+  if (watchedEnvPaths.has(envPath)) { return; }
+  watchedEnvPaths.add(envPath);
+
+  const pattern = new vscode.RelativePattern(path.dirname(envPath), path.basename(envPath));
+  const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+  const onEnvChange = () => {
+    envCache = null;
+    info(`.env 文件已变更，缓存已清除: ${envPath}`);
+  };
+  watcher.onDidChange(onEnvChange);
+  watcher.onDidCreate(onEnvChange);
+  watcher.onDidDelete(onEnvChange);
+  envWatchers.push(watcher);
+}
+
+/**
  * 重新加载 .env 文件（当用户修改 .env 后手动刷新）
  */
 export function reloadEnv(): void {
   envCache = null;
+}
+
+/**
+ * 释放 .env 文件监听器（插件停用时调用）
+ */
+export function disposeEnvWatchers(): void {
+  for (const watcher of envWatchers) {
+    watcher.dispose();
+  }
+  envWatchers.length = 0;
+  watchedEnvPaths.clear();
 }
 
 /**

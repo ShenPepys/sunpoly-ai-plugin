@@ -105,11 +105,12 @@
 
 ## 六、其他改进（低优先级）
 
-### TASK-13：`.env` 缓存过期
+### TASK-13：`.env` 缓存过期（已完成）
 
-**当前**：`.env` 文件加载后缓存在内存中，修改后需重载 VS Code
-
-**方案**：添加 `fs.watch` 监听或 `mtime` 检测
+- [x] 添加 `FileSystemWatcher` 监听 `.env` 文件变更
+- [x] 文件修改/创建/删除时自动清除 `envCache`，下次读取自动加载最新内容
+- [x] `disposeEnvWatchers()` 在插件停用时清理监听器
+- [x] 用户修改 `.env` 后无需重启 VS Code
 
 ### TASK-14：messageTypes.ts 拆分（642 行）
 
@@ -143,7 +144,7 @@
 | TASK-10 | API Key SecretStorage | 中 | ✅ 已完成 |
 | TASK-11 | 文件操作改异步 | 中 | ⏳ 待执行 |
 | TASK-12 | getGitStatus 改异步 | 低 | ✅ 已完成 |
-| TASK-13 | .env 缓存过期 | 低 | ⏳ 待执行 |
+| TASK-13 | .env 缓存过期 | 低 | ✅ 已完成 |
 | TASK-14 | messageTypes.ts 拆分 | 低 | ⏳ 待执行 |
 | TASK-15 | 429 自动重试 | 低 | ✅ 已完成 |
 | TASK-16 | 上下文窗口摘要压缩 | 低 | ⏳ 待执行 |

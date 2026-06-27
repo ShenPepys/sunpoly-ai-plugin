@@ -4,7 +4,7 @@
  */
 import * as vscode from 'vscode';
 import { initLogger, disposeLogger, info, error } from './logger';
-import { setExtensionPath, setSecretStorage, migrateApiKeysToSecretStorage, getAllModels, getActiveModelIndex } from './config';
+import { setExtensionPath, setSecretStorage, migrateApiKeysToSecretStorage, disposeEnvWatchers, getAllModels, getActiveModelIndex } from './config';
 import { ChatTabManager } from './webview/ChatTabManager';
 import { executeCommand } from './commands/handler';
 import { disposeProject } from './tools/astContext';
@@ -232,6 +232,7 @@ export function deactivate(): void {
     tabManager.dispose();
     tabManager = undefined;
   }
+  disposeEnvWatchers();
   disposeAstAdapters();
   disposeProject();
   info('AI 助理插件已停用');
