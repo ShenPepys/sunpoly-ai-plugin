@@ -138,6 +138,7 @@
 |------|------|--------|------|
 | TASK-1~5 | d_fileChanges.ts 拆分 | 高 | ✅ 已完成 |
 | TASK-6 | ChatEngine 运行时状态提取 | 中 | ✅ 已完成（1198行） |
+| TASK-6b | requestExecution 瘦身 | 中 | ✅ 已完成（856→600行，提取toolFeedback模块） |
 | TASK-7 | ChatEngine 公开 API 提取 | 中 | ✅ 已完成 |
 | TASK-8 | 清理 devCreateSecondPanel | 低 | ✅ 已完成 |
 | TASK-9 | 锁诊断日志审查 | 低 | ✅ 已完成 |
