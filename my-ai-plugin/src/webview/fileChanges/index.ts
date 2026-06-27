@@ -810,6 +810,8 @@ export async function executeToolCallBatch(options: {
   toDisplayPath?: (filePath: string) => string;
   /** 文件读取状态缓存，read_file 成功后更新缓存，edit_file 执行前校验 */
   fileReadStateCache?: FileReadStateCache;
+  /** 设置加载提示文本的回调函数 */
+  setLoadingText?: (text: string) => void;
 }): Promise<ExecuteToolCallBatchResult> {
   const toolResults: ToolExecutionResult[] = [];
   const executionRecords: ToolCallExecutionRecord[] = [];
@@ -856,6 +858,35 @@ export async function executeToolCallBatch(options: {
     }
 
     const stepId = `step-${options.messageId}-${nextStepSequence++}`;
+    
+    // 根据工具类型更新 loading 文本
+    if (options.setLoadingText) {
+      let loadingText = 'AI 正在执行工具...';
+      switch (toolCall.type) {
+        case 'read_file':
+          loadingText = `AI 正在读取文件: ${toolCall.path || ''}`;
+          break;
+        case 'write_file':
+          loadingText = `AI 正在写入文件: ${toolCall.path || ''}`;
+          break;
+        case 'edit_file':
+          loadingText = `AI 正在编辑文件: ${toolCall.path || ''}`;
+          break;
+        case 'ast_edit':
+          loadingText = `AI 正在重构代码: ${toolCall.path || ''}`;
+          break;
+        case 'run_command':
+          loadingText = `AI 正在执行命令: ${toolCall.command?.substring(0, 50) || ''}${toolCall.command && toolCall.command.length > 50 ? '...' : ''}`;
+          break;
+        case 'list_dir':
+          loadingText = `AI 正在浏览目录: ${toolCall.path || ''}`;
+          break;
+        default:
+          loadingText = `AI 正在执行 ${toolCall.type}...`;
+      }
+      options.setLoadingText(loadingText);
+    }
+    
     options.postMessage({
       type: 'addStep',
       messageId: options.messageId,

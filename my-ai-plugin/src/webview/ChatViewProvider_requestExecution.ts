@@ -159,6 +159,8 @@ export type ExecuteToolCallBatchRoundOptions = {
   fileReadStateCache?: FileReadStateCache;
   /** 可恢复写失败续轮计数 */
   recoverableWriteFailRounds: number;
+  /** 设置加载提示文本的回调函数 */
+  setLoadingText?: (text: string) => void;
 };
 
 export type ExecuteToolCallBatchRoundResult =
@@ -196,6 +198,7 @@ export async function executeToolCallBatchRound(
     canContinue: options.canContinue,
     toDisplayPath: options.toDisplayPath,
     fileReadStateCache: options.fileReadStateCache,
+    setLoadingText: options.setLoadingText,
   });
 
   let nextActiveHistoryProcessSummary = options.activeHistoryProcessSummary;

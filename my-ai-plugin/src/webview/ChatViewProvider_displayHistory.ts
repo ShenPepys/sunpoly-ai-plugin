@@ -252,7 +252,7 @@ export function buildAssistantToolCallTransitionMessages(
     });
   }
 
-  messages.push({ type: 'setLoading', loading: true });
+  messages.push({ type: 'setLoading', loading: true, text: 'AI 正在思考...' });
   return messages;
 }
 

@@ -1023,10 +1023,11 @@ body {
 }
 
 .loading-dots {
-  display: flex;
+  display: inline-flex;
   gap: 4px;
   align-items: center;
-  padding: 8px 14px;
+  padding-right: 8px;
+  vertical-align: middle;
 }
 
 .loading-dots span {
@@ -1043,6 +1044,12 @@ body {
 @keyframes dotPulse {
   0%, 60%, 100% { opacity: 0.3; transform: scale(0.8); }
   30% { opacity: 1; transform: scale(1); }
+}
+
+#loading-text {
+  color: var(--vscode-descriptionForeground, #9aa0a6);
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 /* ==================== 输入区域 ==================== */

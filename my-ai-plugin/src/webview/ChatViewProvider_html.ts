@@ -101,6 +101,7 @@ export function buildChatViewHtml(options: {
       <div class="loading-dots">
         <span></span><span></span><span></span>
       </div>
+      <span id="loading-text">AI 正在处理...</span>
     </div>
 
     <div id="model-panel" class="model-panel hidden">

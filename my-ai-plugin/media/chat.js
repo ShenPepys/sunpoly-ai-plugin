@@ -1294,7 +1294,7 @@
         break;
 
       case 'setLoading':
-        setLoading(message.loading);
+        setLoading(message.loading, message.text);
         break;
 
       case 'clearChat':
@@ -2181,6 +2181,8 @@
       }
       // 添加状态指示条（如果还没有的话）
       showStreamStatus(messageEl, 'AI 正在思考...');
+      // 同步更新顶部 loading 区域的文本
+      updateLoadingText('AI 正在思考...');
     }
     scrollToBottom();
   }
@@ -2233,8 +2235,10 @@
         // 添加 streaming class，触发 CSS 闪烁光标
         var bodyEl = messageEl.querySelector('.message-body');
         if (bodyEl) { bodyEl.classList.add('streaming'); }
-        // 添加状态指示条（spinner + “AI 正在生成...”）
+        // 添加状态指示条（spinner + "AI 正在生成..."）
         showStreamStatus(messageEl, 'AI 正在生成...');
+        // 同步更新顶部 loading 区域的文本
+        updateLoadingText('AI 正在生成回复...');
       }
     }
 
@@ -2490,11 +2494,13 @@
   var stopBtnHtml = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>';
 
   /** 设置加载状态：生成时发送按钮变为停止按钮 */
-  function setLoading(loading) {
+  function setLoading(loading, text) {
     isGenerating = loading;
     if (loading) {
       cancelQueuedDispatch();
       loadingEl.classList.remove('hidden');
+      // 更新加载文本，根据当前状态显示不同文案
+      updateLoadingText(text || 'AI 正在处理...');
       btnSend.innerHTML = stopBtnHtml;
       btnSend.classList.add('stop-btn');
       btnSend.title = '停止生成';
@@ -2508,6 +2514,17 @@
     }
     renderMessageQueueBar();
     scrollToBottom();
+  }
+
+  /**
+   * 更新加载区域的提示文本
+   * @param {string} text - 要显示的提示文本
+   */
+  function updateLoadingText(text) {
+    var loadingTextEl = document.getElementById('loading-text');
+    if (loadingTextEl) {
+      loadingTextEl.textContent = text;
+    }
   }
 
   /** 清空聊天界面，恢复欢迎页 */

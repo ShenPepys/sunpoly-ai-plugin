@@ -295,6 +295,8 @@ export function sendStreamRequest(
       // 确保 onDone 被调用（防止 [DONE] 标志丢失的情况）
       if (fullContent) {
         callOnDone();
+      } else {
+        callOnError('AI 响应异常：未收到有效内容，请重试');
       }
     });
 

@@ -212,7 +212,7 @@ export async function executeRegenerateFlow(options: ExecuteRegenerateFlowOption
   options.setSessionStepSequence(sessionId, 0);
   options.setSessionToolCallRound(sessionId, 0);
   options.setSessionActiveHistoryProcessSummary(sessionId, resetActiveHistoryProcessSummary());
-  options.postSessionMessage(sessionId, { type: 'setLoading', loading: true });
+  options.postSessionMessage(sessionId, { type: 'setLoading', loading: true, text: 'AI 正在思考...' });
 
   const regenMsgId = reuseMessageId || `ai-regen-${Date.now()}`;
   const retryRequestId = createRetryRequestId();

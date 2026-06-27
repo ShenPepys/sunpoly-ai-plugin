@@ -112,7 +112,7 @@ export async function executeUserMessageFlow(options: ExecuteUserMessageFlowOpti
   options.setSessionTurnWriteRounds(sessionId, 0);
   options.setSessionRecoverableWriteFailRounds(sessionId, 0);
 
-  options.postSessionMessage(sessionId, { type: 'setLoading', loading: true });
+  options.postSessionMessage(sessionId, { type: 'setLoading', loading: true, text: 'AI 正在思考...' });
 
   const runLockError = options.tryAcquireSessionRunLock(sessionId, assistantMsgId);
   if (runLockError) {
@@ -230,7 +230,16 @@ export async function executeUserMessageFlow(options: ExecuteUserMessageFlowOpti
         retryRequestId,
         onToolCalls: ({ fullContent, parsedToolCalls }) => {
           options.handleToolCalls(sessionId, fullContent, apiConfig, assistantMsgId, requestMode, parsedToolCalls, retryRequestId)
-            .catch(err => error('工具调用处理异常:', err instanceof Error ? err.message : String(err)));
+            .catch(err => {
+              error('工具调用处理异常:', err instanceof Error ? err.message : String(err));
+              options.setSessionToolCallsInProgress(sessionId, false);
+              options.postSessionMessage(sessionId, { type: 'setLoading', loading: false });
+              options.postSessionMessage(sessionId, {
+                type: 'showError',
+                message: `工具执行异常：${err instanceof Error ? err.message : String(err)}`,
+                retryRequestId,
+              });
+            });
         },
         onDoneLog: (fullContent, thinkingElapsed) => {
           info(`AI 回复完成，长度: ${fullContent.length}，耗时: ${thinkingElapsed}ms`);
@@ -360,6 +369,9 @@ export async function executeToolCallsFlow(options: ExecuteToolCallsFlowOptions)
       options.setSessionActiveRunIdState(sessionId, completionState.nextActiveRunId);
       options.setSessionStepSequence(sessionId, completionState.nextStepSequence);
       options.setSessionActiveHistoryProcessSummary(sessionId, completionState.nextActiveHistoryProcessSummary);
+    } else {
+      // activeRunId 不匹配且不为 null（另一个 run 已接管），防御性清除 loading
+      options.postSessionMessage(sessionId, { type: 'setLoading', loading: false });
     }
     return;
   }
@@ -405,6 +417,9 @@ export async function executeToolCallsFlow(options: ExecuteToolCallsFlowOptions)
       createHistoryProcessSummary,
       toDisplayPath: getDisplayPathHelper,
       fileReadStateCache: options.fileReadStateCache,
+      setLoadingText: text => {
+        options.postSessionMessage(sessionId, { type: 'setLoading', loading: true, text });
+      },
     });
 
     options.setSessionStepSequence(sessionId, batchRound.nextStepSequence);
@@ -460,7 +475,16 @@ export async function executeToolCallsFlow(options: ExecuteToolCallsFlowOptions)
         onToolCalls: ({ fullContent, parsedToolCalls: nextParsedToolCalls, displayContent, assistantTimestamp }) => {
           if (options.getSessionToolCallRound(sessionId) < 200) {
             options.handleToolCalls(sessionId, fullContent, batchRound.followUpApiConfig, reuseMsgId, requestMode, nextParsedToolCalls, retryRequestId!)
-              .catch(err => error('续轮工具调用处理异常:', err instanceof Error ? err.message : String(err)));
+              .catch(err => {
+                error('续轮工具调用处理异常:', err instanceof Error ? err.message : String(err));
+                options.setSessionToolCallsInProgress(sessionId, false);
+                options.postSessionMessage(sessionId, { type: 'setLoading', loading: false });
+                options.postSessionMessage(sessionId, {
+                  type: 'showError',
+                  message: `工具执行异常：${err instanceof Error ? err.message : String(err)}`,
+                  retryRequestId,
+                });
+              });
             return;
           }
 
@@ -545,6 +569,15 @@ export async function executeToolCallsFlow(options: ExecuteToolCallsFlowOptions)
       }),
     );
 
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    error('工具执行流程异常:', errMsg);
+    options.postSessionMessage(sessionId, { type: 'setLoading', loading: false });
+    options.postSessionMessage(sessionId, {
+      type: 'showError',
+      message: `工具执行失败：${errMsg}`,
+      retryRequestId,
+    });
   } finally {
     options.setSessionToolCallsInProgress(sessionId, false);
   }

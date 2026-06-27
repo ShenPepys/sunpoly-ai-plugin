@@ -287,6 +287,8 @@ export interface ShowErrorResponse {
 export interface SetLoadingResponse {
   type: 'setLoading';
   loading: boolean;
+  /** 可选的提示文本，用于显示在顶部 loading 区域 */
+  text?: string;
 }
 
 /** 清空聊天界面 */
