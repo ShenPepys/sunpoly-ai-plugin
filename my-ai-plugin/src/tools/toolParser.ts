@@ -193,7 +193,8 @@ function parseSingleToolCall(inner: string, rawMatch: string): ParsedToolCall | 
   }
 
   // write_file: <write_file path="xxx">内容</write_file>
-  const writeMatch = inner.match(/<write_file\s+path\s*=\s*"([^"]+)">([\s\S]*?)<\/write_file>/);
+  // 使用更健壮的正则：匹配从 <write_file 到 </write_file> 的完整块
+  const writeMatch = inner.match(/<write_file\s+path\s*=\s*"([^"]+)">([\s\S]*)<\/write_file>/);
   if (writeMatch) {
     return { type: 'write_file', path: writeMatch[1], content: writeMatch[2], rawMatch };
   }
@@ -201,7 +202,8 @@ function parseSingleToolCall(inner: string, rawMatch: string): ParsedToolCall | 
   // edit_file: <edit_file path="xxx" replace_all="true"><old>旧</old><new>新</new></edit_file>
   // 也支持行号模式: <edit_file path="xxx" start_line="10" end_line="15"><new>新内容</new></edit_file>
   // replace_all / start_line / end_line 属性均可选
-  const editMatch = inner.match(/<edit_file\s+path\s*=\s*"([^"]+)"((?:\s+[a-z_]+\s*=\s*"[^"]*")*)>([\s\S]*?)<\/edit_file>/);
+  // 使用更健壮的正则：匹配从 <edit_file 到 </edit_file> 的完整块
+  const editMatch = inner.match(/<edit_file\s+path\s*=\s*"([^"]+)"((?:\s+[a-z_]+\s*=\s*"[^"]*")*)>([\s\S]*)<\/edit_file>/);
   if (editMatch) {
     const editAttrs = editMatch[2] || '';
     const editBody = editMatch[3];
@@ -246,7 +248,8 @@ function parseSingleToolCall(inner: string, rawMatch: string): ParsedToolCall | 
   }
 
   // ast_edit: <ast_edit path="xxx" action="add_import">{"modulePath": "./utils"}</ast_edit>
-  const astMatch = inner.match(/<ast_edit\s+path\s*=\s*"([^"]+)"\s+action\s*=\s*"([^"]+)">((?:[\s\S]*?))<\/ast_edit>/);
+  // 使用更健壮的正则：匹配从 <ast_edit 到 </ast_edit> 的完整块
+  const astMatch = inner.match(/<ast_edit\s+path\s*=\s*"([^"]+)"\s+action\s*=\s*"([^"]+)">([\s\S]*)<\/ast_edit>/);
   if (astMatch) {
     const astPath = astMatch[1];
     const astAction = astMatch[2] as AstEditAction;
@@ -279,7 +282,8 @@ function parseSingleToolCall(inner: string, rawMatch: string): ParsedToolCall | 
   }
 
   // run_command: <run_command timeout="30000">npm install</run_command>
-  const cmdMatch = inner.match(/<run_command((?:\s+[a-z_]+\s*=\s*"[^"]*")*)>([\s\S]*?)<\/run_command>/);
+  // 使用更健壮的正则：匹配从 <run_command 到 </run_command> 的完整块
+  const cmdMatch = inner.match(/<run_command((?:\s+[a-z_]+\s*=\s*"[^"]*")*)>([\s\S]*)<\/run_command>/);
   if (cmdMatch) {
     const cmdAttrs = cmdMatch[1] || '';
     const cmdBody = cmdMatch[2].trim();
