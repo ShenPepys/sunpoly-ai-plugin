@@ -4,7 +4,7 @@
  */
 import * as vscode from 'vscode';
 import { initLogger, disposeLogger, info, error } from './logger';
-import { setExtensionPath, setSecretStorage, migrateApiKeysToSecretStorage, disposeEnvWatchers, getAllModels, getActiveModelIndex } from './config';
+import { setExtensionPath, setSecretStorage, migrateApiKeysToSecretStorage, disposeEnvWatchers, getAllModels, getActiveModelIndex, getSecretApiKey } from './config';
 import { ChatTabManager } from './webview/ChatTabManager';
 import { executeCommand } from './commands/handler';
 import { disposeProject } from './tools/astContext';
@@ -23,7 +23,7 @@ let tabManager: ChatTabManager | undefined;
  * 插件激活时调用
  * VS Code 在用户首次触发插件命令或侧边栏可见时自动调用此函数
  */
-export function activate(context: vscode.ExtensionContext): void {
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
   // 初始化日志
   initLogger();
   info('AI 助理插件已激活');
@@ -34,7 +34,8 @@ export function activate(context: vscode.ExtensionContext): void {
   info(`插件路径: ${context.extensionUri.fsPath}`);
 
   // 将明文 API Key 迁移到 SecretStorage（兼容已有用户）
-  migrateApiKeysToSecretStorage().catch(err => {
+  // 必须 await，否则后续 API Key 检查可能在迁移完成前运行
+  await migrateApiKeysToSecretStorage().catch(err => {
     error('API Key 迁移失败:', err instanceof Error ? err.message : String(err));
   });
 
@@ -43,10 +44,14 @@ export function activate(context: vscode.ExtensionContext): void {
   info('Tab 管理器已初始化');
 
   // 启动时校验 API 配置：缺少 API Key 时提示用户
+  // 同时检查 SecretStorage（迁移后 settings 中的 apiKey 已被清空）
   const startupModels = getAllModels();
   const startupActiveIdx = getActiveModelIndex();
   const activeModel = startupModels[startupActiveIdx];
-  if (activeModel && !activeModel.apiKey) {
+  const hasSecretKey = activeModel
+    ? !!(await getSecretApiKey(activeModel.modelId, activeModel.baseUrl))
+    : false;
+  if (activeModel && !activeModel.apiKey && !hasSecretKey) {
     vscode.window.showWarningMessage(
       `AI 助理：当前模型 "${activeModel.name}" 未配置 API Key，请在设置中配置。`,
       '打开设置'

@@ -42,7 +42,7 @@ function secretKeyForModel(modelId: string, baseUrl: string): string {
 }
 
 /** 从 SecretStorage 读取模型 API Key */
-async function getSecretApiKey(modelId: string, baseUrl: string): Promise<string | undefined> {
+export async function getSecretApiKey(modelId: string, baseUrl: string): Promise<string | undefined> {
   if (!secretStorage) { return undefined; }
   try {
     return await secretStorage.get(secretKeyForModel(modelId, baseUrl));
@@ -512,8 +512,13 @@ export async function migrateApiKeysToSecretStorage(): Promise<void> {
     if (model.apiKey && model.apiKey.length > 0 && !model.apiKey.startsWith('填写')) {
       const existing = await getSecretApiKey(model.modelId, model.baseUrl);
       if (!existing) {
-        await setSecretApiKey(model.modelId, model.baseUrl, model.apiKey);
-        migrated = true;
+        try {
+          await setSecretApiKey(model.modelId, model.baseUrl, model.apiKey);
+          migrated = true;
+        } catch (err) {
+          // 单个 key 写入失败不影响其他 key 的迁移
+          info(`API Key 迁移失败 (${model.modelId}): ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
     }
   }

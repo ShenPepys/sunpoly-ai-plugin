@@ -22,6 +22,7 @@ import {
 } from './ChatViewProvider_sessions';
 import { clearRetryableRequestsForSession as clearRetryableRequestsForSessionHelper } from './ChatViewProvider_retryRequests';
 import type { RetryableRequestState } from './ChatViewProvider_retryRequests';
+import { clearSummaryCache } from './ChatViewProvider_contextSummary';
 import { buildUpdateSessionsResponse } from './ChatViewProvider_sessions';
 import type { IChatHost } from './IChatHost';
 
@@ -209,6 +210,7 @@ export function executeClearCurrentSession(deps: EngineHostApiDeps): void {
 
   deps.resetSessionScopedRuntimeState();
   deps.clearFileReadStateCache();
+  clearSummaryCache();
   clearSessionConversation(getActiveSessionHelper(deps.getSessions(), deps.getActiveSessionId()));
   const sessionListResponse = deps.saveSessions();
   deps.postMessage(sessionListResponse);
