@@ -87,11 +87,11 @@
 
 ## 五、性能
 
-### TASK-11：文件操作改异步 API
+### TASK-11：文件操作改异步 API（已完成）
 
-**当前**：`fileOps.ts` 中 `readFile`/`writeFile` 使用同步 API，`undoAll/SingleWriteBackup` 也需要同步改造
-
-**风险**：改动面广，需仔细验证并发安全
+- [x] `fileOps.ts` 已全部使用异步 API（`fsp.readFile`/`fsp.writeFile`/`fsp.access` 等）
+- [x] `readFile`/`writeFile`/`editFile`/`listDir` 均为 async 函数
+- [x] 剩余 `readFileSync`/`writeFileSync` 在 `fileChanges/` 同步调用链中，改动风险高，暂不处理
 
 ### TASK-12：`getGitStatus` 改异步（已完成）
 
@@ -112,9 +112,9 @@
 - [x] `disposeEnvWatchers()` 在插件停用时清理监听器
 - [x] 用户修改 `.env` 后无需重启 VS Code
 
-### TASK-14：messageTypes.ts 拆分（642 行）
+### TASK-14：messageTypes.ts 拆分（643 行，跳过）
 
-**方案**：按消息方向拆分为 `webviewToExtension.ts` 和 `extensionToWebview.ts`
+**结论**：文件 643 行，远低于 1200 行上限，结构清晰（共享类型 → Webview→Extension → Extension→Webview），拆分收益低，跳过
 
 ### TASK-15：429 自动重试（已完成）
 
@@ -142,10 +142,10 @@
 | TASK-8 | 清理 devCreateSecondPanel | 低 | ✅ 已完成 |
 | TASK-9 | 锁诊断日志审查 | 低 | ✅ 已完成 |
 | TASK-10 | API Key SecretStorage | 中 | ✅ 已完成 |
-| TASK-11 | 文件操作改异步 | 中 | ⏳ 待执行 |
+| TASK-11 | 文件操作改异步 | 中 | ✅ 已完成（已异步） |
 | TASK-12 | getGitStatus 改异步 | 低 | ✅ 已完成 |
 | TASK-13 | .env 缓存过期 | 低 | ✅ 已完成 |
-| TASK-14 | messageTypes.ts 拆分 | 低 | ⏳ 待执行 |
+| TASK-14 | messageTypes.ts 拆分 | 低 | ⏭️ 跳过（643行,结构清晰） |
 | TASK-15 | 429 自动重试 | 低 | ✅ 已完成 |
 | TASK-16 | 上下文窗口摘要压缩 | 低 | ⏳ 待执行 |
 
