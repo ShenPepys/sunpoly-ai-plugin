@@ -2,7 +2,7 @@
   "name": "sunpoly-ai-plugin",
   "displayName": "sunpoly-ai-助理",
   "description": "AI 助理插件，支持代码解释、Bug 修复、代码优化、续写和单测生成",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "publisher": "sunpoly-ai-plugin",
   "author": {
     "name": "Mr.shen",
