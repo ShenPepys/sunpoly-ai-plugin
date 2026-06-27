@@ -3187,4 +3187,11 @@
     shouldRestoreInternalTabViewState = false;
   }
 
+  // ==================== 初始化：自动请求模型列表 ====================
+  /**
+   * Webview 加载完成后，立即向后端请求模型列表
+   * 确保首次打开面板时就能看到正确的模型名称，而不是占位符文本
+   */
+  vscode.postMessage({ type: 'requestModels' });
+
 })();

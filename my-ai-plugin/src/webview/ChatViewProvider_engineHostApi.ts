@@ -38,6 +38,7 @@ export function sendEngineModelList(postMessage: (message: ExtensionMessage) => 
   const activeIndex = getActiveModelIndex();
   const safeIndex = Math.max(0, Math.min(activeIndex, models.length - 1));
   const modelConfig = getModelConfig();
+  info(`发送模型列表到前端: ${models.length} 个模型, activeIndex=${safeIndex}, 当前模型=${modelConfig.modelName}`);
   postMessage(buildUpdateModelsResponse({
     models,
     activeIndex: safeIndex,
