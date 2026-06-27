@@ -16,18 +16,22 @@ Module._resolveFilename = function (request, parentModule, isMain, options) {
   return originalResolveFilename.call(this, request, parentModule, isMain, options);
 };
 
-// 提供最小 vscode mock 对象
+// 提供最小 vscode mock 对象（缓存单例，确保测试修改可见）
+let cachedVscode = null;
 Module._load = function (originalLoad) {
   return function (request, ...args) {
     if (request === 'vscode') {
-      return {
-        Memento: class { get() { return undefined; } update() { return Promise.resolve(); } },
-        Disposable: class { dispose() {} },
-        EventEmitter: class { fire() {} event() { return { dispose() {} }; } },
-        Uri: { parse: () => ({}) , joinPath: () => ({}) },
-        window: { showWarningMessage: () => {}, showInformationMessage: () => {} },
-        workspace: { getConfiguration: () => ({ get: () => undefined }) },
-      };
+      if (!cachedVscode) {
+        cachedVscode = {
+          Memento: class { get() { return undefined; } update() { return Promise.resolve(); } },
+          Disposable: class { dispose() {} },
+          EventEmitter: class { fire() {} event() { return { dispose() {} }; } },
+          Uri: { parse: () => ({}) , joinPath: () => ({}) },
+          window: { showWarningMessage: () => {}, showInformationMessage: () => {} },
+          workspace: { getConfiguration: () => ({ get: () => undefined }) },
+        };
+      }
+      return cachedVscode;
     }
     return originalLoad.call(this, request, ...args);
   };

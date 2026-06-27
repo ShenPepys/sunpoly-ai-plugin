@@ -104,12 +104,12 @@ function buildOutsideFencedCodeSegments(text: string): string[] {
 function replaceToolCallsInPlainText(text: string): string {
   let result = text.replace(new RegExp(WRAPPED_TOOL_CALL_REGEX_SOURCE, 'g'), '');
   result = result.replace(/<(?:read_file|list_dir)\s+path\s*=\s*"[^"]+"\s*\/>/g, '');
-  result = result.replace(/<write_file\s+path\s*=\s*"[^"]+">[\s\S]*?<\/write_file>/g, '');
-  result = result.replace(/<edit_file\s+path\s*=\s*"[^"]+"(?:\s+[a-z_]+\s*=\s*"[^"]*")*>[\s\S]*?<\/edit_file>/g, '');
-  result = result.replace(/<ast_edit\s+path\s*=\s*"[^"]+"\s+action\s*=\s*"[^"]+">[\s\S]*?<\/ast_edit>/g, '');
+  result = result.replace(/<write_file\s+path\s*=\s*"[^"]+">[\s\S]*<\/write_file>/g, '');
+  result = result.replace(/<edit_file\s+path\s*=\s*"[^"]+"(?:\s+[a-z_]+\s*=\s*"[^"]*")*>[\s\S]*<\/edit_file>/g, '');
+  result = result.replace(/<ast_edit\s+path\s*=\s*"[^"]+"\s+action\s*=\s*"[^"]+">[\s\S]*<\/ast_edit>/g, '');
   result = result.replace(/<search_file\s+pattern\s*=\s*"[^"]+"\s*\/>/g, '');
   result = result.replace(/<grep_code\s+regex\s*=\s*"[^"]+"(?:\s+[a-z_]+\s*=\s*"[^"]*")*\s*\/>/g, '');
-  result = result.replace(/<run_command(?:\s+[a-z_]+\s*=\s*"[^"]*")*>([\s\S]*?)<\/run_command>/g, '');
+  result = result.replace(/<run_command(?:\s+[a-z_]+\s*=\s*"[^"]*")*>([\s\S]*)<\/run_command>/g, '');
   return result;
 }
 

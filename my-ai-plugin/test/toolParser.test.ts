@@ -211,6 +211,68 @@ test('parseToolCalls 能解析裸 run_command 标签', () => {
   assert.equal(calls[0].command, 'git status');
 });
 
+test('parseToolCalls write_file 内容包含 HTML/XML 关闭标签时不会被截断', () => {
+  const htmlContent = [
+    '<!DOCTYPE html>',
+    '<html>',
+    '<head><script src="app.js"></script></head>',
+    '<body>',
+    '<div class="app">',
+    '<script>',
+    '  console.log("hello");',
+    '</script>',
+    '</div>',
+    '</body>',
+    '</html>',
+  ].join('\n');
+  const content = `<tool_call><write_file path="index.html">${htmlContent}</write_file>`;
+  const calls = parseToolCalls(content);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].type, 'write_file');
+  assert.equal(calls[0].path, 'index.html');
+  assert.ok(calls[0].content!.includes('</script>'), 'content 应包含 </script> 标签');
+  assert.ok(calls[0].content!.includes('</div>'), 'content 应包含 </div> 标签');
+  assert.ok(calls[0].content!.includes('</html>'), 'content 应包含 </html> 标签');
+  assert.equal(calls[0].content, htmlContent, 'content 应与原始 HTML 完全一致');
+});
+
+test('parseToolCalls edit_file 的 old/new 内容包含 XML 标签时不被截断', () => {
+  const content = [
+    '<tool_call>',
+    '<edit_file path="src/App.vue">',
+    '<old>    <div class="old">text</div></old>',
+    '<new>    <div class="new">updated</div></new>',
+    '</edit_file>',
+    '',
+  ].join('\n');
+  const calls = parseToolCalls(content);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].type, 'edit_file');
+  assert.equal(calls[0].oldContent, '    <div class="old">text</div>');
+  assert.equal(calls[0].newContent, '    <div class="new">updated</div>');
+});
+
+test('stripToolCalls 能剥离内容含 XML 标签的 write_file', () => {
+  const content = [
+    '我来创建页面：',
+    '<tool_call><write_file path="a.html"><html><body><script>x=1</script></body></html></write_file>',
+    '创建完成。',
+  ].join('\n');
+  const stripped = stripToolCalls(content);
+  assert.doesNotMatch(stripped, /write_file/);
+  assert.doesNotMatch(stripped, /<html>/);
+  assert.match(stripped, /我来创建页面/);
+  assert.match(stripped, /创建完成/);
+});
+
+test('parseToolCalls run_command 命令内容包含 XML 样式的字符串时不被截断', () => {
+  const content = '<tool_call><run_command>echo "<div>hello</div>" > file.txt</run_command>';
+  const calls = parseToolCalls(content);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].type, 'run_command');
+  assert.equal(calls[0].command, 'echo "<div>hello</div>" > file.txt');
+});
+
 test('stripToolCalls 能正确剥离 run_command 标签', () => {
   const content = '我来执行安装命令：<tool_call><run_command>npm install</run_command></tool_call>\n安装完成。';
   const stripped = stripToolCalls(content);

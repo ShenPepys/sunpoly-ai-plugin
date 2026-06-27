@@ -16,3 +16,5 @@ export { FileReadStateCache, validateFileReadState, buildReadFileStubIfUnchanged
 export type { FileReadState, FileReadStateValidation, ReadFileStubResult } from './fileReadStateCache';
 export { getToolDef, getToolLabel, getToolIcon, isToolReadOnly, getToolStepText, getAllToolDefs } from './toolDefs';
 export type { ToolDef } from './toolDefs';
+export { getWorkspaceStats, formatWorkspaceStats } from './workspaceStats';
+export type { WorkspaceStats, FileStats, DirStats } from './workspaceStats';
