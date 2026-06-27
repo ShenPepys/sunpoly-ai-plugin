@@ -124,11 +124,15 @@
 - [x] 非流式请求（`doHttpRequest`）：同样支持 429 自动重试
 - [x] `tsc --noEmit` + 测试 244 pass / 0 fail
 
-### TASK-16：上下文窗口摘要压缩
+### TASK-16：上下文窗口摘要压缩（已完成）
 
-**当前**：`trimChatHistory` 只按长度裁剪历史
-
-**方案**：对较早的对话做 AI 摘要压缩后再裁剪
+- [x] 新建 `ChatViewProvider_contextSummary.ts`：摘要生成 + 指纹缓存
+- [x] `prepareRemindedMessages` 改为 async，裁剪后调用 API 生成固定长度摘要（≤500 tokens）
+- [x] 摘要作为 system 消息注入历史头部，避免模型完全丢失早期上下文
+- [x] 摘要结果按指纹缓存，同一轮 follow-up 请求不重复调用 API
+- [x] API 失败时降级为纯文本提示
+- [x] 3 个调用方同步更新（requestFlow / requestExecution / regenerate）
+- [x] `tsc --noEmit` + 测试 250 pass / 0 fail
 
 ---
 
@@ -148,7 +152,7 @@
 | TASK-13 | .env 缓存过期 | 低 | ✅ 已完成 |
 | TASK-14 | messageTypes.ts 拆分 | 低 | ⏭️ 跳过（643行,结构清晰） |
 | TASK-15 | 429 自动重试 | 低 | ✅ 已完成 |
-| TASK-16 | 上下文窗口摘要压缩 | 低 | ⏳ 待执行 |
+| TASK-16 | 上下文窗口摘要压缩 | 低 | ✅ 已完成 |
 
 ---
 

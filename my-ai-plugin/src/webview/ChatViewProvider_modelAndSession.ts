@@ -6,6 +6,7 @@ import { buildSystemPrompt } from '../prompts/system';
 import type { ModelConfig } from '../prompts/types';
 import { detectProjectType, getEnvContext, getGitStatus, getProjectContext } from '../utils/context';
 import { estimateMessagesTokenCount, trimHistoryToFitContextWindow } from './ChatViewProvider_contextUsage';
+import { summarizeDroppedMessages } from './ChatViewProvider_contextSummary';
 import type {
   UpdateModelsResponse,
   VisionNotSupportedResponse,
@@ -340,25 +341,49 @@ export function injectModeReminder(
   };
 }
 
-export function prepareRemindedMessages(options: {
+export async function prepareRemindedMessages(options: {
   history: ChatMessageParam[];
   requestMode: WorkMode;
   contextWindow: number;
   maxTokens: number;
   excludeLastMessage?: boolean;
-}): ChatMessageParam[] {
+  /** 用于上下文摘要的 API 参数（可选，未提供则跳过摘要） */
+  modelConfig?: ModelConfig;
+  apiKey?: string;
+  temperature?: number;
+}): Promise<ChatMessageParam[]> {
   const historyWindow = trimHistoryToFitContextWindow(options.history, {
     contextWindow: options.contextWindow,
     maxTokens: options.maxTokens,
   });
 
+  let retainedHistory = historyWindow.retainedHistory;
+
   if (historyWindow.skippedCount > 0) {
     info(`上下文窗口截断：总窗口 ${historyWindow.contextWindow}，历史预算 ${historyWindow.historyTokenBudget}，跳过前 ${historyWindow.skippedCount} 条消息，保留 ${historyWindow.retainedCount} 条`);
+
+    // 对被裁剪的早期消息生成 AI 摘要
+    if (options.modelConfig && options.apiKey) {
+      const summaryApiConfig = buildApiClientConfig({
+        modelConfig: options.modelConfig,
+        apiKey: options.apiKey,
+        maxTokens: 500,
+        temperature: options.temperature ?? 0.3,
+      });
+      const droppedMessages = options.history.slice(0, historyWindow.skippedCount);
+      const summary = await summarizeDroppedMessages(droppedMessages, summaryApiConfig);
+      if (summary) {
+        retainedHistory = [
+          { role: 'system', content: `[以下是之前对话的压缩摘要，共 ${historyWindow.skippedCount} 条消息]\n${summary}` },
+          ...retainedHistory,
+        ];
+      }
+    }
   }
 
   const historyForReminder = options.excludeLastMessage
-    ? historyWindow.retainedHistory.slice(0, -1)
-    : historyWindow.retainedHistory;
+    ? retainedHistory.slice(0, -1)
+    : retainedHistory;
   const reminderResult = injectModeReminder(historyForReminder, options.requestMode);
 
   if (reminderResult.mismatchDetected) {

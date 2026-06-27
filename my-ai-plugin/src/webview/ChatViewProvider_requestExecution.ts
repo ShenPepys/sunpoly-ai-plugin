@@ -293,11 +293,14 @@ export async function executeToolCallBatchRound(
   const followUpRequest = await prepareChatRequestExecution({
     modelConfig,
     requestMode: options.requestMode,
-    remindedMessages: prepareRemindedMessages({
+    remindedMessages: await prepareRemindedMessages({
       history: options.historyForFollowUp,
       requestMode: options.requestMode,
       contextWindow: modelConfig.contextWindow,
       maxTokens: getMaxTokens(),
+      modelConfig,
+      apiKey: options.apiConfig.apiKey,
+      temperature: options.apiConfig.temperature,
     }),
     apiKey: options.apiConfig.apiKey,
     maxTokens: getMaxTokens(),

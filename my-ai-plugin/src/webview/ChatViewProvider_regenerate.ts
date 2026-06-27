@@ -278,11 +278,14 @@ export async function executeRegenerateFlow(options: ExecuteRegenerateFlowOption
     const requestExecution = await prepareChatRequestExecution({
       modelConfig,
       requestMode,
-      remindedMessages: prepareRemindedMessages({
+      remindedMessages: await prepareRemindedMessages({
         history: sessionChatHistory as ChatMessageParam[],
         requestMode,
         contextWindow: modelConfig.contextWindow,
         maxTokens: getMaxTokens(),
+        modelConfig,
+        apiKey,
+        temperature: getTemperature(),
       }),
       apiKey,
       maxTokens: getMaxTokens(),

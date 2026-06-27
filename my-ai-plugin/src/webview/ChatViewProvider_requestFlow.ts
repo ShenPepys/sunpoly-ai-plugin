@@ -167,12 +167,15 @@ export async function executeUserMessageFlow(options: ExecuteUserMessageFlowOpti
     const requestExecution = await prepareChatRequestExecution({
       modelConfig,
       requestMode,
-      remindedMessages: prepareRemindedMessages({
+      remindedMessages: await prepareRemindedMessages({
         history: sessionChatHistory as ChatMessageParam[],
         requestMode,
         contextWindow: modelConfig.contextWindow,
         maxTokens: getMaxTokens(),
         excludeLastMessage: true,
+        modelConfig,
+        apiKey,
+        temperature: getTemperature(),
       }),
       apiKey,
       maxTokens: getMaxTokens(),
