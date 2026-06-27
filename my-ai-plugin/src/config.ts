@@ -9,6 +9,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { info } from './logger';
 import type { ModelConfig } from './prompts/types';
 
 /** 配置项前缀 */
@@ -19,6 +20,38 @@ let envCache: Record<string, string> | null = null;
 
 /** 插件安装目录（由 extension.ts 在激活时设置） */
 let extensionPath = '';
+
+/** SecretStorage 引用（由 extension.ts 在激活时注入） */
+let secretStorage: vscode.SecretStorage | null = null;
+
+/**
+ * 设置 SecretStorage 引用
+ * 必须在 extension.ts 的 activate() 中调用
+ */
+export function setSecretStorage(storage: vscode.SecretStorage): void {
+  secretStorage = storage;
+}
+
+/** 获取指定模型的 SecretStorage key */
+function secretKeyForModel(modelId: string, baseUrl: string): string {
+  return `apiKey:${modelId}@${baseUrl}`;
+}
+
+/** 从 SecretStorage 读取模型 API Key */
+async function getSecretApiKey(modelId: string, baseUrl: string): Promise<string | undefined> {
+  if (!secretStorage) { return undefined; }
+  try {
+    return await secretStorage.get(secretKeyForModel(modelId, baseUrl));
+  } catch {
+    return undefined;
+  }
+}
+
+/** 将模型 API Key 写入 SecretStorage */
+async function setSecretApiKey(modelId: string, baseUrl: string, apiKey: string): Promise<void> {
+  if (!secretStorage) { return; }
+  await secretStorage.store(secretKeyForModel(modelId, baseUrl), apiKey);
+}
 
 /**
  * 设置插件根目录路径
@@ -320,6 +353,14 @@ export function detectVisionSupport(modelId: string): boolean {
  */
 export async function ensureApiKey(): Promise<string | undefined> {
   const config = getModelConfig();
+
+  // 优先从 SecretStorage 读取
+  const secretKey = await getSecretApiKey(config.modelId, config.baseUrl);
+  if (secretKey) {
+    return secretKey;
+  }
+
+  // 回退：从明文配置读取（兼容未迁移的情况）
   if (config.apiKey) {
     return config.apiKey;
   }
@@ -347,14 +388,20 @@ export async function ensureApiKey(): Promise<string | undefined> {
       vscode.window.showInformationMessage(
         '当前模型来自 .env 文件，请在 .env 中设置 API_KEY 以持久保存（本次输入仅当次生效）'
       );
-    } else if (settingsIndex >= 0 && modelsToSave[settingsIndex]) {
-      modelsToSave[settingsIndex] = {
-        ...modelsToSave[settingsIndex],
-        apiKey: input,
-      };
-      await vscode.workspace
-        .getConfiguration(CONFIG_PREFIX)
-        .update('models', modelsToSave, true);
+    } else {
+      // 优先写入 SecretStorage（安全存储）
+      await setSecretApiKey(config.modelId, config.baseUrl, input);
+
+      // 同时写入 settings 作为回退（SecretStorage 不可用时降级）
+      if (settingsIndex >= 0 && modelsToSave[settingsIndex]) {
+        modelsToSave[settingsIndex] = {
+          ...modelsToSave[settingsIndex],
+          apiKey: input,
+        };
+        await vscode.workspace
+          .getConfiguration(CONFIG_PREFIX)
+          .update('models', modelsToSave, true);
+      }
     }
     return input;
   }
@@ -411,4 +458,38 @@ export function getProxy(): string {
 export function getPanelTitle(): string {
   const panelTitle = get<string>('panelTitle', 'Sunpoly').trim();
   return panelTitle || 'Sunpoly';
+}
+
+/**
+ * 将明文 API Key 从 settings 迁移到 SecretStorage
+ * 在 activate() 中调用，每次启动时检查并迁移
+ * 迁移完成后清空 settings 中的 apiKey 字段
+ */
+export async function migrateApiKeysToSecretStorage(): Promise<void> {
+  if (!secretStorage) { return; }
+
+  const storedModels = getStoredModels();
+  let migrated = false;
+
+  for (const model of storedModels) {
+    if (model.apiKey && model.apiKey.length > 0 && !model.apiKey.startsWith('填写')) {
+      const existing = await getSecretApiKey(model.modelId, model.baseUrl);
+      if (!existing) {
+        await setSecretApiKey(model.modelId, model.baseUrl, model.apiKey);
+        migrated = true;
+      }
+    }
+  }
+
+  if (migrated) {
+    // 清空 settings 中的明文 apiKey
+    const clearedModels = storedModels.map(model => ({
+      ...model,
+      apiKey: '',
+    }));
+    await vscode.workspace
+      .getConfiguration(CONFIG_PREFIX)
+      .update('models', clearedModels, true);
+    info(`已将 ${storedModels.filter(m => m.apiKey && !m.apiKey.startsWith('填写')).length} 个 API Key 迁移到 SecretStorage`);
+  }
 }

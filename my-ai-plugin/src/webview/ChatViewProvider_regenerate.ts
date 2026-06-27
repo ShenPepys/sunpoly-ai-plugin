@@ -275,7 +275,7 @@ export async function executeRegenerateFlow(options: ExecuteRegenerateFlowOption
     }
 
     const modelConfig = getModelConfig();
-    const requestExecution = prepareChatRequestExecution({
+    const requestExecution = await prepareChatRequestExecution({
       modelConfig,
       requestMode,
       remindedMessages: prepareRemindedMessages({

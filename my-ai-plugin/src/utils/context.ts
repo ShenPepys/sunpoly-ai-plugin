@@ -93,7 +93,7 @@ export function detectProjectType(): string {
  * 获取 Git 状态信息：当前分支名 + 未提交的变更文件
  * 用于注入 system prompt，让 AI 了解用户当前的开发上下文
  */
-export function getGitStatus(): { branch: string; changedFiles: string[] } {
+export async function getGitStatus(): Promise<{ branch: string; changedFiles: string[] }> {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!workspaceFolder) { return { branch: '', changedFiles: [] }; }
 
@@ -105,7 +105,7 @@ export function getGitStatus(): { branch: string; changedFiles: string[] } {
 
   try {
     // 读取当前分支（从 .git/HEAD）
-    const headContent = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf-8').trim();
+    const headContent = (await fs.promises.readFile(path.join(gitDir, 'HEAD'), 'utf-8')).trim();
     if (headContent.startsWith('ref: refs/heads/')) {
       branch = headContent.replace('ref: refs/heads/', '');
     } else {
@@ -116,12 +116,17 @@ export function getGitStatus(): { branch: string; changedFiles: string[] } {
   }
 
   try {
-    // 通过 child_process 获取未提交文件（同步执行，限时 3 秒）
-    const { execSync } = require('child_process');
-    const output = execSync('git status --porcelain', {
-      cwd: workspaceFolder,
-      timeout: 3000,
-      encoding: 'utf-8',
+    // 通过 child_process 获取未提交文件（异步执行，限时 3 秒）
+    const { exec } = require('child_process');
+    const output: string = await new Promise((resolve, reject) => {
+      exec('git status --porcelain', {
+        cwd: workspaceFolder,
+        timeout: 3000,
+        encoding: 'utf-8',
+      }, (err: Error | null, stdout: string) => {
+        if (err) { reject(err); return; }
+        resolve(stdout);
+      });
     });
     changedFiles = output
       .split('\n')

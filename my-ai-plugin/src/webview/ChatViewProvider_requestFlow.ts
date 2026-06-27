@@ -164,7 +164,7 @@ export async function executeUserMessageFlow(options: ExecuteUserMessageFlowOpti
 
     options.postSessionMessage(sessionId, { type: 'clearImageAttachments' });
 
-    const requestExecution = prepareChatRequestExecution({
+    const requestExecution = await prepareChatRequestExecution({
       modelConfig,
       requestMode,
       remindedMessages: prepareRemindedMessages({

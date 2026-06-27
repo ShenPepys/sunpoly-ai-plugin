@@ -34,14 +34,17 @@
 
 ## 二、ChatEngine.ts 继续瘦身
 
-**当前**：**1327 行**（事故恢复后重建，项目规范 ≤1200 行，仍差 127 行）
+**当前**：**1198 行**（已达标，项目规范 ≤1200 行）
 
 ### TASK-6：提取运行时状态 getter/setter（已完成）
 
 - [x] 新建 `ChatViewProvider_runtimeAccess.ts`（`SessionRuntimeManager`）
 - [x] 运行时状态 Map、运行锁管理方法已迁入
 - [x] `handleUserMessage` / `handleToolCalls` 委托 `ChatViewProvider_requestFlow.ts`
+- [x] `regenerateResponse` 方法替换为已有的 `executeRegenerateFlow`（消除 141 行重复代码）
+- [x] 清理 ~20 个未使用导入
 - [x] `tsc --noEmit` + 测试 **244 pass / 0 fail**
+- [x] **ChatEngine.ts 从 1328 行降至 1198 行（-9.8%），达标 ≤1200 行**
 
 ### TASK-7：提取公开 API + UI 桥接（已完成）
 
@@ -50,7 +53,7 @@
 - [x] `ChatEngine.ts` 公开 API 与 UI transcript 逻辑已委托上述模块
 - [x] 事故恢复：`git checkout` 误还原的 2467 行单体文件已重建为模块化编排层
 
-**剩余**：距 1200 行规范还差 ~127 行，可继续提取 `handleRegenerate` / `regenerateResponse` 或会话切换逻辑
+**剩余**：✅ ChatEngine.ts 已降至 **1198 行**，达标 ≤1200 行
 
 ---
 
@@ -71,16 +74,14 @@
 
 ## 四、安全性
 
-### TASK-10：API Key 安全存储
+### TASK-10：API Key 安全存储（已完成）
 
-**当前**：API Key 以明文存储在 VS Code settings 中
-
-**方案**：
-- 使用 VS Code `SecretStorage` API（`context.secrets`）
-- 迁移逻辑：首次启动检测 settings 中是否有明文 key，有则迁移到 SecretStorage 并清除
-- `config.ts` 的 `getApiKey()` / `ensureApiKey()` 改为读写 secrets
-
-**风险**：需要处理迁移兼容性，避免已有用户的 key 丢失
+- [x] 添加 `SecretStorage` 支持（`setSecretStorage` + `getSecretApiKey` / `setSecretApiKey`）
+- [x] `ensureApiKey()` 优先从 SecretStorage 读取，回退明文配置
+- [x] 新输入 API Key 同时写入 SecretStorage + settings（降级兼容）
+- [x] `migrateApiKeysToSecretStorage()` 迁移函数，激活时自动将明文 key 移入 SecretStorage
+- [x] `extension.ts` 激活时注入 `context.secrets` + 触发迁移
+- [x] `tsc --noEmit` + 测试 244 pass / 0 fail
 
 ---
 
@@ -88,20 +89,17 @@
 
 ### TASK-11：文件操作改异步 API
 
-**当前**：`fileOps.ts` 中 `readFile`/`writeFile` 使用 `fs.readFileSync`/`fs.writeFileSync` 同步 API
+**当前**：`fileOps.ts` 中 `readFile`/`writeFile` 使用同步 API，`undoAll/SingleWriteBackup` 也需要同步改造
 
-**方案**：
-- 改为 `fs.promises.readFile`/`fs.promises.writeFile`
-- 上层调用链需要加 `await`（大部分已经是 async）
-- `undoAllWriteBackups` / `undoSingleWriteBackup`（现在在 `u_undo.ts`）也需要同步改造
+**风险**：改动面广，需仔细验证并发安全
 
-**风险**：改动面广，需要仔细验证并发安全
+### TASK-12：`getGitStatus` 改异步（已完成）
 
-### TASK-12：`getGitStatus` 改异步
-
-**位置**：使用 `execSync` 同步执行 git 命令
-
-**方案**：改为 `child_process.exec` + Promise
+- [x] `getGitStatus()` 改为 async，`execSync` → `exec` (Promise)
+- [x] `.git/HEAD` 读取 `fs.readFileSync` → `fs.promises.readFile`
+- [x] 调用链 `buildRequestSystemPrompt` / `buildChatRequestMessages` / `prepareChatRequestExecution` 全部改 async
+- [x] 3 个调用方（requestFlow / requestExecution / regenerate）添加 `await`
+- [x] `tsc --noEmit` + 测试 244 pass / 0 fail
 
 ---
 
@@ -117,11 +115,13 @@
 
 **方案**：按消息方向拆分为 `webviewToExtension.ts` 和 `extensionToWebview.ts`
 
-### TASK-15：429 自动重试
+### TASK-15：429 自动重试（已完成）
 
-**当前**：API 返回 429 时直接报错给用户
-
-**方案**：指数退避重试，最多 3 次
+- [x] 流式请求（`sendStreamRequest`）：429 时自动重试，最多 3 次，指数退避
+- [x] 读取 `Retry-After` header，无则用 `5 * 2^n` 秒退避
+- [x] 用户中断时取消重试 timer
+- [x] 非流式请求（`doHttpRequest`）：同样支持 429 自动重试
+- [x] `tsc --noEmit` + 测试 244 pass / 0 fail
 
 ### TASK-16：上下文窗口摘要压缩
 
@@ -133,20 +133,20 @@
 
 ## 汇总
 
-| 编号 | 任务 | 优先级 | 预估工作量 |
-|------|------|--------|----------|
-| TASK-1~5 | d_fileChanges.ts 拆分 | 高 | 2-3h |
-| TASK-6 | ChatEngine 运行时状态提取 | 中 | 1-2h |
-| TASK-7 | ChatEngine 公开 API 提取 | 中 | 1-2h |
-| TASK-8 | 清理 devCreateSecondPanel | 低 | 10min |
-| TASK-9 | 锁诊断日志审查 | 低 | 10min |
-| TASK-10 | API Key SecretStorage | 中 | 2-3h |
-| TASK-11 | 文件操作改异步 | 中 | 3-4h |
-| TASK-12 | getGitStatus 改异步 | 低 | 30min |
-| TASK-13 | .env 缓存过期 | 低 | 1h |
-| TASK-14 | messageTypes.ts 拆分 | 低 | 1h |
-| TASK-15 | 429 自动重试 | 低 | 1h |
-| TASK-16 | 上下文窗口摘要压缩 | 低 | 3-4h |
+| 编号 | 任务 | 优先级 | 状态 |
+|------|------|--------|------|
+| TASK-1~5 | d_fileChanges.ts 拆分 | 高 | ✅ 已完成 |
+| TASK-6 | ChatEngine 运行时状态提取 | 中 | ✅ 已完成（1198行） |
+| TASK-7 | ChatEngine 公开 API 提取 | 中 | ✅ 已完成 |
+| TASK-8 | 清理 devCreateSecondPanel | 低 | ✅ 已完成 |
+| TASK-9 | 锁诊断日志审查 | 低 | ✅ 已完成 |
+| TASK-10 | API Key SecretStorage | 中 | ✅ 已完成 |
+| TASK-11 | 文件操作改异步 | 中 | ⏳ 待执行 |
+| TASK-12 | getGitStatus 改异步 | 低 | ✅ 已完成 |
+| TASK-13 | .env 缓存过期 | 低 | ⏳ 待执行 |
+| TASK-14 | messageTypes.ts 拆分 | 低 | ⏳ 待执行 |
+| TASK-15 | 429 自动重试 | 低 | ✅ 已完成 |
+| TASK-16 | 上下文窗口摘要压缩 | 低 | ⏳ 待执行 |
 
 ---
 

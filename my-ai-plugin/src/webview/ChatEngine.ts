@@ -7,10 +7,10 @@
  */
 import * as vscode from 'vscode';
 import { info, error } from '../logger';
-import { getModelConfig, ensureApiKey, getMaxTokens, getTemperature, getAllModels, getActiveModelIndex, getPanelTitle } from '../config';
+import { getModelConfig, getMaxTokens, getPanelTitle } from '../config';
 import type { ApiClientConfig, AbortStreamFn } from '../api/client';
 import type { ChatMessageParam } from '../api/types';
-import type { CommandExecutionRequest, CommandType } from '../commands/handler';
+import type { CommandExecutionRequest } from '../commands/handler';
 import type {
   ExtensionMessage,
   WebviewMessage,
@@ -20,50 +20,32 @@ import type {
   ChatSessionDisplayMessage,
   ChatSessionHistoryMessage,
   PersistedUiEntry,
-  PersistedUiEvent,
-  PersistedUiMessageEntry,
 } from './messageTypes';
 import type { ParsedToolCall } from '../tools';
 import { FileReadStateCache } from '../tools';
 import { buildContextUsageSnapshot, buildUpdateTokenCountResponse } from './ChatViewProvider_contextUsage';
-import { buildChatViewHtml } from './ChatViewProvider_html';
+
 import {
-  applyAssistantResponseDisplay,
-  analyzeAssistantResponseDisplay,
-  appendDisplayHistoryUserMessage,
   buildAssistantDisplayCompletionMessages,
   cloneDisplayHistoryMessages,
   cloneHistoryProcessSummary,
   createDisplayMessageId as createDisplayMessageIdHelper,
-  createHistoryProcessSummary,
   getDisplayHistoryMessageById,
   getLastAssistantDisplayHistoryMessage,
-  getUserDisplayContent,
   isToolFeedbackMessage,
   normalizeHistoryMessages,
-  upsertAssistantDisplayHistoryMessage,
 } from './ChatViewProvider_displayHistory';
-import {
-  buildExpiredChangeSummaryResponse,
-  buildFinalTurnChangeSummaryResponse,
-  collectWriteBackupMessageIds,
-  getDisplayPath as getDisplayPathHelper,
-  isChangeSummaryFileUndoable,
-} from './fileChanges';
+import { getDisplayPath as getDisplayPathHelper } from './fileChanges';
 import type { ChangeSummaryFile, WriteBackupEntry } from './fileChanges';
 import {
   buildChatExportMarkdown,
   saveChatExportMarkdown,
 } from './ChatViewProvider_workspaceContext';
 import {
-  clearSessionConversation,
-  planInitialSessionBootstrap,
   buildUpdateSessionsResponse,
   buildSessionTitle as buildSessionTitleHelper,
-  planClearCurrentSession,
   planCreateSession,
   planDeleteSession,
-  planOpenSessionLauncher,
   planRenameSession,
   planSwitchSession,
   prepareActiveSessionForSave,
@@ -73,7 +55,7 @@ import {
   resolveSessionDisplayHistory,
   setSessionDisplayHistory,
 } from './ChatViewProvider_sessions';
-import { prepareRegenerateRequest } from './ChatViewProvider_regenerate';
+import { prepareRegenerateRequest, executeRegenerateFlow } from './ChatViewProvider_regenerate';
 import type { PendingRegenerateState } from './ChatViewProvider_regenerate';
 import {
   buildSlashCommandRequest,
@@ -81,9 +63,7 @@ import {
 } from './ChatViewProvider_commands';
 import {
   clearRetryableRequestsForSession as clearRetryableRequestsForSessionHelper,
-  cloneRequestImages as cloneRequestImagesHelper,
   createRetryRequestId as createRetryRequestIdHelper,
-  rememberRetryableRequest as rememberRetryableRequestHelper,
 } from './ChatViewProvider_retryRequests';
 import type { RequestImageAttachment, RetryableRequestState } from './ChatViewProvider_retryRequests';
 import {
@@ -91,24 +71,11 @@ import {
 } from './ChatViewProvider_ideActions';
 import {
   consumeSessionScopedRuntimeReset,
-  consumeRunCompletionState,
-  consumeStreamingRunCompletionState,
-  clearPendingRegenerateState as clearPendingRegenerateStateHelper,
-  getClonedActiveHistoryProcessSummary as getClonedActiveHistoryProcessSummaryHelper,
-  resetActiveHistoryProcessSummary as resetActiveHistoryProcessSummaryHelper,
   rollbackPendingRegenerateState as rollbackPendingRegenerateStateHelper,
 } from './ChatViewProvider_runtimeState';
 import { SessionRuntimeManager } from './ChatViewProvider_runtimeAccess';
 import { tryHandleLightweightWebviewMessage, handleRemainingWebviewMessage } from './ChatViewProvider_webviewMessaging';
-import {
-  prepareChatRequestExecution,
-  prepareRemindedMessages,
-  buildUpdateModelsResponse,
-} from './ChatViewProvider_modelAndSession';
-import {
-  beginAssistantStreamingRequest,
-  startBasicAssistantStreamRequest,
-} from './ChatViewProvider_requestExecution';
+
 import { executeUserMessageFlow, executeToolCallsFlow } from './ChatViewProvider_requestFlow';
 import { createUiTranscriptBridge } from './ChatViewProvider_uiTranscriptBridge';
 import type { UiTranscriptBridge } from './ChatViewProvider_uiTranscriptBridge';
@@ -916,149 +883,53 @@ export class ChatEngine {
     this.setChatHistoryForSession(sessionId, prepareResult.trimmedHistory as ChatMessageParam[]);
 
     info('重新生成回复，参考用户消息长度:', prepareResult.userText.length);
-    await this.regenerateResponse(sessionId, prepareResult.userText, this.runtimeManager.getSessionRuntimeState(sessionId).currentMode, targetAssistantMessageId);
-  }
 
-  private async regenerateResponse(
-    sessionId: string,
-    userText: string,
-    requestMode: WorkMode,
-    reuseMessageId?: string,
-  ): Promise<void> {
-    const sessionRuntime = this.runtimeManager.getSessionRuntimeState(sessionId);
-    const sessionChatHistory = this.getChatHistoryForSession(sessionId) as ChatSessionHistoryMessage[];
-    const sessionDisplayHistory = this.getDisplayHistoryForSession(sessionId);
-    sessionRuntime.turnWriteFiles = [];
-    sessionRuntime.turnWriteRounds = 0;
-    sessionRuntime.activeHistoryProcessSummary = resetActiveHistoryProcessSummaryHelper();
-    this.postSessionMessage(sessionId, { type: 'setLoading', loading: true });
-
-    const regenMsgId = reuseMessageId || `ai-regen-${Date.now()}`;
-    const retryRequestId = createRetryRequestIdHelper();
-    const runLockError = this.runtimeManager.tryAcquireSessionRunLock(sessionId, regenMsgId);
-    if (runLockError) {
-      this.rollbackPendingRegenerateState(regenMsgId, sessionId);
-      this.postSessionMessage(sessionId, { type: 'setLoading', loading: false });
-      this.postSessionMessage(sessionId, { type: 'showError', message: runLockError, retryRequestId });
-      return;
-    }
-
-    try {
-
-      const apiKey = await ensureApiKey();
-      if (!apiKey) {
-        this.runtimeManager.resetOwnedRunState(sessionId);
-        this.postSessionMessage(sessionId, { type: 'setLoading', loading: false });
-        this.rollbackPendingRegenerateState(regenMsgId, sessionId);
-        this.postSessionMessage(sessionId, { type: 'showError', message: '未配置 API Key，请在设置中配置 myAiPlugin.apiKey', retryRequestId });
-        return;
-      }
-
-      const modelConfig = getModelConfig();
-      const requestExecution = prepareChatRequestExecution({
-        modelConfig,
-        requestMode,
-        remindedMessages: prepareRemindedMessages({
-          history: sessionChatHistory as ChatMessageParam[],
-          requestMode,
-          contextWindow: modelConfig.contextWindow,
-          maxTokens: getMaxTokens(),
-        }),
-        apiKey,
-        maxTokens: getMaxTokens(),
-        temperature: getTemperature(),
-        userContent: userText,
-        appendUserContentMode: 'ifMissingLastUser',
-        includeProjectContext: true,
-      });
-      const messages = requestExecution.messages;
-      const apiConfig: ApiClientConfig = requestExecution.apiConfig;
-
-      beginAssistantStreamingRequest({
-        abortStream: sessionRuntime.abortStream,
-        runId: regenMsgId,
-        runtime: {
-          setAbortStream: abortStream => {
-            sessionRuntime.abortStream = abortStream;
-          },
-          setToolCallsInProgress: toolCallsInProgress => {
-            sessionRuntime.toolCallsInProgress = toolCallsInProgress;
-          },
-          setActiveRunId: activeRunId => {
-            this.runtimeManager.setSessionActiveRunIdState(sessionId, activeRunId);
-          },
-          setStepSequence: stepSequence => {
-            sessionRuntime.stepSequence = stepSequence;
-          },
-          setToolCallRound: toolCallRound => {
-            sessionRuntime.toolCallRound = toolCallRound;
-          },
-        },
-        clearWriteBackups: () => {
-          this.uiBridge.expireUndoableSummariesForWriteBackups(sessionRuntime.writeBackups, sessionId);
-          sessionRuntime.writeBackups.clear();
-        },
-      });
-
-      if (reuseMessageId) {
-        this.postSessionMessage(sessionId, { type: 'resetMessageState', messageId: regenMsgId });
-      } else {
-        this.postSessionMessage(sessionId, { type: 'addMessage', role: 'assistant', content: '', messageId: regenMsgId });
-      }
-
-      sessionRuntime.abortStream = startBasicAssistantStreamRequest({
-        apiConfig,
-        messages,
-        messageId: regenMsgId,
-        chatHistory: sessionChatHistory,
-        displayHistory: sessionDisplayHistory,
-        runtime: {
-          getActiveRunId: () => this.runtimeManager.getSessionRuntimeState(sessionId).activeRunId,
-          getActiveHistoryProcessSummary: () => this.runtimeManager.getSessionRuntimeState(sessionId).activeHistoryProcessSummary,
-          setAbortStream: abortStream => {
-            this.runtimeManager.getSessionRuntimeState(sessionId).abortStream = abortStream;
-          },
-          setActiveRunId: activeRunId => {
-            this.runtimeManager.setSessionActiveRunIdState(sessionId, activeRunId);
-          },
-          setStepSequence: stepSequence => {
-            this.runtimeManager.getSessionRuntimeState(sessionId).stepSequence = stepSequence;
-          },
-          setActiveHistoryProcessSummary: summary => {
-            this.runtimeManager.getSessionRuntimeState(sessionId).activeHistoryProcessSummary = summary;
-          },
-        },
-        postMessage: message => this.postSessionMessage(sessionId, message),
-        saveChatHistory: () => this.saveChatHistory(sessionId),
-        createDisplayMessageId: createDisplayMessageIdHelper,
-        createHistoryProcessSummary,
-        retryRequestId,
-        onToolCalls: ({ fullContent, parsedToolCalls }) => {
-          this.handleToolCalls(sessionId, fullContent, apiConfig, regenMsgId, requestMode, parsedToolCalls, retryRequestId)
-            .catch(err => error('重生成工具调用处理异常:', err instanceof Error ? err.message : String(err)));
-        },
-        onPlainCompleted: () => {
-          sessionRuntime.pendingRegenerateState = clearPendingRegenerateStateHelper(sessionRuntime.pendingRegenerateState, regenMsgId);
-        },
-        onErrorBeforeNotify: () => {
-          this.rollbackPendingRegenerateState(regenMsgId, sessionId);
-        },
-        onDoneLog: fullContent => {
-          info('重新生成完成，长度:', fullContent.length);
-        },
-      });
-
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      this.runtimeManager.resetOwnedRunState(sessionId);
-      this.rollbackPendingRegenerateState(regenMsgId, sessionId);
-      this.postSessionMessage(sessionId, { type: 'setLoading', loading: false });
-      this.postSessionMessage(sessionId, {
-        type: 'showError',
-        message: `重新生成启动失败：${errMsg}`,
-        retryRequestId,
-      });
-    }
+    await executeRegenerateFlow({
+      sessionId,
+      userText: prepareResult.userText,
+      requestMode: this.runtimeManager.getSessionRuntimeState(sessionId).currentMode,
+      reuseMessageId: targetAssistantMessageId,
+      chatHistory: this.getChatHistoryForSession(sessionId) as ChatSessionHistoryMessage[],
+      displayHistory: this.getDisplayHistoryForSession(sessionId),
+      postSessionMessage: (sid, message) => this.postSessionMessage(sid, message),
+      tryAcquireSessionRunLock: (sid, runId) => this.runtimeManager.tryAcquireSessionRunLock(sid, runId),
+      setSessionActiveRunIdState: (sid, runId) => this.runtimeManager.setSessionActiveRunIdState(sid, runId),
+      getSessionActiveRunId: sid => this.runtimeManager.getSessionRuntimeState(sid).activeRunId,
+      getSessionActiveHistoryProcessSummary: sid => this.runtimeManager.getSessionRuntimeState(sid).activeHistoryProcessSummary,
+      setSessionAbortStream: (sid, fn) => {
+        this.runtimeManager.getSessionRuntimeState(sid).abortStream = fn;
+      },
+      setSessionStepSequence: (sid, seq) => {
+        this.runtimeManager.getSessionRuntimeState(sid).stepSequence = seq;
+      },
+      setSessionToolCallRound: (sid, round) => {
+        this.runtimeManager.getSessionRuntimeState(sid).toolCallRound = round;
+      },
+      setSessionActiveHistoryProcessSummary: (sid, summary) => {
+        this.runtimeManager.getSessionRuntimeState(sid).activeHistoryProcessSummary = summary;
+      },
+      getAbortStream: () => this.abortStream,
+      getToolCallsInProgress: () => this.toolCallsInProgress,
+      expireUndoableSummariesForWriteBackups: () => {
+        this.uiBridge.expireUndoableSummariesForWriteBackups(this.runtimeManager.getSessionRuntimeState(sessionId).writeBackups, sessionId);
+      },
+      clearWriteBackups: () => {
+        this.runtimeManager.getSessionRuntimeState(sessionId).writeBackups.clear();
+      },
+      getPendingRegenerateState: () => this.runtimeManager.getSessionRuntimeState(sessionId).pendingRegenerateState,
+      setPendingRegenerateState: state => {
+        this.runtimeManager.getSessionRuntimeState(sessionId).pendingRegenerateState = state;
+      },
+      setChatHistoryForSession: (sid, history) => this.setChatHistoryForSession(sid, history),
+      setDisplayHistoryForSession: (sid, history) => this.setDisplayHistoryForSession(sid, history),
+      setUiTranscriptForSession: (sid, transcript) => this.setUiTranscriptForSession(sid, transcript),
+      resetUiRuntimeState: () => this.uiBridge.resetUiRuntimeState(),
+      rebuildUiMessageIndexes: () => this.uiBridge.rebuildUiMessageIndexes(sessionId),
+      saveChatHistory: sid => this.saveChatHistory(sid),
+      isActiveSession: sid => sid === this.activeSessionId,
+      handleToolCalls: (sid, fullContent, apiConfig, regenMsgId, requestMode, parsedToolCalls, retryRequestId) =>
+        this.handleToolCalls(sid, fullContent, apiConfig, regenMsgId, requestMode, parsedToolCalls, retryRequestId),
+    });
   }
 
   // ==================== 运行时状态管理 ====================

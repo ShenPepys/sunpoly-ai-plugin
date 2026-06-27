@@ -42,12 +42,12 @@ export function buildUpdateModelsResponse(options: {
   };
 }
 
-export function buildRequestSystemPrompt(options: {
+export async function buildRequestSystemPrompt(options: {
   modelConfig: ModelConfig;
   requestMode: WorkMode;
   allowCustomPrompt?: boolean;
   includeProjectContext?: boolean;
-}): string {
+}): Promise<string> {
   const shouldAllowCustomPrompt = options.allowCustomPrompt !== false;
   const customPrompt = shouldAllowCustomPrompt ? getCustomSystemPrompt() : '';
   const baseSystemPrompt = customPrompt
@@ -58,7 +58,7 @@ export function buildRequestSystemPrompt(options: {
       options.requestMode,
       '中文',
       detectProjectType(),
-      getGitStatus(),
+      await getGitStatus(),
     );
 
   if (!options.includeProjectContext) {
@@ -75,7 +75,7 @@ export function buildRequestSystemPrompt(options: {
 
 type AppendUserContentMode = 'always' | 'ifMissingLastUser' | 'never';
 
-export function buildChatRequestMessages(options: {
+export async function buildChatRequestMessages(options: {
   modelConfig: ModelConfig;
   requestMode: WorkMode;
   remindedMessages: ChatMessageParam[];
@@ -83,8 +83,8 @@ export function buildChatRequestMessages(options: {
   appendUserContentMode?: AppendUserContentMode;
   allowCustomPrompt?: boolean;
   includeProjectContext?: boolean;
-}): { systemPrompt: string; messages: ChatMessageParam[] } {
-  const systemPrompt = buildRequestSystemPrompt({
+}): Promise<{ systemPrompt: string; messages: ChatMessageParam[] }> {
+  const systemPrompt = await buildRequestSystemPrompt({
     modelConfig: options.modelConfig,
     requestMode: options.requestMode,
     allowCustomPrompt: options.allowCustomPrompt,
@@ -167,7 +167,7 @@ function fitMessagesToContextWindow(options: {
   };
 }
 
-export function prepareChatRequestExecution(options: {
+export async function prepareChatRequestExecution(options: {
   modelConfig: ModelConfig;
   requestMode: WorkMode;
   remindedMessages: ChatMessageParam[];
@@ -178,12 +178,12 @@ export function prepareChatRequestExecution(options: {
   appendUserContentMode?: AppendUserContentMode;
   allowCustomPrompt?: boolean;
   includeProjectContext?: boolean;
-}): {
+}): Promise<{
   systemPrompt: string;
   messages: ChatMessageParam[];
   apiConfig: ApiClientConfig;
-} {
-  const requestMessages = buildChatRequestMessages({
+}> {
+  const requestMessages = await buildChatRequestMessages({
     modelConfig: options.modelConfig,
     requestMode: options.requestMode,
     remindedMessages: options.remindedMessages,

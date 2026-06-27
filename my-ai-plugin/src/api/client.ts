@@ -130,6 +130,7 @@ export function sendStreamRequest(
 
   let fullContent = '';
   let aborted = false;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
   /**
    * 终态互斥标志：onDone 和 onError 只有第一个调用生效
    * 避免 req.destroy() 触发的 error 事件导致双重回调
@@ -167,12 +168,30 @@ export function sendStreamRequest(
       let errorBody = '';
       res.on('data', (chunk) => { errorBody += chunk.toString(); });
       res.on('end', () => {
+        // 429 自动重试（最多 3 次，指数退避）
+        if (statusCode === 429 && retryCount < 3 && !aborted) {
+          const retryAfter = res.headers['retry-after'];
+          const baseWait = retryAfter ? parseInt(retryAfter, 10) : Math.min(30, 5 * Math.pow(2, retryCount));
+          const waitSec = isNaN(baseWait) ? Math.min(30, 5 * Math.pow(2, retryCount)) : baseWait;
+          retryCount++;
+          info(`API 429 限流，${waitSec} 秒后自动重试（第 ${retryCount} 次）`);
+          retryTimer = setTimeout(() => {
+            retryTimer = null;
+            if (aborted) { return; }
+            if (tunnelSocket && !tunnelSocket.destroyed) {
+              doRequest(tunnelSocket);
+            } else {
+              doRequest();
+            }
+          }, waitSec * 1000);
+          return;
+        }
+
         let errMsg: string;
         if (statusCode === 429) {
-          // 限流：提取 Retry-After 头
           const retryAfter = res.headers['retry-after'];
           const waitSec = retryAfter ? parseInt(retryAfter, 10) : 30;
-          errMsg = `API 请求频率过高，请 ${waitSec} 秒后重试`;
+          errMsg = `API 请求频率过高，已自动重试 ${retryCount} 次仍然限流，请 ${waitSec} 秒后手动重试`;
         } else if (statusCode === 401 || statusCode === 403) {
           errMsg = 'API Key 无效或已过期，请在设置中检查 myAiPlugin.models 配置';
         } else {
@@ -304,6 +323,7 @@ export function sendStreamRequest(
   } // end doRequest
 
   let currentReq: http.ClientRequest | null = null;
+  let retryCount = 0;
 
   // 如果配置了代理且目标是 HTTPS，先建立 CONNECT 隧道
   if (proxyUrl && url.protocol === 'https:') {
@@ -329,6 +349,7 @@ export function sendStreamRequest(
   return () => {
     if (!aborted) {
       aborted = true;
+      if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
       if (currentReq) { currentReq.destroy(); }
       info('流式请求已主动中断');
       // 中断时把已收到的内容作为最终结果
@@ -359,7 +380,6 @@ function doHttpRequest(
       port: url.port || (url.protocol === 'https:' ? 443 : 80),
       path: buildRequestPath(url),
       method: 'POST',
-      // 绕过 VS Code 对 http.globalAgent 的 patch，避免代理干扰
       agent: false as any,
       headers: {
         'Content-Type': 'application/json',
@@ -367,6 +387,8 @@ function doHttpRequest(
         'Content-Length': Buffer.byteLength(bodyStr),
       },
     };
+
+    let retryCount = 0;
 
     function makeRequest(tunnelSocket?: Socket): void {
       const reqOptions = tunnelSocket
@@ -378,6 +400,24 @@ function doHttpRequest(
         res.on('data', (chunk) => { data += chunk.toString(); });
         res.on('end', () => {
           const statusCode = res.statusCode ?? 0;
+
+          // 429 自动重试（最多 3 次，指数退避）
+          if (statusCode === 429 && retryCount < 3) {
+            const retryAfter = res.headers['retry-after'];
+            const baseWait = retryAfter ? parseInt(retryAfter as string, 10) : Math.min(30, 5 * Math.pow(2, retryCount));
+            const waitSec = isNaN(baseWait) ? Math.min(30, 5 * Math.pow(2, retryCount)) : baseWait;
+            retryCount++;
+            info(`非流式 API 429 限流，${waitSec} 秒后自动重试（第 ${retryCount} 次）`);
+            setTimeout(() => {
+              if (tunnelSocket && !tunnelSocket.destroyed) {
+                makeRequest(tunnelSocket);
+              } else {
+                makeRequest();
+              }
+            }, waitSec * 1000);
+            return;
+          }
+
           if (statusCode !== 200) {
             const errMsg = parseApiError(data, statusCode);
             reject(new Error(errMsg));

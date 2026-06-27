@@ -4,7 +4,7 @@
  */
 import * as vscode from 'vscode';
 import { initLogger, disposeLogger, info, error } from './logger';
-import { setExtensionPath, getAllModels, getActiveModelIndex } from './config';
+import { setExtensionPath, setSecretStorage, migrateApiKeysToSecretStorage, getAllModels, getActiveModelIndex } from './config';
 import { ChatTabManager } from './webview/ChatTabManager';
 import { executeCommand } from './commands/handler';
 import { disposeProject } from './tools/astContext';
@@ -30,7 +30,13 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // 设置插件根目录路径，用于查找 .env 文件
   setExtensionPath(context.extensionUri.fsPath);
+  setSecretStorage(context.secrets);
   info(`插件路径: ${context.extensionUri.fsPath}`);
+
+  // 将明文 API Key 迁移到 SecretStorage（兼容已有用户）
+  migrateApiKeysToSecretStorage().catch(err => {
+    error('API Key 迁移失败:', err instanceof Error ? err.message : String(err));
+  });
 
   // 初始化 Tab 管理器（聊天面板以右侧编辑器 Tab 形式打开）
   tabManager = new ChatTabManager(context);

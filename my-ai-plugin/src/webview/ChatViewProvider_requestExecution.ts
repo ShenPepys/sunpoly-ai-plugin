@@ -545,7 +545,7 @@ export async function executeToolCallBatchRound(
   options.saveChatHistory();
 
   const modelConfig = getModelConfig();
-  const followUpRequest = prepareChatRequestExecution({
+  const followUpRequest = await prepareChatRequestExecution({
     modelConfig,
     requestMode: options.requestMode,
     remindedMessages: prepareRemindedMessages({
