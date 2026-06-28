@@ -241,7 +241,7 @@
         },
         "myAiPlugin.panelTitle": {
           "type": "string",
-          "default": "Sunploy",
+          "default": "Sunpoly",
           "description": "聊天面板标题，可自定义为企业名称（如 SUERY AI、XXX 智能助手）"
         },
         "myAiPlugin.systemPrompt": {
