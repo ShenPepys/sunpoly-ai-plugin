@@ -1,0 +1,78 @@
+# Sunpoly Website Configuration
+# Place this file at: C:\nginx\conf\sites-enabled\sunpoly.conf
+# Or include it in nginx.conf
+
+server {
+    listen 80;
+    server_name sunpoly.vip www.sunpoly.vip;
+    
+    # 网站根目录
+    root C:/www;
+    index index.html;
+    
+    # 日志
+    access_log logs/sunpoly_access.log;
+    error_log logs/sunpoly_error.log;
+    
+    # 默认路由
+    location / {
+        try_files $uri $uri/ /index.html;
+        
+        # 静态资源缓存
+        location ~* \.(css|js|png|jpg|jpeg|gif|svg|ico|woff|woff2)$ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+        }
+        
+        # HTML 文件不缓存
+        location ~* \.html$ {
+            add_header Cache-Control "no-cache, must-revalidate";
+        }
+    }
+    
+    # 安全头
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    
+    # 禁止访问隐藏文件
+    location ~ /\. {
+        deny all;
+    }
+}
+
+# HTTPS 配置（需要证书）
+# server {
+#     listen 443 ssl http2;
+#     server_name sunpoly.vip www.sunpoly.vip;
+#     
+#     ssl_certificate     C:/ssl/sunpoly.vip.crt;
+#     ssl_certificate_key C:/ssl/sunpoly.vip.key;
+#     
+#     root C:/www;
+#     index index.html;
+#     
+#     # SSL 优化配置
+#     ssl_protocols TLSv1.2 TLSv1.3;
+#     ssl_ciphers HIGH:!aNULL:!MD5;
+#     ssl_prefer_server_ciphers on;
+#     ssl_session_cache shared:SSL:10m;
+#     ssl_session_timeout 1d;
+#     
+#     location / {
+#         try_files $uri $uri/ /index.html;
+#         
+#         location ~* \.(css|js|png|jpg|jpeg|gif|svg|ico|woff|woff2)$ {
+#             expires 1y;
+#             add_header Cache-Control "public, immutable";
+#         }
+#         
+#         location ~* \.html$ {
+#             add_header Cache-Control "no-cache, must-revalidate";
+#         }
+#     }
+#     
+#     add_header X-Content-Type-Options "nosniff" always;
+#     add_header X-Frame-Options "DENY" always;
+#     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+# }
