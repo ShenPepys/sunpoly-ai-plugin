@@ -151,8 +151,19 @@ export function getToolStepDescription(tc: ParsedToolCall): string {
     return buildRunCommandStepDescription(tc.command ?? '');
   }
 
-  const fileName = tc.path!.split(/[/\\]/).pop() || tc.path!;
-  return getToolStepText(tc.type, fileName);
+  return getToolStepText(tc.type, getToolStepSubjectLabel(tc));
+}
+
+function getToolStepSubjectLabel(tc: ParsedToolCall): string {
+  if (tc.type === 'search_file') {
+    return tc.pattern?.trim() || '(no pattern)';
+  }
+  if (tc.type === 'grep_code') {
+    return tc.regex?.trim() || '(no regex)';
+  }
+
+  const pathLabel = tc.path?.trim() || '(no path)';
+  return pathLabel.split(/[/\\]/).pop() || pathLabel;
 }
 
 const RUN_COMMAND_STEP_PREFIX = 'Running command: ';
@@ -220,8 +231,11 @@ function getReadOnlyToolCallDedupKey(toolCall: ParsedToolCall): string | null {
   if (toolCall.type !== 'read_file' && toolCall.type !== 'list_dir') {
     return null;
   }
+  if (!toolCall.path?.trim()) {
+    return null;
+  }
 
-  return `${toolCall.type}:${normalizeToolCallPath(toolCall.path!)}`;
+  return `${toolCall.type}:${normalizeToolCallPath(toolCall.path)}`;
 }
 
 function getFileExtension(filePath: string): string {
@@ -309,9 +323,9 @@ export function buildToolCallExecutionPlan(toolCalls: ParsedToolCall[]): ToolCal
   let sameFileToolCallLimited = false;
 
   for (const toolCall of toolCalls) {
-    const normalizedPath = toolCall.type === 'list_dir'
+    const normalizedPath = toolCall.type === 'list_dir' || !toolCall.path?.trim()
       ? undefined
-      : normalizeToolCallPath(toolCall.path!);
+      : normalizeToolCallPath(toolCall.path);
 
     if (normalizedPath && lockedFilePaths.has(normalizedPath)) {
       deferredToolCalls.push(toolCall);

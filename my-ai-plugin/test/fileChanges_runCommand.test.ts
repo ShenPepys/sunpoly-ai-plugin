@@ -9,7 +9,30 @@ import {
 } from '../src/webview/fileChanges';
 import type { ParsedToolCall } from '../src/tools/toolParser';
 
-test('getToolStepDescription run_command 含命令前缀', () => {
+test('getToolStepDescription search_file 使用 pattern 而非 path', () => {
+  const toolCall: ParsedToolCall = {
+    type: 'search_file',
+    pattern: '*ffc_test*',
+    rawMatch: '<search_file pattern="*ffc_test*" />',
+  };
+
+  const description = getToolStepDescription(toolCall);
+  assert.match(description, /Searching/);
+  assert.match(description, /ffc_test/);
+});
+
+test('getToolStepDescription grep_code 使用 regex 而非 path', () => {
+  const toolCall: ParsedToolCall = {
+    type: 'grep_code',
+    regex: 'ffc_test',
+    rawMatch: '<grep_code regex="ffc_test" />',
+  };
+
+  const description = getToolStepDescription(toolCall);
+  assert.match(description, /Grep searching/);
+  assert.match(description, /ffc_test/);
+});
+
   const toolCall: ParsedToolCall = {
     type: 'run_command',
     command: 'npm test',
