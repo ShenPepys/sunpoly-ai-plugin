@@ -172,7 +172,7 @@ npm run test:build && node scripts/run-node-tests.cjs test/commandApproval.test.
 
 ### [P1-2] 终端与命令相关 VS Code 设置项
 
-- [ ] 状态：待做
+- [x] 状态：完成
 
 **目标**
 
@@ -523,3 +523,4 @@ npm run test:build && node scripts/run-node-tests.cjs test/dangerousCommands.tes
 | 2026-06-29 | P0-5 完成：系统 Prompt 禁止终端 ls/dir 探索文件 |
 | 2026-06-29 | P0-6 完成：终端故障排查用户文档 |
 | 2026-06-29 | P1-1 完成：run_command 执行前用户确认 |
+| 2026-06-29 | P1-2 完成：终端与命令 VS Code 设置项 |

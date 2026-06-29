@@ -535,3 +535,55 @@ export async function migrateApiKeysToSecretStorage(): Promise<void> {
     info(`已将 ${storedModels.filter(m => m.apiKey && !m.apiKey.startsWith('填写')).length} 个 API Key 迁移到 SecretStorage`);
   }
 }
+
+/** 插件终端 Profile 覆盖（default = 跟随 VS Code 集成终端设置） */
+export type TerminalDefaultProfile = 'default' | 'pwsh' | 'cmd' | 'bash' | 'wsl';
+
+export interface TerminalExecutionConfig {
+  defaultProfile: TerminalDefaultProfile;
+  shellIntegrationTimeoutSeconds: number;
+  commandDefaultTimeoutSeconds: number;
+  longCommandTimeoutSeconds: number;
+  reuseTerminal: boolean;
+  maxOutputLines: number;
+}
+
+const TERMINAL_PROFILE_VALUES: TerminalDefaultProfile[] = ['default', 'pwsh', 'cmd', 'bash', 'wsl'];
+
+function normalizeTerminalProfile(value: string | undefined): TerminalDefaultProfile {
+  if (value && TERMINAL_PROFILE_VALUES.includes(value as TerminalDefaultProfile)) {
+    return value as TerminalDefaultProfile;
+  }
+  return 'default';
+}
+
+/** 读取终端执行相关 VS Code 设置 */
+export function getTerminalExecutionConfig(): TerminalExecutionConfig {
+  return {
+    defaultProfile: normalizeTerminalProfile(get('terminal.defaultProfile', 'default')),
+    shellIntegrationTimeoutSeconds: get('terminal.shellIntegrationTimeoutSeconds', 4),
+    commandDefaultTimeoutSeconds: get('terminal.commandDefaultTimeoutSeconds', 30),
+    longCommandTimeoutSeconds: get('terminal.longCommandTimeoutSeconds', 300),
+    reuseTerminal: get('terminal.reuseTerminal', true),
+    maxOutputLines: get('terminal.maxOutputLines', 200),
+  };
+}
+
+/** 解析 run_command 实际超时（毫秒） */
+export function resolveCommandTimeoutMs(requestedMs?: number): number {
+  const { commandDefaultTimeoutSeconds, longCommandTimeoutSeconds } = getTerminalExecutionConfig();
+  const defaultMs = commandDefaultTimeoutSeconds * 1000;
+  const maxMs = longCommandTimeoutSeconds * 1000;
+
+  if (requestedMs === undefined || !Number.isFinite(requestedMs) || requestedMs <= 0) {
+    return defaultMs;
+  }
+
+  return Math.min(requestedMs, maxMs);
+}
+
+/** 根据输出行数上限估算字符截断阈值 */
+export function getMaxCommandOutputChars(): number {
+  const { maxOutputLines } = getTerminalExecutionConfig();
+  return Math.max(maxOutputLines, 1) * 80;
+}

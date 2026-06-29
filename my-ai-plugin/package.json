@@ -249,6 +249,58 @@
           "default": "",
           "editPresentation": "multilineText",
           "markdownDescription": "自定义系统提示词（System Prompt）。\n\n**非空时**完全覆盖内置提示词；**留空时**使用内置默认提示词。\n\n示例：`你是一个专注 Python 小程序设计的助手，不使用第三方库`"
+        },
+        "myAiPlugin.terminal.defaultProfile": {
+          "type": "string",
+          "default": "default",
+          "description": "run_command 使用的默认终端 Shell（spawn fallback 与集成终端 shellPath 检测）",
+          "enum": [
+            "default",
+            "pwsh",
+            "cmd",
+            "bash",
+            "wsl"
+          ],
+          "enumDescriptions": [
+            "跟随 VS Code「terminal.integrated.defaultProfile」",
+            "PowerShell 7 / Windows PowerShell",
+            "Command Prompt (cmd.exe)",
+            "Git Bash / 系统 bash",
+            "WSL bash"
+          ]
+        },
+        "myAiPlugin.terminal.shellIntegrationTimeoutSeconds": {
+          "type": "number",
+          "default": 4,
+          "minimum": 1,
+          "maximum": 120,
+          "description": "等待 VS Code 终端 Shell Integration 就绪的超时时间（秒）"
+        },
+        "myAiPlugin.terminal.commandDefaultTimeoutSeconds": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 3600,
+          "description": "run_command 未指定 timeout 时的默认超时（秒）"
+        },
+        "myAiPlugin.terminal.longCommandTimeoutSeconds": {
+          "type": "number",
+          "default": 300,
+          "minimum": 1,
+          "maximum": 7200,
+          "description": "run_command 可通过 timeout 属性请求的上限超时（秒）"
+        },
+        "myAiPlugin.terminal.reuseTerminal": {
+          "type": "boolean",
+          "default": true,
+          "description": "是否复用已有集成终端实例（同 shell 且空闲时先 cd 到工作目录）"
+        },
+        "myAiPlugin.terminal.maxOutputLines": {
+          "type": "number",
+          "default": 200,
+          "minimum": 10,
+          "maximum": 5000,
+          "description": "返回给模型的命令输出行数上限（超出部分截断）"
         }
       }
     }

@@ -1,8 +1,9 @@
 /**
- * Shell 路径检测：优先读取 VS Code terminal.integrated 配置，再回退到环境变量。
+ * Shell 路径检测：优先读取插件终端 Profile 与 VS Code terminal.integrated 配置，再回退到环境变量。
  */
 import { userInfo } from 'node:os';
 import * as vscode from 'vscode';
+import { getTerminalExecutionConfig, type TerminalDefaultProfile } from '../config';
 
 export const WINDOWS_POWERSHELL_7_PATH = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
 export const WINDOWS_POWERSHELL_LEGACY_PATH =
@@ -147,8 +148,40 @@ function getShellFromEnv(): string | null {
   return null;
 }
 
+function getShellFromPluginProfile(profile: TerminalDefaultProfile): string | null {
+  if (profile === 'default') {
+    return null;
+  }
+
+  if (process.platform === 'win32') {
+    switch (profile) {
+      case 'pwsh':
+        return SHELL_PATHS.POWERSHELL_7;
+      case 'cmd':
+        return SHELL_PATHS.CMD;
+      case 'bash':
+        return SHELL_PATHS.GIT_BASH;
+      case 'wsl':
+        return SHELL_PATHS.WSL_BASH;
+      default:
+        return null;
+    }
+  }
+
+  if (profile === 'bash') {
+    return process.platform === 'darwin' ? SHELL_PATHS.MAC_DEFAULT : SHELL_PATHS.LINUX_DEFAULT;
+  }
+
+  return null;
+}
+
 /** 获取当前平台应使用的 shell 可执行文件路径 */
 export function getShell(): string {
+  const pluginShell = getShellFromPluginProfile(getTerminalExecutionConfig().defaultProfile);
+  if (pluginShell) {
+    return pluginShell;
+  }
+
   if (process.platform === 'win32') {
     const windowsShell = getWindowsShellFromVSCode();
     if (windowsShell) {

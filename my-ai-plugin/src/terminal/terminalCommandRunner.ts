@@ -4,6 +4,7 @@
 import { execCommandViaSpawn } from './spawnTerminalProcess';
 import { VscodeTerminalManager } from './vscodeTerminalManager';
 import type { TerminalCompletionDetails } from './vscodeTerminalProcess';
+import { getTerminalExecutionConfig } from '../config';
 
 export type TerminalCommandRunResult = {
   success: boolean;
@@ -14,10 +15,20 @@ export type TerminalCommandRunResult = {
 
 let sharedManager: VscodeTerminalManager | null = null;
 
+function applyTerminalSettings(manager: VscodeTerminalManager): void {
+  const settings = getTerminalExecutionConfig();
+  manager.setShellIntegrationTimeout(settings.shellIntegrationTimeoutSeconds * 1000);
+  manager.setShellIntegrationStreamTimeout(
+    Math.max(settings.shellIntegrationTimeoutSeconds * 2500, 10_000),
+  );
+  manager.setTerminalReuseEnabled(settings.reuseTerminal);
+}
+
 export function getVscodeTerminalManager(): VscodeTerminalManager {
   if (!sharedManager) {
     sharedManager = new VscodeTerminalManager();
   }
+  applyTerminalSettings(sharedManager);
   return sharedManager;
 }
 

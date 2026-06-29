@@ -6,13 +6,10 @@
 
 import { workspace } from 'vscode';
 import {
-  DEFAULT_COMMAND_TIMEOUT_MS,
-  MAX_COMMAND_OUTPUT_CHARS,
-} from '../terminal/constants';
-import {
   runTerminalCommand,
   truncateCommandOutput,
 } from '../terminal/terminalCommandRunner';
+import { resolveCommandTimeoutMs, getMaxCommandOutputChars } from '../config';
 import { info, error as logError } from '../logger';
 import { isDangerousCommand } from './terminalExecSafety';
 import type { ExecCommandResult } from './terminalExecTypes';
@@ -22,6 +19,7 @@ export {
   DEFAULT_COMMAND_TIMEOUT_MS as DEFAULT_TIMEOUT_MS,
   MAX_COMMAND_OUTPUT_CHARS as MAX_OUTPUT_CHARS,
 } from '../terminal/constants';
+export { resolveCommandTimeoutMs, getMaxCommandOutputChars } from '../config';
 
 export { isDangerousCommand, DANGEROUS_PATTERNS } from './terminalExecSafety';
 
@@ -30,7 +28,7 @@ export { isDangerousCommand, DANGEROUS_PATTERNS } from './terminalExecSafety';
  */
 export async function execCommand(
   command: string,
-  timeoutMs: number = DEFAULT_COMMAND_TIMEOUT_MS,
+  timeoutMs?: number,
 ): Promise<ExecCommandResult> {
   if (!command || !command.trim()) {
     return { success: false, content: '命令为空' };
@@ -50,7 +48,8 @@ export async function execCommand(
 
   info(`执行终端命令: ${command} (cwd: ${cwd})`);
 
-  const result = await runTerminalCommand(command, cwd, timeoutMs);
+  const effectiveTimeoutMs = resolveCommandTimeoutMs(timeoutMs);
+  const result = await runTerminalCommand(command, cwd, effectiveTimeoutMs);
   let output = result.output;
 
   if (!result.success && output && !output.includes('命令执行超时') && !output.includes('命令执行失败')) {
@@ -63,7 +62,7 @@ export async function execCommand(
 
   return {
     success: result.success,
-    content: truncateCommandOutput(output, MAX_COMMAND_OUTPUT_CHARS),
+    content: truncateCommandOutput(output, getMaxCommandOutputChars()),
   };
 }
 
