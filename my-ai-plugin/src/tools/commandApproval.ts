@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 export const COMMAND_DENIED_MESSAGE = '用户拒绝了命令执行';
 
 const APPROVE_LABEL = '执行';
+const CANCEL_LABEL = '取消';
 
 export type ConfirmRunCommandFn = (command: string) => Promise<boolean>;
 
@@ -17,8 +18,8 @@ async function defaultConfirmRunCommand(command: string): Promise<boolean> {
 
   const choice = await vscode.window.showWarningMessage(
     `AI 助手请求执行终端命令：\n\n${trimmed}`,
-    { modal: true },
     APPROVE_LABEL,
+    CANCEL_LABEL,
   );
   return choice === APPROVE_LABEL;
 }

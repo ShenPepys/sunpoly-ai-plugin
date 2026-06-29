@@ -273,6 +273,15 @@ body {
   transition: opacity 0.15s;
 }
 
+.session-launcher-actions-visible {
+  opacity: 1;
+}
+
+.session-launcher-time-placeholder {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .session-launcher-item:hover .session-launcher-actions,
 .session-launcher-item.active .session-launcher-actions {
   opacity: 1;

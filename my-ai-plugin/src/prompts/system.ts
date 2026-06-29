@@ -34,6 +34,12 @@ const MODE_CODE_SECTION = `# 工作模式：Code
 - 按内容搜索：<tool_call><grep_code regex="正则表达式" include_pattern="*.ts" /></tool_call>
 - 执行终端命令：<tool_call><run_command>命令内容</run_command></tool_call>（可选 timeout="毫秒数" 属性，默认 30000ms）
 
+## run_command 终端规则（强制）
+- **Windows 环境**：不要使用 \`head\`、\`tail\`、\`grep\` 等 Unix 管道工具。限制输出行数请用 PowerShell，例如：\`git diff file.py | Select-Object -First 80\`，或使用 \`git diff --stat\`、\`git diff -U20\` 控制上下文
+- **避免重复命令**：同一条命令（或仅参数略不同的 git diff）已成功执行并返回结果后，不要再次执行；应基于已有输出继续分析
+- **避免重复 read_file**：同一文件分段读取完成后，除非文件可能已被外部修改，否则不要反复读取相同行段
+- **分析任务要收尾**：探索代码、查看 diff、列目录后，必须用自然语言给出结论（Bug 列表、原因、建议修复），不要停在工具输出上
+
 ## 修改文件的工具选择优先级（必须遵守）
 
 修改已有文件时，按以下优先级选择工具：

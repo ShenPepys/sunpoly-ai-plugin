@@ -12,12 +12,9 @@ import type {
 import type { RequestImageAttachment, RetryableRequestState } from './ChatViewProvider_retryRequests';
 import { createRetryRequestId } from './ChatViewProvider_retryRequests';
 import type { ChangeSummaryFile, WriteBackupEntry } from './fileChanges';
-import {
-  getDisplayPath as getDisplayPathHelper,
-  buildFinalTurnChangeSummaryResponse,
-} from './fileChanges';
+import { getDisplayPath as getDisplayPathHelper } from './fileChanges';
 import type { ParsedToolCall } from '../tools';
-import { FileReadStateCache } from '../tools';
+import { FileReadStateCache, hasToolCalls } from '../tools';
 import {
   analyzeAssistantResponseDisplay,
   buildAssistantDisplayCompletionMessages,
@@ -525,9 +522,6 @@ export async function executeToolCallsFlow(options: ExecuteToolCallsFlowOptions)
           options.setSessionActiveHistoryProcessSummary(sessionId, completionState.nextActiveHistoryProcessSummary);
         },
         onPlainCompleted: () => {
-          if (options.getSessionTurnWriteRounds(sessionId) >= 2) {
-            options.postSessionMessage(sessionId, buildFinalTurnChangeSummaryResponse(reuseMsgId, options.getSessionTurnWriteFiles(sessionId)));
-          }
           options.setSessionPendingRegenerateState(
             sessionId,
             clearPendingRegenerateState(options.getSessionPendingRegenerateState(sessionId), reuseMsgId),
@@ -562,6 +556,9 @@ export async function executeToolCallsFlow(options: ExecuteToolCallsFlowOptions)
         },
         onDoneLog: fullContent => {
           info(`续轮回复完成，长度: ${fullContent.length}`);
+          if (!hasToolCalls(fullContent)) {
+            info('续轮以文本回复结束，未检测到新的工具调用');
+          }
         },
         onErrorLog: errorMessage => {
           error('续轮 AI 调用失败:', errorMessage);

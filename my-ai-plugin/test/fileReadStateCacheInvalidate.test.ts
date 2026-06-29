@@ -37,7 +37,7 @@ test('run_command 成功后清空 FileReadStateCache', async () => {
 
   try {
     const result = await executeToolCallBatch({
-      toolCalls: [makeRunCommandToolCall('echo ok')],
+      toolCalls: [makeRunCommandToolCall('npm install')],
       requestMode: 'code',
       messageId: 'msg-run-command',
       summaryId: 'summary-1',

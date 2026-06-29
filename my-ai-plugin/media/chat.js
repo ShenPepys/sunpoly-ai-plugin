@@ -1865,28 +1865,34 @@
     sessionItem.setAttribute('data-session-id', session.id);
 
     if (isPendingDelete) {
-      var confirmRow = document.createElement('div');
-      confirmRow.className = 'session-launcher-confirm';
-      confirmRow.innerHTML =
-        '<span class="session-launcher-confirm-text">确认删除这个会话？</span>' +
-        '<div class="session-launcher-confirm-actions">' +
-          '<button class="session-launcher-btn danger">删除</button>' +
+      var confirmInfoWrap = document.createElement('div');
+      confirmInfoWrap.className = 'session-launcher-info';
+      confirmInfoWrap.innerHTML =
+        '<div class="session-launcher-confirm-text">确认删除这个会话？</div>';
+
+      var confirmRightWrap = document.createElement('div');
+      confirmRightWrap.className = 'session-launcher-right';
+      confirmRightWrap.innerHTML =
+        '<span class="session-launcher-time session-launcher-time-placeholder" aria-hidden="true"></span>' +
+        '<div class="session-launcher-actions session-launcher-actions-visible">' +
           '<button class="session-launcher-btn ghost">取消</button>' +
+          '<button class="session-launcher-btn danger">删除</button>' +
         '</div>';
 
-      confirmRow.querySelector('.session-launcher-btn.danger').addEventListener('click', function (e) {
+      confirmRightWrap.querySelector('.session-launcher-btn.danger').addEventListener('click', function (e) {
         e.stopPropagation();
         pendingDeleteSessionId = '';
         vscode.postMessage({ type: 'deleteSession', sessionId: session.id });
       });
 
-      confirmRow.querySelector('.session-launcher-btn.ghost').addEventListener('click', function (e) {
+      confirmRightWrap.querySelector('.session-launcher-btn.ghost').addEventListener('click', function (e) {
         e.stopPropagation();
         pendingDeleteSessionId = '';
         renderSessionTabs();
       });
 
-      sessionItem.appendChild(confirmRow);
+      sessionItem.appendChild(confirmInfoWrap);
+      sessionItem.appendChild(confirmRightWrap);
       listEl.appendChild(sessionItem);
       return;
     }

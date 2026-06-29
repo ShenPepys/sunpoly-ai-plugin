@@ -31,6 +31,8 @@ export type {
 // Diff algorithm — extracted to diff.ts
 export { splitContentToLines, buildDiffOperationTypes } from './diff';
 import { executeToolCalls, readFile, validateFileReadState, buildReadFileStubIfUnchanged, isToolReadOnly, getToolIcon, getToolStepText, addLineNumbers, addLineNumbersFromStart } from '../../tools';
+import { shouldInvalidateFileReadStateAfterCommand } from '../../tools/runCommandCachePolicy';
+import { confirmRunCommand, COMMAND_DENIED_MESSAGE } from '../../tools/commandApproval';
 import type { ParsedToolCall, ToolCallType, ToolExecutionResult } from '../../tools';
 import type { FileReadStateCache } from '../../tools';
 import { extractScriptBlock } from '../../tools/astAdapter_vue';
@@ -901,6 +903,51 @@ export async function executeToolCallBatch(options: {
     }
 
     const stepId = `step-${options.messageId}-${nextStepSequence++}`;
+    let skipRunCommandApproval = false;
+
+    if (toolCall.type === 'run_command') {
+      if (options.setLoadingText) {
+        options.setLoadingText('等待您确认终端命令...');
+      }
+
+      if (!toolCall.command?.trim()) {
+        const deniedResult: ToolExecutionResult = {
+          toolCall,
+          result: { success: false, content: 'run_command 缺少命令内容' },
+        };
+        toolResults.push(deniedResult);
+        executionRecords.push({ toolCall, success: false });
+        options.postMessage({
+          type: 'addStep',
+          messageId: options.messageId,
+          stepId,
+          icon: getToolStepIcon(toolCall.type),
+          description: 'run_command 缺少命令内容',
+          status: 'error',
+        });
+        continue;
+      }
+
+      if (!(await confirmRunCommand(toolCall.command))) {
+        const deniedResult: ToolExecutionResult = {
+          toolCall,
+          result: { success: false, content: COMMAND_DENIED_MESSAGE },
+        };
+        toolResults.push(deniedResult);
+        executionRecords.push({ toolCall, success: false });
+        options.postMessage({
+          type: 'addStep',
+          messageId: options.messageId,
+          stepId,
+          icon: getToolStepIcon(toolCall.type),
+          description: buildRunCommandStepResultDescription(toolCall.command, false, COMMAND_DENIED_MESSAGE),
+          status: 'error',
+        });
+        continue;
+      }
+
+      skipRunCommandApproval = true;
+    }
     
     // 根据工具类型更新 loading 文本
     if (options.setLoadingText) {
@@ -1028,7 +1075,11 @@ export async function executeToolCallBatch(options: {
       continue;
     }
 
-    const result = await executeToolCalls([toolCall], options.requestMode);
+    const result = await executeToolCalls(
+      [toolCall],
+      options.requestMode,
+      skipRunCommandApproval ? { skipRunCommandApproval: true } : undefined,
+    );
     const singleResult = result[0];
 
     // read_file 成功后：检测文件是否未变（返回 stub）+ 更新缓存 + 添加行号
@@ -1071,6 +1122,7 @@ export async function executeToolCallBatch(options: {
       toolCall.type === 'run_command'
       && singleResult.result.success
       && options.fileReadStateCache
+      && shouldInvalidateFileReadStateAfterCommand(toolCall.command ?? '')
     ) {
       options.fileReadStateCache.clear();
       info('run_command 成功后已清空文件读取状态缓存');

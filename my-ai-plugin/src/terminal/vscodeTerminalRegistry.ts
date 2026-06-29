@@ -8,6 +8,7 @@ export interface TerminalInfo {
   id: number;
   shellPath?: string;
   lastActive: number;
+  shellIntegrationReady: boolean;
   pendingCwdChange?: string;
   cwdResolved?: {
     resolve: () => void;
@@ -22,6 +23,26 @@ export class TerminalRegistry {
   static resetForTesting(): void {
     TerminalRegistry.terminals = [];
     TerminalRegistry.nextTerminalId = 0;
+  }
+
+  static registerExistingTerminal(terminal: vscode.Terminal, shellPath?: string): TerminalInfo {
+    const existing = TerminalRegistry.terminals.find((item) => item.terminal === terminal);
+    if (existing) {
+      return existing;
+    }
+
+    TerminalRegistry.nextTerminalId += 1;
+    const info: TerminalInfo = {
+      terminal,
+      busy: false,
+      lastCommand: '',
+      id: TerminalRegistry.nextTerminalId,
+      shellPath,
+      lastActive: Date.now(),
+      shellIntegrationReady: true,
+    };
+    TerminalRegistry.terminals.push(info);
+    return info;
   }
 
   static createTerminal(cwd?: string, shellPath?: string): TerminalInfo {
@@ -41,6 +62,7 @@ export class TerminalRegistry {
       id: TerminalRegistry.nextTerminalId,
       shellPath: terminalOptions.shellPath,
       lastActive: Date.now(),
+      shellIntegrationReady: true,
     };
 
     TerminalRegistry.terminals.push(info);

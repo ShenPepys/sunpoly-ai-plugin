@@ -24,6 +24,7 @@
   var summaryFilesStore = {};
   var summaryUndoIntentStore = {};
   var processSummaryStore = {};
+  var thinkingElapsedStore = {};
   var processCollapseTimers = {};
 
   // ==================== 步骤容器管理 ====================
@@ -200,12 +201,22 @@
     if (!layout) { return; }
 
     setExecutionResultTitle(layout.resultPanelEl, completed);
+    if (completed) {
+      if (layout.hintEl) {
+        layout.hintEl.style.display = 'none';
+        layout.hintEl.textContent = '';
+        layout.hintEl.className = 'message-execution-hint';
+      }
+      return;
+    }
+
+    if (layout.hintEl) {
+      layout.hintEl.style.display = '';
+    }
     applyExecutionHintState(
       layout.hintEl,
-      completed
-        ? 'AI 已完成执行，下方是最终结果。'
-        : 'AI 正在执行任务，最终结果会显示在下方。',
-      completed ? 'complete' : 'running'
+      'AI 正在执行任务，最终结果会显示在下方。',
+      'running'
     );
   }
 
@@ -360,10 +371,30 @@
     }
   }
 
-  function getThinkingLabelFromElement(thinkingEl) {
-    var descEl = thinkingEl.querySelector('.step-desc');
-    var text = descEl ? String(descEl.textContent || '').trim() : '';
-    return text.replace(/^Thought for\s+/, '').trim() || text;
+  function getMessageThinkingElapsedMs(messageId) {
+    var elapsedMs = thinkingElapsedStore[messageId] || 0;
+    var storedSummary = processSummaryStore[messageId];
+    if (storedSummary && typeof storedSummary.thinkingElapsedMs === 'number') {
+      elapsedMs = Math.max(elapsedMs, storedSummary.thinkingElapsedMs);
+    }
+    return elapsedMs;
+  }
+
+  function recordMessageThinkingElapsed(messageId, elapsedMs) {
+    if (!messageId || typeof elapsedMs !== 'number' || elapsedMs <= 1000) {
+      return;
+    }
+
+    thinkingElapsedStore[messageId] = (thinkingElapsedStore[messageId] || 0) + elapsedMs;
+  }
+
+  function removeThinkingStepLines(sections) {
+    if (!sections || !sections.linesEl) { return; }
+
+    var thinkingEls = sections.linesEl.querySelectorAll('.step-thinking');
+    Array.prototype.forEach.call(thinkingEls, function (thinkingEl) {
+      thinkingEl.remove();
+    });
   }
 
   function createProcessGroupsState() {
@@ -478,10 +509,12 @@
     if (!sections) { return null; }
 
     var groups = createProcessGroupsState();
-    var thinkingEls = sections.linesEl.querySelectorAll('.step-thinking');
-    Array.prototype.forEach.call(thinkingEls, function (thinkingEl) {
-      addProcessGroupItem(groups.thinking, getThinkingLabelFromElement(thinkingEl), 'done');
-    });
+    removeThinkingStepLines(sections);
+
+    var thinkingMs = getMessageThinkingElapsedMs(messageId);
+    if (thinkingMs > 1000) {
+      addProcessGroupItem(groups.thinking, formatElapsed(thinkingMs), 'done');
+    }
 
     var stepEls = sections.linesEl.querySelectorAll('.step-item');
     Array.prototype.forEach.call(stepEls, function (stepEl) {
@@ -769,6 +802,9 @@
 
     sections.detailsEl.appendChild(summaryEl);
     processSummaryStore[data.messageId] = data.summary;
+    if (typeof data.summary.thinkingElapsedMs === 'number' && data.summary.thinkingElapsedMs > 1000) {
+      thinkingElapsedStore[data.messageId] = data.summary.thinkingElapsedMs;
+    }
     refreshProcessPanel(data.messageId);
     sections.container.classList.add('process-panel-complete');
     setProcessPanelCollapsed(sections.container, true);
@@ -874,18 +910,8 @@
     if (!sections) { return; }
     activateProcessPanel(data.messageId, sections);
 
-    // 在步骤容器最前面插入 Thinking 行
-    var thinkingEl = document.createElement('div');
-    thinkingEl.className = 'step-thinking';
-
-    var elapsedText = formatElapsed(data.elapsed);
-    thinkingEl.innerHTML =
-      '<div class="step-icon"><span class="step-check">✓</span></div>' +
-      '<div class="step-desc">Thought for ' + elapsedText + '</div>' +
-      '<button class="step-toggle" title="展开/折叠">›</button>';
-
-    // 插入到步骤容器的最前面
-    sections.linesEl.insertBefore(thinkingEl, sections.linesEl.firstChild);
+    recordMessageThinkingElapsed(data.messageId, data.elapsed);
+    removeThinkingStepLines(sections);
     refreshProcessGroups(data.messageId);
     scrollToBottom();
   }
@@ -2151,6 +2177,7 @@
     summaryFilesStore = {};
     summaryUndoIntentStore = {};
     processSummaryStore = {};
+    thinkingElapsedStore = {};
     Object.keys(processCollapseTimers).forEach(function (messageId) {
       clearTimeout(processCollapseTimers[messageId]);
     });

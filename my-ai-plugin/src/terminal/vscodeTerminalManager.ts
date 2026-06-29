@@ -9,6 +9,8 @@ import {
 } from './vscodeTerminalProcess';
 import { TerminalInfo, TerminalRegistry } from './vscodeTerminalRegistry';
 
+const AI_ASSISTANT_TERMINAL_NAME = 'AI Assistant';
+
 type ShellIntegrationCapableTerminal = vscode.Terminal & {
   shellIntegration?: {
     cwd?: vscode.Uri;
@@ -68,9 +70,7 @@ export class VscodeTerminalManager {
     });
 
     process.once('no_shell_integration', () => {
-      TerminalRegistry.removeTerminal(terminalInfo.id);
-      this.terminalIds.delete(terminalInfo.id);
-      this.processes.delete(terminalInfo.id);
+      terminalInfo.shellIntegrationReady = false;
     });
 
     const promise = new Promise<void>((resolve, reject) => {
@@ -96,6 +96,16 @@ export class VscodeTerminalManager {
   async getOrCreateTerminal(cwd: string): Promise<TerminalInfo> {
     const expectedShellPath = getShell();
     const terminals = TerminalRegistry.getAllTerminals();
+    this.pruneExtraAssistantTerminals(terminals);
+
+    if (this.terminalReuseEnabled) {
+      const availableTerminal = terminals.find((item) => !item.busy && item.shellPath === expectedShellPath);
+      if (availableTerminal) {
+        await this.ensureTerminalCwd(availableTerminal, cwd);
+        this.terminalIds.add(availableTerminal.id);
+        return availableTerminal;
+      }
+    }
 
     const matchingTerminal = terminals.find((item) => {
       if (item.busy) {
@@ -116,21 +126,69 @@ export class VscodeTerminalManager {
       return matchingTerminal;
     }
 
-    if (this.terminalReuseEnabled) {
-      const availableTerminal = terminals.find((item) => !item.busy && item.shellPath === expectedShellPath);
-      if (availableTerminal) {
-        const cdProcess = this.runCommand(availableTerminal, `cd "${cwd}"`);
-        await cdProcess;
-        await waitForShellIntegration(availableTerminal.terminal, this.shellIntegrationTimeout);
-        this.terminalIds.add(availableTerminal.id);
-        return availableTerminal;
-      }
+    const adoptedTerminal = this.adoptExistingAssistantTerminal(expectedShellPath);
+    if (adoptedTerminal) {
+      await this.ensureTerminalCwd(adoptedTerminal, cwd);
+      this.terminalIds.add(adoptedTerminal.id);
+      return adoptedTerminal;
     }
 
     const newTerminal = TerminalRegistry.createTerminal(cwd, expectedShellPath);
     this.terminalIds.add(newTerminal.id);
     await waitForShellIntegration(newTerminal.terminal, this.shellIntegrationTimeout);
     return newTerminal;
+  }
+
+  private async ensureTerminalCwd(terminalInfo: TerminalInfo, cwd: string): Promise<void> {
+    const terminalCwd = getShellIntegration(terminalInfo.terminal)?.cwd?.fsPath;
+    if (terminalCwd && arePathsEqual(terminalCwd, cwd)) {
+      return;
+    }
+
+    const cdProcess = this.runCommand(terminalInfo, `cd "${cwd}"`);
+    await cdProcess;
+    await waitForShellIntegration(terminalInfo.terminal, this.shellIntegrationTimeout);
+  }
+
+  private adoptExistingAssistantTerminal(shellPath: string): TerminalInfo | undefined {
+    const allTerminals = vscode.window.terminals;
+    if (!allTerminals || typeof allTerminals[Symbol.iterator] !== 'function') {
+      return undefined;
+    }
+
+    const existing = Array.from(allTerminals).find(
+      (terminal) => terminal.name === AI_ASSISTANT_TERMINAL_NAME && terminal.exitStatus === undefined,
+    );
+    if (!existing) {
+      return undefined;
+    }
+
+    return TerminalRegistry.registerExistingTerminal(existing, shellPath);
+  }
+
+  private pruneExtraAssistantTerminals(registeredTerminals: TerminalInfo[]): void {
+    const allTerminals = vscode.window.terminals;
+    if (!allTerminals || typeof allTerminals[Symbol.iterator] !== 'function') {
+      return;
+    }
+
+    const keepTerminal = registeredTerminals.find((item) => !item.busy)?.terminal;
+    for (const terminal of allTerminals) {
+      if (terminal.name !== AI_ASSISTANT_TERMINAL_NAME || terminal.exitStatus !== undefined) {
+        continue;
+      }
+      if (keepTerminal && terminal === keepTerminal) {
+        continue;
+      }
+      if (registeredTerminals.some((item) => item.terminal === terminal && item.busy)) {
+        continue;
+      }
+      terminal.dispose();
+      const registered = registeredTerminals.find((item) => item.terminal === terminal);
+      if (registered) {
+        TerminalRegistry.removeTerminal(registered.id);
+      }
+    }
   }
 
   dispose(): void {

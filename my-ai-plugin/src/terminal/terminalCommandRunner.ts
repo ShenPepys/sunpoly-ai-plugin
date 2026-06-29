@@ -44,7 +44,10 @@ async function runViaIntegratedTerminal(
 ): Promise<TerminalCommandRunResult> {
   const manager = getVscodeTerminalManager();
   const terminalInfo = await manager.getOrCreateTerminal(cwd);
-  terminalInfo.terminal.show();
+  const terminalSettings = getTerminalExecutionConfig();
+  if (terminalSettings.showTerminalOnRun) {
+    terminalInfo.terminal.show();
+  }
 
   const lines: string[] = [];
   let exitCode: number | null = null;

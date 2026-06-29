@@ -43,9 +43,14 @@ function isReadOnlyToolCall(toolCall: ParsedToolCall): boolean {
  * @param mode 当前工作模式，用于权限控制
  * @returns 所有工具调用的执行结果
  */
+export interface ExecuteToolCallsOptions {
+  skipRunCommandApproval?: boolean;
+}
+
 export async function executeToolCalls(
   toolCalls: ParsedToolCall[],
   mode: WorkMode,
+  options?: ExecuteToolCallsOptions,
 ): Promise<ToolExecutionResult[]> {
   const results: ToolExecutionResult[] = new Array(toolCalls.length);
 
@@ -62,7 +67,7 @@ export async function executeToolCalls(
     // 并行执行这批只读操作
     if (readBatchIndices.length > 0) {
       const readPromises = readBatchIndices.map(async (idx) => {
-        const result = await executeSingleToolCall(toolCalls[idx], mode);
+        const result = await executeSingleToolCall(toolCalls[idx], mode, options);
         return { idx, result };
       });
       const readResults = await Promise.all(readPromises);
@@ -74,7 +79,7 @@ export async function executeToolCalls(
 
     // 串行执行下一个写操作（如果有的话）
     if (i < toolCalls.length && !isReadOnlyToolCall(toolCalls[i])) {
-      const result = await executeSingleToolCall(toolCalls[i], mode);
+      const result = await executeSingleToolCall(toolCalls[i], mode, options);
       results[i] = { toolCall: toolCalls[i], result };
       i++;
     }
@@ -90,6 +95,7 @@ export async function executeToolCalls(
 async function executeSingleToolCall(
   toolCall: ParsedToolCall,
   mode: WorkMode,
+  options?: ExecuteToolCallsOptions,
 ): Promise<FileOpResult> {
   // 权限控制：Ask 和 Plan 模式下禁止写操作和命令执行
   const isWriteOp = toolCall.type === 'write_file' || toolCall.type === 'edit_file' || toolCall.type === 'ast_edit' || toolCall.type === 'run_command';
@@ -156,7 +162,7 @@ async function executeSingleToolCall(
       if (!toolCall.command) {
         return { success: false, content: 'run_command 缺少命令内容' };
       }
-      if (!(await confirmRunCommand(toolCall.command))) {
+      if (!options?.skipRunCommandApproval && !(await confirmRunCommand(toolCall.command))) {
         return { success: false, content: COMMAND_DENIED_MESSAGE };
       }
       const cmdResult = await execCommand(toolCall.command, toolCall.timeout);

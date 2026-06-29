@@ -289,6 +289,8 @@ export function buildAssistantDisplayCompletionMessages(
     messages.push(buildShowHistoryProcessSummaryResponse(options.messageId, options.processSummary));
   }
 
+  messages.push({ type: 'setLoading', loading: false });
+
   if (options.streamDoneBeforeUpdate && options.errorMessage) {
     messages.push({
       type: 'showError',
@@ -341,7 +343,7 @@ export function applyAssistantResponseDisplay(
       messageId: options.messageId,
       displayContent: analysis.displayContent,
       processSummary: options.processSummary,
-      includeUpdateMessage: analysis.kind === 'invalid-tool-call',
+      includeUpdateMessage: analysis.kind === 'invalid-tool-call' || !!options.processSummary,
       errorMessage: analysis.kind === 'invalid-tool-call'
         ? '检测到无效的工具调用格式，已忽略本次工具执行'
         : undefined,

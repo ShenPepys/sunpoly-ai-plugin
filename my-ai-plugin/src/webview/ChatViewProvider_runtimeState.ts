@@ -200,7 +200,7 @@ export function recordThinkingElapsedInActiveHistorySummary(
   }
 
   const nextSummary = activeSummary ?? createHistoryProcessSummary();
-  nextSummary.thinkingElapsedMs = elapsedMs;
+  nextSummary.thinkingElapsedMs = (nextSummary.thinkingElapsedMs ?? 0) + elapsedMs;
   return nextSummary;
 }
 

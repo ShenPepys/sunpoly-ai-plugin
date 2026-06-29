@@ -545,6 +545,7 @@ export interface TerminalExecutionConfig {
   commandDefaultTimeoutSeconds: number;
   longCommandTimeoutSeconds: number;
   reuseTerminal: boolean;
+  showTerminalOnRun: boolean;
   maxOutputLines: number;
 }
 
@@ -588,6 +589,7 @@ export function getTerminalExecutionConfig(): TerminalExecutionConfig {
   const longCommandTimeoutSeconds = get('terminal.longCommandTimeoutSeconds', 300);
   const maxOutputLines = get('terminal.maxOutputLines', 200);
   const reuseTerminal = get('terminal.reuseTerminal', true);
+  const showTerminalOnRun = get('terminal.showTerminalOnRun', false);
 
   return {
     defaultProfile: normalizeTerminalProfile(get('terminal.defaultProfile', 'default')),
@@ -595,6 +597,7 @@ export function getTerminalExecutionConfig(): TerminalExecutionConfig {
     commandDefaultTimeoutSeconds: toPositiveNumber(commandDefaultTimeoutSeconds, 30),
     longCommandTimeoutSeconds: toPositiveNumber(longCommandTimeoutSeconds, 300),
     reuseTerminal: typeof reuseTerminal === 'boolean' ? reuseTerminal : true,
+    showTerminalOnRun: typeof showTerminalOnRun === 'boolean' ? showTerminalOnRun : false,
     maxOutputLines: toPositiveNumber(maxOutputLines, 200),
   };
 }
