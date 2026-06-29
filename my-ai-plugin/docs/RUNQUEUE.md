@@ -17,50 +17,13 @@
 
 - [x] 状态：已完成（`src/terminal/shell.ts`、`powershell.ts`、`index.ts` + `test/terminalShell.test.ts`）
 
+### [P0-2] VS Code 集成终端执行（Shell Integration）
+
+- [x] 状态：已完成（`vscodeTerminalManager/Process`、`getLatestTerminalOutput` + `test/vscodeTerminalProcess.test.ts`）
+
 ---
 
 ## 队列（按顺序执行，勿跳项）
-
-### [P0-2] VS Code 集成终端执行（Shell Integration）
-
-- [ ] 状态：待做
-
-**目标**
-
-实现基于 `vscode.window.createTerminal` + `terminal.shellIntegration.executeCommand()` 的命令执行器，支持输出流采集、超时等待、终端复用与 CWD 切换；Shell Integration 失败或无输出时读取终端快照作为 fallback（对齐 GAP §3 P0：终端复用 / CWD / 快照 fallback）。
-
-**范围**
-
-- 新增：`src/terminal/vscodeTerminalManager.ts`、`src/terminal/vscodeTerminalProcess.ts`
-- 新增：`src/terminal/getLatestTerminalOutput.ts`（或同等快照 fallback 模块）
-- 参考 cline：`VscodeTerminalManager.ts`、`VscodeTerminalProcess.ts`、`get-latest-output`（局部借鉴，不复制全量）
-- 新增：`test/vscodeTerminalProcess.test.ts`（可用 mock vscode）
-
-**验收标准**
-
-- 存在 `runCommand(terminal, command)` 并 emit `line` / `completed` 事件
-- Shell Integration 不可用时 emit `no_shell_integration`，并尝试终端快照 fallback
-- `getOrCreateTerminal(cwd)` 支持按 cwd 复用非 busy 终端；必要时先 `cd` 到目标目录
-- 启动命令前等待 Shell Integration 就绪（可配置超时，默认可与 P1-2 衔接，本项先用常量）
-- 相关单元测试通过
-
-**自动检查**
-
-```bash
-npm run test:build && node scripts/run-node-tests.cjs test/vscodeTerminalProcess.test.ts -q
-```
-
-**手动检查**
-
-- F5 调试扩展，在 Code 模式下触发 `run_command echo hello`，底部集成终端可见执行
-- 连续两次 `run_command` 在同一 cwd 下应复用终端（非每次新建）
-- 故意关闭 Shell Integration 或模拟无输出时，仍能拿到终端快照文本
-
-**提交信息模板**
-
-`feat(terminal): vscode shell integration executor (P0-2)`
-
----
 
 ### [P0-3] 子进程 Fallback 与 Windows PowerShell 安全参数
 

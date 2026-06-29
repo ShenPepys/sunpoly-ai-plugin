@@ -14,3 +14,17 @@ export {
   resetPowerShellResolverCacheForTesting,
   setPowerShellProbeForTesting,
 } from './powershell';
+export {
+  SHELL_INTEGRATION_WAIT_TIMEOUT_MS,
+  SHELL_INTEGRATION_STREAM_TIMEOUT_MS,
+  NO_SHELL_INTEGRATION_WAIT_MS,
+} from './constants';
+export { getLatestTerminalOutput, setGetLatestTerminalOutputForTesting } from './getLatestTerminalOutput';
+export { TerminalRegistry } from './vscodeTerminalRegistry';
+export type { TerminalInfo } from './vscodeTerminalRegistry';
+export {
+  VscodeTerminalProcess,
+  mergePromise,
+} from './vscodeTerminalProcess';
+export type { TerminalProcessResultPromise, TerminalCompletionDetails } from './vscodeTerminalProcess';
+export { VscodeTerminalManager } from './vscodeTerminalManager';
