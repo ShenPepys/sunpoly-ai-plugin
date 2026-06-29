@@ -384,7 +384,7 @@ npm run test:build && node scripts/run-node-tests.cjs test/workspaceRoot.test.ts
 
 ### [P2-4] 命令权限控制器
 
-- [ ] 状态：待做
+- [x] 状态：完成
 
 **目标**
 
@@ -528,3 +528,5 @@ npm run test:build && node scripts/run-node-tests.cjs test/dangerousCommands.tes
 | 2026-06-29 | P1-4 完成：run_command 命令与输出步骤展示 |
 | 2026-06-29 | P2-1 完成：read_file start_line/end_line 分段读取与续读提示 |
 | 2026-06-29 | P2-2 完成：list_dir 递归列出并尊重 gitignore |
+| 2026-06-29 | P2-3 完成：多根工作区路径解析 |
+| 2026-06-29 | P2-4 完成：命令权限控制器 allow/deny 与链式校验 |

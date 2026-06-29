@@ -301,6 +301,28 @@
           "minimum": 10,
           "maximum": 5000,
           "description": "返回给模型的命令输出行数上限（超出部分截断）"
+        },
+        "myAiPlugin.terminal.commandPermissions": {
+          "type": "object",
+          "description": "run_command 权限规则（allow/deny glob、链式分段校验、重定向开关）。也可通过环境变量 MY_AI_PLUGIN_COMMAND_PERMISSIONS 注入 JSON。",
+          "default": {},
+          "properties": {
+            "allow": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "允许执行的命令 glob 白名单（非空时仅允许匹配项）"
+            },
+            "deny": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "拒绝执行的命令 glob 黑名单"
+            },
+            "allowRedirects": {
+              "type": "boolean",
+              "default": false,
+              "description": "是否允许输出/输入重定向（>、<、>>）"
+            }
+          }
         }
       }
     }

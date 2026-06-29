@@ -11,7 +11,7 @@ import {
 import { resolveCommandTimeoutMs, getMaxCommandOutputChars } from '../config';
 import { info, error as logError } from '../logger';
 import { resolveWorkspaceFolderForPath } from '../utils/workspaceRoot';
-import { isDangerousCommand } from './terminalExecSafety';
+import { validateCommand } from './commandPermissions';
 import type { ExecCommandResult } from './terminalExecTypes';
 
 export type { ExecCommandResult } from './terminalExecTypes';
@@ -34,10 +34,11 @@ export async function execCommand(
     return { success: false, content: '命令为空' };
   }
 
-  if (isDangerousCommand(command.trim())) {
+  const permissionCheck = validateCommand(command.trim());
+  if (!permissionCheck.allowed) {
     return {
       success: false,
-      content: `命令被拒绝：检测到危险操作。以下类型的命令不允许执行：\n- 删除系统目录（rm -rf /、rm -rf ~）\n- 格式化磁盘\n- 直接写入设备\n\n如果确实需要执行，请手动在终端中运行。`,
+      content: `命令被拒绝：${permissionCheck.reason ?? '权限策略不允许执行此命令'}`,
     };
   }
 

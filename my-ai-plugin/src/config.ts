@@ -561,6 +561,26 @@ function toPositiveNumber(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+/** 命令权限配置环境变量（JSON：{ allow?, deny?, allowRedirects? }） */
+export const COMMAND_PERMISSIONS_ENV_KEY = 'MY_AI_PLUGIN_COMMAND_PERMISSIONS';
+
+/**
+ * 读取命令权限原始配置（环境变量优先于 VS Code 设置）
+ */
+export function getCommandPermissionsSettingValue(): unknown {
+  const env = loadEnvFile();
+  const envJson = env[COMMAND_PERMISSIONS_ENV_KEY];
+  if (typeof envJson === 'string' && envJson.trim()) {
+    try {
+      return JSON.parse(envJson);
+    } catch {
+      info(`无法解析 ${COMMAND_PERMISSIONS_ENV_KEY}，将忽略环境变量权限配置`);
+    }
+  }
+
+  return vscode.workspace.getConfiguration(CONFIG_PREFIX).get('terminal.commandPermissions', {});
+}
+
 /** 读取终端执行相关 VS Code 设置 */
 export function getTerminalExecutionConfig(): TerminalExecutionConfig {
   const shellIntegrationTimeoutSeconds = get('terminal.shellIntegrationTimeoutSeconds', 4);
