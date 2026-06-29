@@ -10,6 +10,7 @@ import { info, error } from '../logger';
 import { readFile, writeFile, editFile, listDir } from './fileOps';
 import { searchFile, grepCode } from './searchTools';
 import { execCommand } from './terminalExec';
+import { confirmRunCommand, COMMAND_DENIED_MESSAGE } from './commandApproval';
 import { routeAstEdit } from './astRouter';
 import { isToolReadOnly, getToolLabel } from './toolDefs';
 import type { AstEditRequest } from './astEditorTypes';
@@ -151,6 +152,9 @@ async function executeSingleToolCall(
     case 'run_command':
       if (!toolCall.command) {
         return { success: false, content: 'run_command 缺少命令内容' };
+      }
+      if (!(await confirmRunCommand(toolCall.command))) {
+        return { success: false, content: COMMAND_DENIED_MESSAGE };
       }
       const cmdResult = await execCommand(toolCall.command, toolCall.timeout);
       return { success: cmdResult.success, content: cmdResult.content || '' };
