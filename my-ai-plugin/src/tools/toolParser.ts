@@ -66,7 +66,7 @@ type TextRange = [number, number];
 const WRAPPED_TOOL_CALL_REGEX_SOURCE = '<tool_call>([\\s\\S]*?)</tool_call>';
 const BARE_TOOL_NAMES = ['read_file', 'write_file', 'edit_file', 'list_dir', 'ast_edit', 'search_file', 'grep_code', 'run_command'];
 const BARE_TOOL_CALL_REGEX_SOURCE = `<(${BARE_TOOL_NAMES.join('|')})[\\s>][\\s\\S]*?(?:\\/>|<\\/\\1>)`;
-const BARE_TOOL_CALL_QUICK_CHECK_REGEX = /<(?:read_file|write_file|edit_file|list_dir|ast_edit|search_file|grep_code|run_command)\s/;
+const BARE_TOOL_CALL_QUICK_CHECK_REGEX = /<(?:read_file|write_file|edit_file|list_dir|ast_edit|search_file|grep_code|run_command)(?:\s|>)/;
 const FENCED_CODE_BLOCK_REGEX_SOURCE = '(^|\\r?\\n)(`{3,}|~{3,})[^\\n\\r]*\\r?\\n[\\s\\S]*?\\r?\\n\\2[^\\n\\r]*(?=\\r?\\n|$)';
 
 function collectFencedCodeBlockRanges(text: string): TextRange[] {
@@ -179,7 +179,47 @@ export function parseToolCalls(text: string): ParsedToolCall[] {
   }
 
   // 代码块外没有找到，回退到全文解析，兼容模型把真实调用包在代码块里
-  return parseToolCallsFromSegments([text]);
+  const fullTextResults = parseToolCallsFromSegments([text]);
+  if (fullTextResults.length > 0) {
+    return fullTextResults;
+  }
+
+  const lenientRunCommand = tryParseLenientRunCommand(text);
+  return lenientRunCommand ? [lenientRunCommand] : [];
+}
+
+/**
+ * 宽松解析 run_command：兼容缺少闭合标签或 tool_call 包裹不完整的情况。
+ */
+function tryParseLenientRunCommand(text: string): ParsedToolCall | null {
+  const openTag = '<run_command';
+  const openIdx = text.indexOf(openTag);
+  if (openIdx === -1) {
+    return null;
+  }
+
+  const openEnd = text.indexOf('>', openIdx);
+  if (openEnd === -1) {
+    return null;
+  }
+
+  const closeTag = '</run_command>';
+  const closeIdx = text.indexOf(closeTag, openEnd);
+  const command = (closeIdx === -1
+    ? text.slice(openEnd + 1)
+    : text.slice(openEnd + 1, closeIdx)
+  ).trim();
+
+  if (!command) {
+    return null;
+  }
+
+  const rawEnd = closeIdx === -1 ? text.length : closeIdx + closeTag.length;
+  return {
+    type: 'run_command',
+    command,
+    rawMatch: text.slice(openIdx, rawEnd),
+  };
 }
 
 /**

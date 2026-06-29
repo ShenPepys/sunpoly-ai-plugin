@@ -33,6 +33,7 @@ test('getToolStepDescription grep_code 使用 regex 而非 path', () => {
   assert.match(description, /ffc_test/);
 });
 
+test('getToolStepDescription run_command 含命令前缀', () => {
   const toolCall: ParsedToolCall = {
     type: 'run_command',
     command: 'npm test',

@@ -8,6 +8,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
+import * as readline from 'readline';
 import { info, error } from '../logger';
 import {
   isPathWithinAnyWorkspaceFolder,
@@ -44,8 +45,50 @@ const SKIP_EXTENSIONS = new Set([
   '.pyc', '.class', '.o', '.obj',
 ]);
 
+/** 超过此大小的文件改用流式按行读取，不再整文件加载 */
+export const READ_FILE_WHOLE_FILE_MAX_BYTES = 512 * 1024;
+
+async function readLinesFromFile(
+  safePath: string,
+  startLine: number,
+  endLine: number,
+): Promise<string[]> {
+  const stream = fs.createReadStream(safePath, { encoding: 'utf-8' });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  const lines: string[] = [];
+  let lineNo = 0;
+
+  try {
+    for await (const line of rl) {
+      lineNo += 1;
+      if (lineNo < startLine) {
+        continue;
+      }
+      if (lineNo > endLine) {
+        break;
+      }
+      lines.push(line);
+    }
+  } finally {
+    rl.close();
+    stream.destroy();
+  }
+
+  return lines;
+}
+
+function buildLargeFileReadHint(fileSizeBytes: number, startLine: number, endLine: number, hasMore: boolean): string {
+  if (!hasMore) {
+    return '';
+  }
+
+  const sizeLabel = `${(fileSizeBytes / 1024).toFixed(0)}KB`;
+  return `\n\n(File is ${sizeLabel} total; showing lines ${startLine}-${endLine}. Use start_line=${endLine + 1} to continue reading.)`;
+}
+
 /** 单次 read_file 默认最多返回行数（未指定 end_line 时） */
 export const DEFAULT_READ_FILE_MAX_LINES = 200;
+
 
 const READ_FILE_CONTINUATION_HINT_REGEX = /\n\n\(Showing lines \d+-\d+ of \d+ total\. Use start_line=\d+ to continue reading\.\)$/;
 
@@ -539,11 +582,7 @@ export async function readFile(filePath: string, options?: ReadFileOptions): Pro
     }
 
     const stat = await fsp.stat(safePath);
-    // 限制读取大小，防止读取超大文件导致内存溢出
-    const MAX_SIZE = 512 * 1024; // 512KB
-    if (stat.size > MAX_SIZE) {
-      return { success: false, content: `文件过大 (${(stat.size / 1024).toFixed(0)}KB)，超过 512KB 限制: ${safePath}` };
-    }
+    const maxWholeFileBytes = READ_FILE_WHOLE_FILE_MAX_BYTES;
 
     // 根据文件名和扩展名判断是否应跳过
     const fileName = path.basename(safePath);
@@ -556,6 +595,23 @@ export async function readFile(filePath: string, options?: ReadFileOptions): Pro
     if (SKIP_EXTENSIONS.has(fileExt)) {
       info(`跳过二进制/无意义扩展名文件: ${safePath}`);
       return { success: true, content: `[已跳过] ${fileName} 是二进制或编译产物文件` };
+    }
+
+    if (stat.size > maxWholeFileBytes) {
+      const startLine = Math.max(1, options?.startLine ?? 1);
+      const endLine = options?.endLine ?? startLine + DEFAULT_READ_FILE_MAX_LINES - 1;
+      const lines = await readLinesFromFile(safePath, startLine, endLine);
+      const hasMore = lines.length >= endLine - startLine + 1;
+      const content = lines.join('\n') + buildLargeFileReadHint(stat.size, startLine, startLine + lines.length - 1, hasMore);
+
+      info(
+        `读取大文件(流式): ${safePath} (lines ${startLine}-${startLine + lines.length - 1}, ${stat.size} bytes)`,
+      );
+      return {
+        success: true,
+        content,
+        readRangeStart: startLine,
+      };
     }
 
     const content = await fsp.readFile(safePath, 'utf-8');

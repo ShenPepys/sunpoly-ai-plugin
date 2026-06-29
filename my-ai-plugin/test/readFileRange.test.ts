@@ -86,3 +86,29 @@ test('readFile 大文件只返回请求行范围与续读提示', async () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('readFile 超过 512KB 时流式返回前 DEFAULT_READ_FILE_MAX_LINES 行', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'read-file-huge-'));
+  const filePath = path.join(tmpDir, 'huge.json');
+  const line = `{"id":1,"payload":"${'x'.repeat(1024)}"}`;
+  const lines = Array.from({ length: 700 }, () => line);
+  fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
+
+  const originalFolders = vscode.workspace.workspaceFolders;
+  vscode.workspace.workspaceFolders = [{ uri: { fsPath: tmpDir } }];
+
+  try {
+    const stat = fs.statSync(filePath);
+    assert.ok(stat.size > 512 * 1024);
+
+    const result = await readFile('huge.json');
+    assert.equal(result.success, true);
+    assert.match(result.content ?? '', /"id":1/);
+    assert.match(result.content ?? '', /start_line=201/);
+    assert.equal(result.fullContentForCache, undefined);
+    assert.equal(result.readRangeStart, 1);
+  } finally {
+    vscode.workspace.workspaceFolders = originalFolders;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

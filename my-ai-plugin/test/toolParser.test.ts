@@ -273,6 +273,19 @@ test('parseToolCalls run_command 命令内容包含 XML 样式的字符串时不
   assert.equal(calls[0].command, 'echo "<div>hello</div>" > file.txt');
 });
 
+test('parseToolCalls 宽松解析缺少闭合标签的 run_command', () => {
+  const cmd = 'python -c "print(1)"';
+  const content = `<tool_call><run_command>${cmd}`;
+  const calls = parseToolCalls(content);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].type, 'run_command');
+  assert.equal(calls[0].command, cmd);
+});
+
+test('hasToolCalls 识别 <run_command> 后紧跟 > 的裸标签', () => {
+  assert.equal(hasToolCalls('<run_command>git status</run_command>'), true);
+});
+
 test('stripToolCalls 能正确剥离 run_command 标签', () => {
   const content = '我来执行安装命令：<tool_call><run_command>npm install</run_command></tool_call>\n安装完成。';
   const stripped = stripToolCalls(content);
