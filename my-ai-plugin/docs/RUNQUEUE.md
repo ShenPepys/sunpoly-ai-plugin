@@ -423,7 +423,7 @@ npm run test:build && node scripts/run-node-tests.cjs test/commandPermissions.te
 
 ### [P2-5] 命令执行后文件读缓存失效
 
-- [ ] 状态：待做
+- [x] 状态：完成
 
 **目标**
 

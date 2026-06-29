@@ -1053,6 +1053,15 @@ export async function executeToolCallBatch(options: {
 
     toolResults.push(singleResult);
 
+    if (
+      toolCall.type === 'run_command'
+      && singleResult.result.success
+      && options.fileReadStateCache
+    ) {
+      options.fileReadStateCache.clear();
+      info('run_command 成功后已清空文件读取状态缓存');
+    }
+
     executionRecords.push({
       toolCall,
       success: singleResult.result.success,
