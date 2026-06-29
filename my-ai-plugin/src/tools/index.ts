@@ -2,7 +2,7 @@
  * 工具系统入口
  * 统一导出文件操作、解析器、执行器
  */
-export { readFile, writeFile, editFile, listDir, addLineNumbers } from './fileOps';
+export { readFile, writeFile, editFile, listDir, addLineNumbers, addLineNumbersFromStart } from './fileOps';
 export type { FileOpResult } from './fileOps';
 export { searchFile, grepCode } from './searchTools';
 export type { SearchFileResult, GrepCodeResult, GrepMatch } from './searchTools';

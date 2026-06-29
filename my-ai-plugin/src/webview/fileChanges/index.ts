@@ -30,7 +30,7 @@ export type {
 
 // Diff algorithm — extracted to diff.ts
 export { splitContentToLines, buildDiffOperationTypes } from './diff';
-import { executeToolCalls, readFile, validateFileReadState, buildReadFileStubIfUnchanged, isToolReadOnly, getToolIcon, getToolStepText, addLineNumbers } from '../../tools';
+import { executeToolCalls, readFile, validateFileReadState, buildReadFileStubIfUnchanged, isToolReadOnly, getToolIcon, getToolStepText, addLineNumbers, addLineNumbersFromStart } from '../../tools';
 import type { ParsedToolCall, ToolCallType, ToolExecutionResult } from '../../tools';
 import type { FileReadStateCache } from '../../tools';
 import { extractScriptBlock } from '../../tools/astAdapter_vue';
@@ -1031,19 +1031,24 @@ export async function executeToolCallBatch(options: {
         // 用原始内容（无行号）更新缓存，保证与 validateFileReadState 中磁盘内容对比兼容
         options.fileReadStateCache.set(resolvedPath, {
           content: stubResult.useStub
-            ? options.fileReadStateCache.get(resolvedPath)!.content  // stub 时保留原始完整内容
-            : singleResult.result.content,  // 原始内容（readFile 返回无行号）
+            ? options.fileReadStateCache.get(resolvedPath)!.content
+            : (singleResult.result.fullContentForCache ?? singleResult.result.content),
           timestamp: Date.now(),
         });
 
         // 缓存更新后，对返回给模型的内容添加行号（stub 消息不加行号）
         if (!stubResult.useStub) {
-          singleResult.result.content = addLineNumbers(singleResult.result.content);
+          const startLine = singleResult.result.readRangeStart ?? 1;
+          singleResult.result.content = startLine > 1
+            ? addLineNumbersFromStart(singleResult.result.content, startLine)
+            : addLineNumbers(singleResult.result.content);
         }
       }
     } else if (toolCall.type === 'read_file' && singleResult.result.success) {
-      // 无缓存时也要添加行号
-      singleResult.result.content = addLineNumbers(singleResult.result.content);
+      const startLine = singleResult.result.readRangeStart ?? 1;
+      singleResult.result.content = startLine > 1
+        ? addLineNumbersFromStart(singleResult.result.content, startLine)
+        : addLineNumbers(singleResult.result.content);
     }
 
     toolResults.push(singleResult);

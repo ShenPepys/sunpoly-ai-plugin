@@ -105,7 +105,10 @@ async function executeSingleToolCall(
 
   switch (toolCall.type) {
     case 'read_file':
-      return readFile(toolCall.path!);
+      return readFile(toolCall.path!, {
+        startLine: toolCall.readStartLine,
+        endLine: toolCall.readEndLine,
+      });
 
     case 'write_file':
       if (!toolCall.content && toolCall.content !== '') {

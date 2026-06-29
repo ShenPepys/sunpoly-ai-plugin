@@ -37,6 +37,10 @@ export interface ParsedToolCall {
   startLine?: number;
   /** 行号编辑模式：替换结束行（1-indexed，含）（仅 edit_file） */
   endLine?: number;
+  /** read_file 读取起始行（1-indexed，含） */
+  readStartLine?: number;
+  /** read_file 读取结束行（1-indexed，含） */
+  readEndLine?: number;
   /** AST 绕过标记：为 true 时允许 edit_file 编辑 AST 支持的文件（仅 edit_file） */
   astBypass?: boolean;
   /** 搜索模式（仅 search_file） */
@@ -103,7 +107,7 @@ function buildOutsideFencedCodeSegments(text: string): string[] {
 
 function replaceToolCallsInPlainText(text: string): string {
   let result = text.replace(new RegExp(WRAPPED_TOOL_CALL_REGEX_SOURCE, 'g'), '');
-  result = result.replace(/<(?:read_file|list_dir)\s+path\s*=\s*"[^"]+"\s*\/>/g, '');
+  result = result.replace(/<(?:read_file|list_dir)\s+path\s*=\s*"[^"]+"(?:\s+[a-z_]+\s*=\s*"[^"]*")*\s*\/>/g, '');
   result = result.replace(/<write_file\s+path\s*=\s*"[^"]+">[\s\S]*<\/write_file>/g, '');
   result = result.replace(/<edit_file\s+path\s*=\s*"[^"]+"(?:\s+[a-z_]+\s*=\s*"[^"]*")*>[\s\S]*<\/edit_file>/g, '');
   result = result.replace(/<ast_edit\s+path\s*=\s*"[^"]+"\s+action\s*=\s*"[^"]+">[\s\S]*<\/ast_edit>/g, '');
@@ -180,10 +184,19 @@ export function parseToolCalls(text: string): ParsedToolCall[] {
  * 解析单个工具调用的内部 XML
  */
 function parseSingleToolCall(inner: string, rawMatch: string): ParsedToolCall | null {
-  // read_file: <read_file path="xxx" />
-  const readMatch = inner.match(/<read_file\s+path\s*=\s*"([^"]+)"\s*\/>/);
+  // read_file: <read_file path="xxx" start_line="1" end_line="200" />
+  const readMatch = inner.match(/<read_file\s+path\s*=\s*"([^"]+)"((?:\s+[a-z_]+\s*=\s*"[^"]*")*)\s*\/>/);
   if (readMatch) {
-    return { type: 'read_file', path: readMatch[1], rawMatch };
+    const readAttrs = readMatch[2] ?? '';
+    const startLineAttr = readAttrs.match(/\bstart_line\s*=\s*"(\d+)"/);
+    const endLineAttr = readAttrs.match(/\bend_line\s*=\s*"(\d+)"/);
+    return {
+      type: 'read_file',
+      path: readMatch[1],
+      readStartLine: startLineAttr ? Number.parseInt(startLineAttr[1], 10) : undefined,
+      readEndLine: endLineAttr ? Number.parseInt(endLineAttr[1], 10) : undefined,
+      rawMatch,
+    };
   }
 
   // list_dir: <list_dir path="xxx" />

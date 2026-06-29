@@ -39,8 +39,58 @@ const SKIP_EXTENSIONS = new Set([
   '.pyc', '.class', '.o', '.obj',
 ]);
 
-/** 单个文件返回给模型的最大字符数，超出部分截断 */
-const MAX_CONTENT_CHARS = 8192;
+/** 单次 read_file 默认最多返回行数（未指定 end_line 时） */
+export const DEFAULT_READ_FILE_MAX_LINES = 200;
+
+const READ_FILE_CONTINUATION_HINT_REGEX = /\n\n\(Showing lines \d+-\d+ of \d+ total\. Use start_line=\d+ to continue reading\.\)$/;
+
+export interface ReadFileOptions {
+  startLine?: number;
+  endLine?: number;
+}
+
+export interface ReadFileLineSlice {
+  content: string;
+  start: number;
+  end: number;
+  totalLines: number;
+}
+
+/**
+ * 按行范围切片文件内容，并在仍有剩余行时附加续读提示。
+ */
+export function sliceFileContentByLineRange(
+  content: string,
+  startLine?: number,
+  endLine?: number,
+): ReadFileLineSlice {
+  const normalized = normalizeLineEndings(content);
+  const lines = normalized.split('\n');
+  if (normalized.endsWith('\n') && lines.length > 0 && lines[lines.length - 1] === '') {
+    lines.pop();
+  }
+
+  const totalLines = lines.length;
+  if (totalLines === 0) {
+    return { content: '', start: 1, end: 0, totalLines: 0 };
+  }
+
+  const requestedStart = Math.max(1, startLine ?? 1);
+  const requestedEnd = endLine !== undefined
+    ? Math.max(1, endLine)
+    : requestedStart + DEFAULT_READ_FILE_MAX_LINES - 1;
+  const shouldSwapBounds = endLine !== undefined && requestedEnd < requestedStart;
+  const start = shouldSwapBounds ? requestedEnd : requestedStart;
+  const end = Math.min(totalLines, shouldSwapBounds ? requestedStart : requestedEnd);
+  const slice = lines.slice(start - 1, end).join('\n');
+
+  let result = slice;
+  if (end < totalLines) {
+    result += `\n\n(Showing lines ${start}-${end} of ${totalLines} total. Use start_line=${end + 1} to continue reading.)`;
+  }
+
+  return { content: result, start, end, totalLines };
+}
 
 /**
  * 为文件内容添加行号。
@@ -51,11 +101,37 @@ const MAX_CONTENT_CHARS = 8192;
  * @returns 带行号的内容
  */
 export function addLineNumbers(content: string): string {
+  const hintMatch = content.match(READ_FILE_CONTINUATION_HINT_REGEX);
+  if (hintMatch && hintMatch.index !== undefined) {
+    const body = content.slice(0, hintMatch.index);
+    const hint = content.slice(hintMatch.index);
+    return addLineNumbersToBody(body, 1) + hint;
+  }
+
+  return addLineNumbersToBody(content, 1);
+}
+
+export function addLineNumbersFromStart(content: string, startLine: number): string {
+  const hintMatch = content.match(READ_FILE_CONTINUATION_HINT_REGEX);
+  if (hintMatch && hintMatch.index !== undefined) {
+    const body = content.slice(0, hintMatch.index);
+    const hint = content.slice(hintMatch.index);
+    return addLineNumbersToBody(body, startLine) + hint;
+  }
+
+  return addLineNumbersToBody(content, startLine);
+}
+
+function addLineNumbersToBody(content: string, startLine: number): string {
   const lines = content.split('\n');
-  const totalLines = lines.length;
-  const width = String(totalLines).length;
+  if (lines.length === 0) {
+    return content;
+  }
+
+  const endLine = startLine + lines.length - 1;
+  const width = String(endLine).length;
   return lines
-    .map((line, i) => `${String(i + 1).padStart(width)}\t${line}`)
+    .map((line, index) => `${String(startLine + index).padStart(width)}\t${line}`)
     .join('\n');
 }
 
@@ -121,6 +197,10 @@ export interface FileOpResult {
   success: boolean;
   /** 操作结果内容（文件内容、目录列表等） */
   content: string;
+  /** read_file 分段读取时返回给模型的起始行号（1-indexed） */
+  readRangeStart?: number;
+  /** read_file 分段读取时用于缓存的完整文件内容 */
+  fullContentForCache?: string;
   /** AST 编辑影响的文件列表，含原始与修改后的内容（仅 ast_edit 操作使用） */
   astAffectedFiles?: AstAffectedFile[];
   /** 编辑成功后 LSP 诊断的文本摘要（仅写操作成功后可能存在） */
@@ -461,7 +541,7 @@ export function buildLineBasedEditContent(
  * 读取文件内容
  * @param filePath 文件路径（绝对路径或相对于工作区的路径）
  */
-export async function readFile(filePath: string): Promise<FileOpResult> {
+export async function readFile(filePath: string, options?: ReadFileOptions): Promise<FileOpResult> {
   const safePath = resolveAndValidatePath(filePath);
   if (!safePath) {
     return { success: false, content: `无法访问文件: ${filePath}（路径不在工作区范围内或未打开工作区）` };
@@ -495,19 +575,18 @@ export async function readFile(filePath: string): Promise<FileOpResult> {
     }
 
     const content = await fsp.readFile(safePath, 'utf-8');
+    const ranged = sliceFileContentByLineRange(content, options?.startLine, options?.endLine);
+    const isPartialRead = ranged.start > 1 || ranged.end < ranged.totalLines;
 
-    // 超长文件截断，避免单个文件占用过多模型上下文
-    if (content.length > MAX_CONTENT_CHARS) {
-      const truncated = content.slice(0, MAX_CONTENT_CHARS);
-      info(`读取文件(截断): ${safePath} (原 ${content.length} 字符 → ${MAX_CONTENT_CHARS} 字符)`);
-      return {
-        success: true,
-        content: truncated + `\n\n[文件已截断，仅显示前 ${MAX_CONTENT_CHARS} 字符，原始长度 ${content.length} 字符]`,
-      };
-    }
-
-    info(`读取文件: ${safePath} (${content.length} 字符)`);
-    return { success: true, content };
+    info(
+      `读取文件: ${safePath} (lines ${ranged.start}-${ranged.end}/${ranged.totalLines}, ${ranged.content.length} 字符)`,
+    );
+    return {
+      success: true,
+      content: ranged.content,
+      readRangeStart: ranged.start,
+      fullContentForCache: isPartialRead ? content : undefined,
+    };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { success: false, content: `读取文件失败: ${msg}` };

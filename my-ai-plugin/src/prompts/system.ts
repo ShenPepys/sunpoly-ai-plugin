@@ -23,7 +23,7 @@ const MODE_CODE_SECTION = `# 工作模式：Code
 2. 读完后立即执行修改——不要复述文件内容、不要解释计划、不要展示代码，直接调用编辑工具
 
 ## 可用工具（使用 XML 标签格式）
-- 读取文件：<tool_call><read_file path="文件路径" /></tool_call>
+- 读取文件：<tool_call><read_file path="文件路径" /></tool_call>（大文件可加 start_line / end_line 分段读取，如 start_line="201" end_line="400"；未指定时默认最多返回前 200 行并提示续读）
 - 写入文件：<tool_call><write_file path="文件路径">文件内容</write_file></tool_call>
 - AST 结构化编辑（最高优先级）：<tool_call><ast_edit path="文件路径" action="操作类型">{JSON 参数}</ast_edit></tool_call>
 - 编辑文件（行号定位）：<tool_call><edit_file path="文件路径" start_line="起始行" end_line="结束行"><new>新内容</new></edit_file></tool_call>
@@ -163,7 +163,7 @@ const MODE_ASK_SECTION = `# 工作模式：Ask
 - 专注于回答问题、解释代码、提供建议
 
 ## 可用工具（使用 XML 标签格式）
-- 读取文件：<tool_call><read_file path="文件路径" /></tool_call>
+- 读取文件：<tool_call><read_file path="文件路径" /></tool_call>（大文件可加 start_line / end_line 分段读取，如 start_line="201" end_line="400"；未指定时默认最多返回前 200 行并提示续读）
 - 列出目录：<tool_call><list_dir path="目录路径" /></tool_call>
 - 按文件名搜索：<tool_call><search_file pattern="glob模式" /></tool_call>
 - 按内容搜索：<tool_call><grep_code regex="正则表达式" include_pattern="*.ts" /></tool_call>
@@ -193,7 +193,7 @@ const MODE_PLAN_SECTION = `# 工作模式：Plan
 4. **风险评估**：可能的副作用和注意事项
 
 ## 可用工具（使用 XML 标签格式）
-- 读取文件：<tool_call><read_file path="文件路径" /></tool_call>
+- 读取文件：<tool_call><read_file path="文件路径" /></tool_call>（大文件可加 start_line / end_line 分段读取，如 start_line="201" end_line="400"；未指定时默认最多返回前 200 行并提示续读）
 - 列出目录：<tool_call><list_dir path="目录路径" /></tool_call>
 - 按文件名搜索：<tool_call><search_file pattern="glob模式" /></tool_call>
 - 按内容搜索：<tool_call><grep_code regex="正则表达式" include_pattern="*.ts" /></tool_call>

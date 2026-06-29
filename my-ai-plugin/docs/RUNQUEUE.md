@@ -280,7 +280,7 @@ npm run build && node -e "const fs=require('fs'); const s=fs.readFileSync('src/w
 
 ### [P2-1] 大文件分段读取（start_line / end_line）
 
-- [ ] 状态：待做
+- [x] 状态：完成
 
 **目标**
 
@@ -526,3 +526,4 @@ npm run test:build && node scripts/run-node-tests.cjs test/dangerousCommands.tes
 | 2026-06-29 | P1-2 完成：终端与命令 VS Code 设置项 |
 | 2026-06-29 | P1-3 完成：grep_code 迁移 ripgrep |
 | 2026-06-29 | P1-4 完成：run_command 命令与输出步骤展示 |
+| 2026-06-29 | P2-1 完成：read_file start_line/end_line 分段读取与续读提示 |
