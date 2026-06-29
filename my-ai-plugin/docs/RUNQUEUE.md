@@ -245,7 +245,7 @@ npm run test:build && node scripts/run-node-tests.cjs test/searchTools.test.ts t
 
 ### [P1-4] 命令执行结果 UI 步骤展示
 
-- [ ] 状态：待做
+- [x] 状态：完成
 
 **目标**
 
@@ -525,3 +525,4 @@ npm run test:build && node scripts/run-node-tests.cjs test/dangerousCommands.tes
 | 2026-06-29 | P1-1 完成：run_command 执行前用户确认 |
 | 2026-06-29 | P1-2 完成：终端与命令 VS Code 设置项 |
 | 2026-06-29 | P1-3 完成：grep_code 迁移 ripgrep |
+| 2026-06-29 | P1-4 完成：run_command 命令与输出步骤展示 |

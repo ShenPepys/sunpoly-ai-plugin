@@ -337,6 +337,7 @@
     if (description.indexOf('Editing ') === 0) { return 'modifying'; }
     if (description.indexOf('Creating ') === 0) { return 'creating'; }
     if (description.indexOf('Listing ') === 0) { return 'listing'; }
+    if (description.indexOf('Running command:') === 0) { return 'command'; }
     return '';
   }
 
@@ -352,6 +353,8 @@
         return text.replace(/^Creating\s+/, '').trim();
       case 'listing':
         return text.replace(/^Listing\s+/, '').trim();
+      case 'command':
+        return text.replace(/^Running command:\s*/, '').split(' · ')[0].trim();
       default:
         return text;
     }
@@ -367,6 +370,7 @@
     return {
       thinking: { key: 'thinking', title: '思考', icon: '🧠', items: [], itemMap: {} },
       listing: { key: 'listing', title: '列目录', icon: '📁', items: [], itemMap: {} },
+      command: { key: 'command', title: '终端', icon: '💻', items: [], itemMap: {} },
       reading: { key: 'reading', title: '读取', icon: '📖', items: [], itemMap: {} },
       modifying: { key: 'modifying', title: '修改', icon: '✏️', items: [], itemMap: {} },
       creating: { key: 'creating', title: '创建', icon: '🆕', items: [], itemMap: {} },
@@ -532,7 +536,7 @@
   }
 
   function renderProcessGroups(groups) {
-    var groupOrder = ['thinking', 'listing', 'reading', 'modifying', 'creating', 'undoing', 'failed'];
+    var groupOrder = ['thinking', 'listing', 'reading', 'command', 'modifying', 'creating', 'undoing', 'failed'];
     var html = '';
 
     Array.prototype.forEach.call(groupOrder, function (groupKey) {
@@ -628,6 +632,9 @@
     }
     if (groups.reading.items.length > 0) {
       parts.push('读取 ' + groups.reading.items.length);
+    }
+    if (groups.command.items.length > 0) {
+      parts.push('终端 ' + groups.command.items.length);
     }
     if (groups.modifying.items.length > 0) {
       parts.push('修改 ' + groups.modifying.items.length);

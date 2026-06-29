@@ -147,8 +147,37 @@ export function upsertChangeSummaryFile(targetFiles: ChangeSummaryFile[], entry:
 }
 
 export function getToolStepDescription(tc: ParsedToolCall): string {
+  if (tc.type === 'run_command') {
+    return buildRunCommandStepDescription(tc.command ?? '');
+  }
+
   const fileName = tc.path!.split(/[/\\]/).pop() || tc.path!;
   return getToolStepText(tc.type, fileName);
+}
+
+const RUN_COMMAND_STEP_PREFIX = 'Running command: ';
+
+/** run_command 步骤初始描述（含命令前缀） */
+export function buildRunCommandStepDescription(command: string, maxChars = 120): string {
+  const trimmed = command.trim();
+  if (!trimmed) {
+    return `${RUN_COMMAND_STEP_PREFIX}(empty)`;
+  }
+
+  const preview = trimmed.length > maxChars ? `${trimmed.slice(0, maxChars)}...` : trimmed;
+  return `${RUN_COMMAND_STEP_PREFIX}${preview}`;
+}
+
+/** run_command 步骤完成后的描述（命令 + 输出摘要） */
+export function buildRunCommandStepResultDescription(
+  command: string,
+  success: boolean,
+  output?: string,
+): string {
+  const base = buildRunCommandStepDescription(command, 80);
+  const outputText = (output ?? '').trim() || (success ? '(no output)' : 'Command failed');
+  const summary = truncateStepFailureText(outputText.replace(/\s+/g, ' '), 100);
+  return `${base} · ${summary}`;
 }
 
 export function getToolStepIcon(type: ToolCallType): string {
@@ -1023,10 +1052,21 @@ export async function executeToolCallBatch(options: {
       toolCall,
       success: singleResult.result.success,
     });
+
+    let completedDescription: string | undefined;
+    if (toolCall.type === 'run_command') {
+      completedDescription = buildRunCommandStepResultDescription(
+        toolCall.command ?? '',
+        singleResult.result.success,
+        singleResult.result.content,
+      );
+    }
+
     options.postMessage({
       type: 'updateStep',
       stepId,
       status: singleResult.result.success ? 'done' : 'error',
+      description: completedDescription,
       elapsed: Date.now() - startTime,
     });
   }
