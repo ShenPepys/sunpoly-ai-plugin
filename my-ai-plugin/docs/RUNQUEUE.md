@@ -209,7 +209,7 @@ npm run build && node -e "const p=require('./package.json'); const k=Object.keys
 
 ### [P1-3] grep_code 迁移至 ripgrep
 
-- [ ] 状态：待做
+- [x] 状态：完成
 
 **目标**
 
@@ -524,3 +524,4 @@ npm run test:build && node scripts/run-node-tests.cjs test/dangerousCommands.tes
 | 2026-06-29 | P0-6 完成：终端故障排查用户文档 |
 | 2026-06-29 | P1-1 完成：run_command 执行前用户确认 |
 | 2026-06-29 | P1-2 完成：终端与命令 VS Code 设置项 |
+| 2026-06-29 | P1-3 完成：grep_code 迁移 ripgrep |

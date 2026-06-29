@@ -557,15 +557,25 @@ function normalizeTerminalProfile(value: string | undefined): TerminalDefaultPro
   return 'default';
 }
 
+function toPositiveNumber(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
 /** 读取终端执行相关 VS Code 设置 */
 export function getTerminalExecutionConfig(): TerminalExecutionConfig {
+  const shellIntegrationTimeoutSeconds = get('terminal.shellIntegrationTimeoutSeconds', 4);
+  const commandDefaultTimeoutSeconds = get('terminal.commandDefaultTimeoutSeconds', 30);
+  const longCommandTimeoutSeconds = get('terminal.longCommandTimeoutSeconds', 300);
+  const maxOutputLines = get('terminal.maxOutputLines', 200);
+  const reuseTerminal = get('terminal.reuseTerminal', true);
+
   return {
     defaultProfile: normalizeTerminalProfile(get('terminal.defaultProfile', 'default')),
-    shellIntegrationTimeoutSeconds: get('terminal.shellIntegrationTimeoutSeconds', 4),
-    commandDefaultTimeoutSeconds: get('terminal.commandDefaultTimeoutSeconds', 30),
-    longCommandTimeoutSeconds: get('terminal.longCommandTimeoutSeconds', 300),
-    reuseTerminal: get('terminal.reuseTerminal', true),
-    maxOutputLines: get('terminal.maxOutputLines', 200),
+    shellIntegrationTimeoutSeconds: toPositiveNumber(shellIntegrationTimeoutSeconds, 4),
+    commandDefaultTimeoutSeconds: toPositiveNumber(commandDefaultTimeoutSeconds, 30),
+    longCommandTimeoutSeconds: toPositiveNumber(longCommandTimeoutSeconds, 300),
+    reuseTerminal: typeof reuseTerminal === 'boolean' ? reuseTerminal : true,
+    maxOutputLines: toPositiveNumber(maxOutputLines, 200),
   };
 }
 

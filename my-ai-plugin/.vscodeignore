@@ -17,3 +17,4 @@ media/*copy*.js
 **/*.md
 !README.md
 !CHANGELOG.md
+!node_modules/@vscode/ripgrep/**
