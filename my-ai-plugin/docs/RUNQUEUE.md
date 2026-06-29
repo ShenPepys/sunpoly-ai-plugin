@@ -31,7 +31,7 @@
 
 ### [P0-4] 替换 terminalExec 并保持 execCommand API 兼容
 
-- [ ] 状态：待做
+- [x] 状态：完成
 
 **目标**
 
@@ -519,3 +519,4 @@ npm run test:build && node scripts/run-node-tests.cjs test/dangerousCommands.tes
 | 2026-06-29 | P0-1 完成：终端 Shell 检测模块与单元测试 |
 | 2026-06-29 | P0-2 完成：VS Code 集成终端 Shell Integration 执行器 |
 | 2026-06-29 | P0-3 完成：子进程 fallback 与 PowerShell 安全参数 |
+| 2026-06-29 | P0-4 完成：terminalExec 接入集成终端统一执行层 |

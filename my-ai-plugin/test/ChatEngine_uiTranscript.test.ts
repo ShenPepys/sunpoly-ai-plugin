@@ -619,11 +619,11 @@ test('deleteSession 会清理被删会话的 SessionRuntimeState', () => {
     activeSessionId: 'session-a',
   });
 
-  const runtimeState = (engine as any).getSessionRuntimeState('session-b');
+  const runtimeState = (engine as any).runtimeManager.getSessionRuntimeState('session-b');
   runtimeState.currentMode = 'plan';
   runtimeState.contextFiles = ['src/b.ts'];
 
-  const runtimeMap = (engine as any).sessionRuntimeBySessionId as Map<string, unknown>;
+  const runtimeMap = (engine as any).runtimeManager.sessionRuntimeBySessionId as Map<string, unknown>;
   assert.equal(runtimeMap.has('session-b'), true);
 
   (engine as any).deleteSession('session-b');
@@ -644,7 +644,7 @@ test('switchSession 会恢复目标会话的 mode 和 contextFiles', () => {
   engine.switchMode('ask');
   (engine as any).contextFiles = ['src/a.ts'];
 
-  const sessionBRuntime = (engine as any).getSessionRuntimeState('session-b');
+  const sessionBRuntime = (engine as any).runtimeManager.getSessionRuntimeState('session-b');
   sessionBRuntime.currentMode = 'plan';
   sessionBRuntime.contextFiles = ['src/b.ts'];
 
@@ -705,7 +705,7 @@ test('handleRegenerate 在启动异常时会回滚 pendingRegenerateState 并恢
     (requestExecutionModule as any).prepareChatRequestExecution = originalPrepareChatRequestExecution;
   }
 
-  const runtimeState = (engine as any).getSessionRuntimeState('session-a');
+  const runtimeState = (engine as any).runtimeManager.getSessionRuntimeState('session-a');
   assert.equal(runtimeState.activeRunId, null);
   assert.equal(runtimeState.pendingRegenerateState, null);
 

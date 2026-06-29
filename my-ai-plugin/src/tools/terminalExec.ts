@@ -1,70 +1,36 @@
 /**
  * 终端命令执行工具
  *
- * 允许 AI 在工作区中执行 shell 命令（如 npm install、git status 等），
- * 并返回命令输出结果。使用 Node.js child_process 实现。
+ * 在工作区中执行 shell 命令，优先走 VS Code 集成终端，fallback 到安全 spawn 子进程。
  */
 
-import { exec } from 'node:child_process';
 import { workspace } from 'vscode';
+import {
+  DEFAULT_COMMAND_TIMEOUT_MS,
+  MAX_COMMAND_OUTPUT_CHARS,
+} from '../terminal/constants';
+import {
+  runTerminalCommand,
+  truncateCommandOutput,
+} from '../terminal/terminalCommandRunner';
 import { info, error as logError } from '../logger';
+import { isDangerousCommand } from './terminalExecSafety';
+import type { ExecCommandResult } from './terminalExecTypes';
 
-// ==================== 类型定义 ====================
+export type { ExecCommandResult } from './terminalExecTypes';
+export {
+  DEFAULT_COMMAND_TIMEOUT_MS as DEFAULT_TIMEOUT_MS,
+  MAX_COMMAND_OUTPUT_CHARS as MAX_OUTPUT_CHARS,
+} from '../terminal/constants';
 
-export interface ExecCommandResult {
-  success: boolean;
-  /** 命令输出（stdout + stderr） */
-  content?: string;
-}
-
-// ==================== 常量 ====================
-
-/** 命令执行超时（毫秒） */
-const DEFAULT_TIMEOUT_MS = 30_000;
-
-/** 输出最大字符数，超出则截断 */
-const MAX_OUTPUT_CHARS = 8192;
-
-/** 危险命令模式（拒绝执行） */
-const DANGEROUS_PATTERNS = [
-  /^\s*rm\s+(-[a-zA-Z]*\s+)*\//,         // rm -rf /
-  /^\s*rm\s+(-[a-zA-Z]*\s+)*~/,         // rm -rf ~
-  /^\s*format\s+[a-zA-Z]:/,              // format C:
-  /^\s*del\s+\/[fFsS]/,                  // del /f
-  /^\s*:\(\)\s*\{/,                       // fork bomb
-  /^\s*mkfs\./,                           // mkfs.ext4
-  /^\s*dd\s+.*of=\/dev\//,               // dd to device
-];
-
-// ==================== 工具函数 ====================
-
-/**
- * 检查命令是否匹配危险模式
- */
-function isDangerousCommand(command: string): boolean {
-  return DANGEROUS_PATTERNS.some(pattern => pattern.test(command));
-}
-
-/**
- * 获取工作区根目录
- */
-function getWorkspaceRoot(): string | undefined {
-  const folders = workspace.workspaceFolders;
-  return folders && folders.length > 0 ? folders[0].uri.fsPath : undefined;
-}
-
-// ==================== 核心函数 ====================
+export { isDangerousCommand, DANGEROUS_PATTERNS } from './terminalExecSafety';
 
 /**
  * 在工作区根目录下执行 shell 命令
- *
- * @param command 要执行的命令
- * @param timeoutMs 超时毫秒数（默认 30 秒）
- * @returns 命令执行结果
  */
 export async function execCommand(
   command: string,
-  timeoutMs: number = DEFAULT_TIMEOUT_MS,
+  timeoutMs: number = DEFAULT_COMMAND_TIMEOUT_MS,
 ): Promise<ExecCommandResult> {
   if (!command || !command.trim()) {
     return { success: false, content: '命令为空' };
@@ -84,44 +50,24 @@ export async function execCommand(
 
   info(`执行终端命令: ${command} (cwd: ${cwd})`);
 
-  return new Promise<ExecCommandResult>((resolve) => {
-    exec(command, {
-      cwd,
-      timeout: timeoutMs,
-      maxBuffer: 1024 * 1024, // 1MB buffer
-      env: { ...process.env },
-    }, (err, stdout, stderr) => {
-      let output = '';
+  const result = await runTerminalCommand(command, cwd, timeoutMs);
+  let output = result.output;
 
-      if (stdout) { output += stdout; }
-      if (stderr) { output += (output ? '\n' : '') + stderr; }
+  if (!result.success && output && !output.includes('命令执行超时') && !output.includes('命令执行失败')) {
+    logError(`终端命令失败 (exit ${result.exitCode ?? 'unknown'}, via ${result.via}): ${command}`);
+  }
 
-      if (err) {
-        if (err.killed) {
-          resolve({
-            success: false,
-            content: `命令执行超时（${timeoutMs}ms）：\n${output.slice(0, MAX_OUTPUT_CHARS)}`,
-          });
-          return;
-        }
+  if (!output && !result.success) {
+    output = `命令执行失败 (exit code: ${result.exitCode ?? 'unknown'})`;
+  }
 
-        const exitCode = err.code ?? 'unknown';
-        logError(`终端命令失败 (exit ${exitCode}): ${command}`);
+  return {
+    success: result.success,
+    content: truncateCommandOutput(output, MAX_COMMAND_OUTPUT_CHARS),
+  };
+}
 
-        if (!output) {
-          output = `命令执行失败 (exit code: ${exitCode})`;
-        }
-      }
-
-      // 截断过长输出
-      if (output.length > MAX_OUTPUT_CHARS) {
-        output = output.slice(0, MAX_OUTPUT_CHARS) + `\n\n[输出已截断，原始长度 ${output.length} 字符]`;
-      }
-
-      resolve({
-        success: !err,
-        content: output,
-      });
-    });
-  });
+function getWorkspaceRoot(): string | undefined {
+  const folders = workspace.workspaceFolders;
+  return folders && folders.length > 0 ? folders[0].uri.fsPath : undefined;
 }
