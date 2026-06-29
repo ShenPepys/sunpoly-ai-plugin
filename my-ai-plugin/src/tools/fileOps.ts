@@ -9,6 +9,11 @@ import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { info, error } from '../logger';
+import {
+  isPathWithinAnyWorkspaceFolder,
+  resolvePathInWorkspaceFolder,
+  resolveWorkspaceFolderForPath,
+} from '../utils/workspaceRoot';
 
 /**
  * 应跳过的文件名（精确匹配）
@@ -136,18 +141,6 @@ function addLineNumbersToBody(content: string, startLine: number): string {
 }
 
 /**
- * 获取工作区根目录路径
- * 如果没有打开工作区则返回 undefined
- */
-function getWorkspaceRoot(): string | undefined {
-  const folders = vscode.workspace.workspaceFolders;
-  if (!folders || folders.length === 0) {
-    return undefined;
-  }
-  return folders[0].uri.fsPath;
-}
-
-/**
  * 安全校验：确保目标路径在工作区范围内
  * 防止 AI 越权访问工作区外的文件（如系统文件）
  * 
@@ -155,29 +148,20 @@ function getWorkspaceRoot(): string | undefined {
  * @returns 规范化后的绝对路径，如果不安全则返回 undefined
  */
 export function resolveAndValidatePath(targetPath: string): string | null {
-  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders || folders.length === 0) {
+    return null;
+  }
+
+  const workspaceFolder = resolveWorkspaceFolderForPath(targetPath, folders);
   if (!workspaceFolder) {
     return null;
   }
 
-  // 将相对路径转为绝对路径（基于工作区根目录）
-  const absolutePath = path.resolve(workspaceFolder.uri.fsPath, targetPath);
-  const normalizedWorkspaceRoot = path.resolve(workspaceFolder.uri.fsPath);
-  const compareAbsolutePath = process.platform === 'win32'
-    ? absolutePath.toLowerCase()
-    : absolutePath;
-  const compareWorkspaceRoot = process.platform === 'win32'
-    ? normalizedWorkspaceRoot.toLowerCase()
-    : normalizedWorkspaceRoot;
-  const workspacePrefix = compareWorkspaceRoot.endsWith(path.sep)
-    ? compareWorkspaceRoot
-    : compareWorkspaceRoot + path.sep;
+  const absolutePath = resolvePathInWorkspaceFolder(targetPath, workspaceFolder);
 
-  // 安全检查：必须在工作区目录内
-  const isSameDirectory = compareAbsolutePath === compareWorkspaceRoot;
-  const isChildDirectory = compareAbsolutePath.startsWith(workspacePrefix);
-  if (!isSameDirectory && !isChildDirectory) {
-    error(`文件路径越权: ${absolutePath} 不在工作区 ${workspaceFolder.uri.fsPath} 内`);
+  if (!isPathWithinAnyWorkspaceFolder(absolutePath, folders)) {
+    error(`文件路径越权: ${absolutePath} 不在任何工作区根目录内`);
     return null;
   }
 
@@ -988,7 +972,8 @@ export async function listDir(dirPath: string, options?: ListDirOptions): Promis
       return { success: false, content: `不是目录: ${safePath}` };
     }
 
-    const workspaceRoot = getWorkspaceRoot();
+    const workspaceFolder = resolveWorkspaceFolderForPath(dirPath);
+    const workspaceRoot = workspaceFolder?.uri.fsPath;
     if (!workspaceRoot) {
       return { success: false, content: `无法访问目录: ${dirPath}（路径不在工作区范围内或未打开工作区）` };
     }

@@ -11,7 +11,14 @@ import * as path from 'node:path';
 import { workspace } from 'vscode';
 import { info, error } from '../logger';
 import {
+  getWorkspaceRootPaths,
+  isPathWithinAnyWorkspaceFolder,
+  isPathWithinRoot,
+  toWorkspaceRelativePath,
+} from '../utils/workspaceRoot';
+import {
   DEFAULT_RIPGREP_MAX_MATCHES,
+  grepWithRipgrep,
   tryGrepWithRipgrep,
   type RipgrepGrepMatch,
 } from './ripgrep';
@@ -49,30 +56,23 @@ const JS_FALLBACK_MAX_MATCHES = 100;
 
 // ==================== 辅助函数 ====================
 
-function getWorkspaceRoot(): string | null {
-  const folders = workspace.workspaceFolders;
-  if (!folders || folders.length === 0) {
-    return null;
-  }
-  return folders[0].uri.fsPath;
-}
-
 function toRelativePath(absolutePath: string): string {
-  const root = getWorkspaceRoot();
-  if (!root) {
-    return absolutePath;
-  }
-  return path.relative(root, absolutePath);
+  return toWorkspaceRelativePath(absolutePath);
 }
 
 function isWithinWorkspace(filePath: string): boolean {
-  const root = getWorkspaceRoot();
-  if (!root) {
-    return false;
+  return isPathWithinAnyWorkspaceFolder(filePath);
+}
+
+function prefixMatchFilePath(
+  folder: { name: string },
+  relativeFile: string,
+  multiRoot: boolean,
+): string {
+  if (!multiRoot) {
+    return relativeFile;
   }
-  const normalizedFilePath = path.resolve(filePath);
-  const normalizedRoot = path.resolve(root);
-  return normalizedFilePath.startsWith(normalizedRoot + path.sep) || normalizedFilePath === normalizedRoot;
+  return relativeFile ? `${folder.name}/${relativeFile}` : folder.name;
 }
 
 function validateRegex(regex: string, caseSensitive: boolean): RegExp | { error: string } {
@@ -98,8 +98,8 @@ function toGrepMatchesFromRipgrep(
 
 export async function searchFile(pattern: string): Promise<SearchFileResult> {
   try {
-    const root = getWorkspaceRoot();
-    if (!root) {
+    const roots = getWorkspaceRootPaths();
+    if (roots.length === 0) {
       return { success: false, content: '未打开工作区' };
     }
 
@@ -133,9 +133,13 @@ export async function grepCodeWithJavaScript(
   regex: string,
   includePattern?: string,
   caseSensitive: boolean = false,
+  workspaceRoot?: string,
 ): Promise<GrepCodeResult> {
-  const root = getWorkspaceRoot();
-  if (!root) {
+  const folders = workspace.workspaceFolders ?? [];
+  const roots = workspaceRoot
+    ? [workspaceRoot]
+    : folders.map((folder) => folder.uri.fsPath);
+  if (roots.length === 0) {
     return { success: false, content: '未打开工作区' };
   }
 
@@ -175,12 +179,19 @@ export async function grepCodeWithJavaScript(
     return { success: true, matches: [] };
   }
 
-  const matches: GrepMatch[] = [];
+  const scopedFiles = workspaceRoot
+    ? filesToSearch.filter((filePath) => isPathWithinRoot(filePath, workspaceRoot))
+    : filesToSearch;
 
-  for (const filePath of filesToSearch) {
+  const matches: GrepMatch[] = [];
+  const multiRoot = folders.length > 1;
+
+  for (const filePath of scopedFiles) {
     if (matches.length >= JS_FALLBACK_MAX_MATCHES) {
       break;
     }
+
+    const folder = folders.find((item) => isPathWithinAnyWorkspaceFolder(filePath, [item]));
 
     try {
       const content = await fsp.readFile(filePath, 'utf-8');
@@ -192,9 +203,12 @@ export async function grepCodeWithJavaScript(
           const startLine = Math.max(0, i - 2);
           const endLine = Math.min(lines.length - 1, i + 2);
           const contextLines = lines.slice(startLine, endLine + 1);
+          const relativeFile = folder
+            ? path.relative(folder.uri.fsPath, filePath).replace(/\\/g, '/')
+            : toRelativePath(filePath);
 
           matches.push({
-            file: toRelativePath(filePath),
+            file: prefixMatchFilePath(folder ?? { name: '' }, relativeFile, multiRoot && !!folder),
             line: i + 1,
             text: line.trim(),
             context: contextLines.map((l, idx) => `${startLine + idx + 1}: ${l}`).join('\n'),
@@ -225,8 +239,9 @@ export async function grepCode(
   caseSensitive: boolean = false,
 ): Promise<GrepCodeResult> {
   try {
-    const root = getWorkspaceRoot();
-    if (!root) {
+    const folders = workspace.workspaceFolders ?? [];
+    const roots = getWorkspaceRootPaths(folders);
+    if (roots.length === 0) {
       return { success: false, content: '未打开工作区' };
     }
 
@@ -235,22 +250,72 @@ export async function grepCode(
       return { success: false, content: validated.error };
     }
 
-    const ripgrepMatches = await tryGrepWithRipgrep({
+    const multiRoot = folders.length > 1;
+    const probe = await tryGrepWithRipgrep({
       regex,
-      workspaceRoot: root,
+      workspaceRoot: roots[0],
       includePattern,
       caseSensitive,
       maxMatches: DEFAULT_RIPGREP_MAX_MATCHES,
     });
 
-    if (ripgrepMatches !== null) {
+    if (probe !== null) {
+      const allMatches: GrepMatch[] = [];
+
+      for (const folder of folders) {
+        const rawMatches = folder.index === 0
+          ? probe
+          : await grepWithRipgrep({
+            regex,
+            workspaceRoot: folder.uri.fsPath,
+            includePattern,
+            caseSensitive,
+            maxMatches: DEFAULT_RIPGREP_MAX_MATCHES - allMatches.length,
+          });
+
+        allMatches.push(
+          ...toGrepMatchesFromRipgrep(rawMatches).map((match) => ({
+            ...match,
+            file: prefixMatchFilePath(folder, match.file, multiRoot),
+          })),
+        );
+
+        if (allMatches.length >= DEFAULT_RIPGREP_MAX_MATCHES) {
+          break;
+        }
+      }
+
       return {
         success: true,
-        matches: toGrepMatchesFromRipgrep(ripgrepMatches),
+        matches: allMatches.slice(0, DEFAULT_RIPGREP_MAX_MATCHES),
       };
     }
 
-    return grepCodeWithJavaScript(regex, includePattern, caseSensitive);
+    if (folders.length === 1) {
+      return grepCodeWithJavaScript(regex, includePattern, caseSensitive);
+    }
+
+    const mergedMatches: GrepMatch[] = [];
+    for (const folder of folders) {
+      const partial = await grepCodeWithJavaScript(
+        regex,
+        includePattern,
+        caseSensitive,
+        folder.uri.fsPath,
+      );
+      if (!partial.success) {
+        return partial;
+      }
+      mergedMatches.push(...(partial.matches ?? []));
+      if (mergedMatches.length >= JS_FALLBACK_MAX_MATCHES) {
+        break;
+      }
+    }
+
+    return {
+      success: true,
+      matches: mergedMatches.slice(0, JS_FALLBACK_MAX_MATCHES),
+    };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     error(`grep_code 失败: ${msg}`);

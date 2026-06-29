@@ -350,7 +350,7 @@ npm run test:build && node scripts/run-node-tests.cjs test/listDirIgnore.test.ts
 
 ### [P2-3] 多根工作区路径解析
 
-- [ ] 状态：待做
+- [x] 状态：完成
 
 **目标**
 

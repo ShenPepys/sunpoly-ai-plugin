@@ -4,13 +4,13 @@
  * 在工作区中执行 shell 命令，优先走 VS Code 集成终端，fallback 到安全 spawn 子进程。
  */
 
-import { workspace } from 'vscode';
 import {
   runTerminalCommand,
   truncateCommandOutput,
 } from '../terminal/terminalCommandRunner';
 import { resolveCommandTimeoutMs, getMaxCommandOutputChars } from '../config';
 import { info, error as logError } from '../logger';
+import { resolveWorkspaceFolderForPath } from '../utils/workspaceRoot';
 import { isDangerousCommand } from './terminalExecSafety';
 import type { ExecCommandResult } from './terminalExecTypes';
 
@@ -67,6 +67,5 @@ export async function execCommand(
 }
 
 function getWorkspaceRoot(): string | undefined {
-  const folders = workspace.workspaceFolders;
-  return folders && folders.length > 0 ? folders[0].uri.fsPath : undefined;
+  return resolveWorkspaceFolderForPath('.')?.uri.fsPath;
 }
