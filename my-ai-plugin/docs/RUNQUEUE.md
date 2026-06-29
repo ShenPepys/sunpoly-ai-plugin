@@ -69,7 +69,7 @@ npm run test:build && node scripts/run-node-tests.cjs test/terminalExec.test.ts 
 
 ### [P0-5] 系统 Prompt 禁止用终端探索文件
 
-- [ ] 状态：待做
+- [x] 状态：完成
 
 **目标**
 
@@ -520,3 +520,4 @@ npm run test:build && node scripts/run-node-tests.cjs test/dangerousCommands.tes
 | 2026-06-29 | P0-2 完成：VS Code 集成终端 Shell Integration 执行器 |
 | 2026-06-29 | P0-3 完成：子进程 fallback 与 PowerShell 安全参数 |
 | 2026-06-29 | P0-4 完成：terminalExec 接入集成终端统一执行层 |
+| 2026-06-29 | P0-5 完成：系统 Prompt 禁止终端 ls/dir 探索文件 |
