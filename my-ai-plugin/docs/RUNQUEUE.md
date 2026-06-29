@@ -458,7 +458,7 @@ npm run test:build && node scripts/run-node-tests.cjs test/fileReadStateCacheInv
 
 ### [P2-6] 危险命令内置拦截增强
 
-- [ ] 状态：待做
+- [x] 状态：完成
 
 **目标**
 
@@ -530,3 +530,5 @@ npm run test:build && node scripts/run-node-tests.cjs test/dangerousCommands.tes
 | 2026-06-29 | P2-2 完成：list_dir 递归列出并尊重 gitignore |
 | 2026-06-29 | P2-3 完成：多根工作区路径解析 |
 | 2026-06-29 | P2-4 完成：命令权限控制器 allow/deny 与链式校验 |
+| 2026-06-29 | P2-5 完成：run_command 成功后清空文件读缓存 |
+| 2026-06-29 | P2-6 完成：扩展内置危险命令模式并与权限控制器统一 |

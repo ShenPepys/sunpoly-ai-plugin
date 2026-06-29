@@ -2,7 +2,7 @@
  * 命令权限控制器：allow/deny glob、链式命令分段校验、重定向检测。
  */
 import { getCommandPermissionsSettingValue } from '../config';
-import { isDangerousCommand } from './terminalExecSafety';
+import { isDangerousCommand } from './dangerousCommands';
 
 export interface CommandPermissionsConfig {
   allow?: string[];

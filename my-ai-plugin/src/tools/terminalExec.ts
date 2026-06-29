@@ -21,7 +21,7 @@ export {
 } from '../terminal/constants';
 export { resolveCommandTimeoutMs, getMaxCommandOutputChars } from '../config';
 
-export { isDangerousCommand, DANGEROUS_PATTERNS } from './terminalExecSafety';
+export { isDangerousCommand, DANGEROUS_PATTERNS } from './dangerousCommands';
 
 /**
  * 在工作区根目录下执行 shell 命令
