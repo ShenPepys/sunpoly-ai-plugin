@@ -36,3 +36,10 @@ my-ai-plugin/resources/ast_workers/csharp_ast_worker/bin/Debug/net6.0/CsharpAstW
 Thumbs.db
 *.swp
 *.swo
+
+# -------- 本地对照参考工程（不提交）--------
+cline-chinese/
+
+# -------- RUNQUEUE 续跑运行时状态（勿提交）--------
+.cursor/runqueue.active
+.cursor/runqueue-state.json

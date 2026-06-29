@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "queuePath": "docs/RUNQUEUE.md",
+  "scopeCwd": ".",
+  "maxRetriesPerItem": 3
+}

@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "queuePath": "my-ai-plugin/docs/RUNQUEUE.md",
+  "scopeCwd": "my-ai-plugin",
+  "maxRetriesPerItem": 3
+}

@@ -10,3 +10,10 @@ test/demo_output/
 
 # Java AST worker 构建产物
 resources/ast_workers/java_ast_worker/target/
+
+# RUNQUEUE 续跑状态（勿提交）
+.cursor/runqueue.active
+.cursor/runqueue-state.json
+
+# 对照参考工程（本地 copy，不提交）
+cline-chinese/

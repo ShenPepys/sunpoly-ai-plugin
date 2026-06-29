@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "hooks": {
+    "stop": [
+      {
+        "command": "node .cursor/hooks/stop-runqueue.mjs",
+        "loop_limit": null
+      }
+    ]
+  }
+}
