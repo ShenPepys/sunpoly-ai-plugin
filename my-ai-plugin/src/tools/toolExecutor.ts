@@ -133,7 +133,7 @@ async function executeSingleToolCall(
     }
 
     case 'list_dir':
-      return listDir(toolCall.path!);
+      return listDir(toolCall.path!, { recursive: toolCall.listRecursive });
 
     case 'ast_edit':
       return executeAstEdit(toolCall);

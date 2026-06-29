@@ -315,7 +315,7 @@ npm run test:build && node scripts/run-node-tests.cjs test/readFileRange.test.ts
 
 ### [P2-2] 列目录增强（递归与 gitignore）
 
-- [ ] 状态：待做
+- [x] 状态：完成
 
 **目标**
 
@@ -527,3 +527,4 @@ npm run test:build && node scripts/run-node-tests.cjs test/dangerousCommands.tes
 | 2026-06-29 | P1-3 完成：grep_code 迁移 ripgrep |
 | 2026-06-29 | P1-4 完成：run_command 命令与输出步骤展示 |
 | 2026-06-29 | P2-1 完成：read_file start_line/end_line 分段读取与续读提示 |
+| 2026-06-29 | P2-2 完成：list_dir 递归列出并尊重 gitignore |

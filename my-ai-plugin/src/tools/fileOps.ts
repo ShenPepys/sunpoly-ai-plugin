@@ -711,11 +711,266 @@ export async function editFile(
   }
 }
 
+/** list_dir 始终跳过的目录名（即使无 .gitignore） */
+export const LIST_DIR_ALWAYS_SKIP_DIRS = new Set(['node_modules', '.git']);
+
+/** list_dir 递归模式最大深度 */
+export const LIST_DIR_RECURSIVE_MAX_DEPTH = 8;
+
+/** list_dir 最多返回条目数（含文件与目录） */
+export const LIST_DIR_MAX_ENTRIES = 500;
+
+export interface ListDirOptions {
+  recursive?: boolean;
+}
+
+interface ListDirCollectState {
+  lines: string[];
+  entryCount: number;
+  truncated: boolean;
+}
+
+interface GitignoreRule {
+  regex: RegExp;
+  onlyDir: boolean;
+  negated: boolean;
+}
+
+function escapeRegexChar(ch: string): string {
+  return ch.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+}
+
+function compileGitignoreLine(line: string): GitignoreRule | null {
+  let text = line.trim();
+  if (!text || text.startsWith('#')) {
+    return null;
+  }
+
+  let negated = false;
+  if (text.startsWith('!')) {
+    negated = true;
+    text = text.slice(1).trim();
+    if (!text) {
+      return null;
+    }
+  }
+
+  const onlyDir = text.endsWith('/');
+  if (onlyDir) {
+    text = text.slice(0, -1);
+  }
+
+  const anchoredToRoot = text.startsWith('/');
+  if (anchoredToRoot) {
+    text = text.slice(1);
+  }
+
+  const hasSlash = text.includes('/');
+  let regexBody = '';
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '*') {
+      if (text[i + 1] === '*') {
+        regexBody += '.*';
+        i += 1;
+        if (text[i + 1] === '/') {
+          i += 1;
+        }
+      } else {
+        regexBody += '[^/]*';
+      }
+    } else if (ch === '?') {
+      regexBody += '[^/]';
+    } else {
+      regexBody += escapeRegexChar(ch);
+    }
+  }
+
+  let regex: RegExp;
+  if (onlyDir) {
+    if (anchoredToRoot) {
+      regex = new RegExp(`^${regexBody}(/.*)?$`);
+    } else {
+      regex = new RegExp(`(^|/)${regexBody}(/.*)?$`);
+    }
+    return { regex, onlyDir: false, negated };
+  }
+
+  if (anchoredToRoot) {
+    regex = new RegExp(`^${regexBody}($|/)`);
+  } else if (hasSlash) {
+    regex = new RegExp(`(^|/)${regexBody}($|/)`);
+  } else {
+    regex = new RegExp(`(^|/)${regexBody}$`);
+  }
+
+  return { regex, onlyDir, negated };
+}
+
+/** 轻量 .gitignore 匹配器（供 list_dir 过滤） */
+export class ListDirIgnoreMatcher {
+  private readonly rules: GitignoreRule[] = [];
+
+  addPattern(pattern: string): void {
+    const rule = compileGitignoreLine(pattern);
+    if (rule) {
+      this.rules.push(rule);
+    }
+  }
+
+  addGitignoreContent(content: string): void {
+    for (const line of content.split(/\r?\n/)) {
+      const rule = compileGitignoreLine(line);
+      if (rule) {
+        this.rules.push(rule);
+      }
+    }
+  }
+
+  isIgnored(relativePath: string, isDirectory: boolean): boolean {
+    const normalized = relativePath.replace(/\\/g, '/');
+    if (!normalized || normalized === '.') {
+      return false;
+    }
+
+    let ignored = false;
+    for (const rule of this.rules) {
+      if (rule.onlyDir && !isDirectory) {
+        continue;
+      }
+      if (rule.regex.test(normalized)) {
+        ignored = !rule.negated;
+      }
+    }
+    return ignored;
+  }
+}
+
+/**
+ * 从工作区根目录加载 list_dir 忽略规则（内置跳过项 + .gitignore）
+ */
+export function createListDirIgnoreMatcher(workspaceRoot: string): ListDirIgnoreMatcher {
+  const matcher = new ListDirIgnoreMatcher();
+  for (const dirName of LIST_DIR_ALWAYS_SKIP_DIRS) {
+    matcher.addPattern(`${dirName}/`);
+  }
+
+  const gitignorePath = path.join(workspaceRoot, '.gitignore');
+  try {
+    if (fs.existsSync(gitignorePath)) {
+      const content = fs.readFileSync(gitignorePath, 'utf-8');
+      matcher.addGitignoreContent(content);
+    }
+  } catch {
+    // 无法读取 .gitignore 时仅使用内置跳过项
+  }
+
+  return matcher;
+}
+
+function shouldSkipListDirEntry(
+  matcher: ListDirIgnoreMatcher,
+  workspaceRoot: string,
+  absPath: string,
+  isDirectory: boolean,
+): boolean {
+  const entryName = path.basename(absPath);
+  if (isDirectory && LIST_DIR_ALWAYS_SKIP_DIRS.has(entryName)) {
+    return true;
+  }
+
+  const relPath = path.relative(workspaceRoot, absPath).replace(/\\/g, '/');
+  return matcher.isIgnored(relPath, isDirectory);
+}
+
+function sortDirEntries(entries: fs.Dirent[]): fs.Dirent[] {
+  return [...entries].sort((a, b) => {
+    const aIsDir = a.isDirectory();
+    const bIsDir = b.isDirectory();
+    if (aIsDir !== bIsDir) {
+      return aIsDir ? -1 : 1;
+    }
+    return a.name.localeCompare(b.name);
+  });
+}
+
+async function collectListDirShallow(
+  absDir: string,
+  workspaceRoot: string,
+  matcher: ListDirIgnoreMatcher,
+  state: ListDirCollectState,
+): Promise<void> {
+  const entries = sortDirEntries(await fsp.readdir(absDir, { withFileTypes: true }));
+
+  for (const entry of entries) {
+    if (state.entryCount >= LIST_DIR_MAX_ENTRIES) {
+      state.truncated = true;
+      return;
+    }
+
+    const absEntry = path.join(absDir, entry.name);
+    const isDirectory = entry.isDirectory();
+    if (shouldSkipListDirEntry(matcher, workspaceRoot, absEntry, isDirectory)) {
+      continue;
+    }
+
+    const icon = isDirectory ? '[DIR]' : '[FILE]';
+    state.lines.push(`${icon} ${entry.name}`);
+    state.entryCount += 1;
+  }
+}
+
+async function collectListDirRecursive(
+  absDir: string,
+  listRoot: string,
+  workspaceRoot: string,
+  matcher: ListDirIgnoreMatcher,
+  depth: number,
+  state: ListDirCollectState,
+): Promise<void> {
+  if (depth > LIST_DIR_RECURSIVE_MAX_DEPTH) {
+    state.truncated = true;
+    return;
+  }
+
+  const entries = sortDirEntries(await fsp.readdir(absDir, { withFileTypes: true }));
+
+  for (const entry of entries) {
+    if (state.entryCount >= LIST_DIR_MAX_ENTRIES) {
+      state.truncated = true;
+      return;
+    }
+
+    const absEntry = path.join(absDir, entry.name);
+    const isDirectory = entry.isDirectory();
+    if (shouldSkipListDirEntry(matcher, workspaceRoot, absEntry, isDirectory)) {
+      continue;
+    }
+
+    const relToListRoot = path.relative(listRoot, absEntry).replace(/\\/g, '/') || entry.name;
+    const icon = isDirectory ? '[DIR]' : '[FILE]';
+    state.lines.push(`${icon} ${relToListRoot}`);
+    state.entryCount += 1;
+
+    if (isDirectory) {
+      await collectListDirRecursive(
+        absEntry,
+        listRoot,
+        workspaceRoot,
+        matcher,
+        depth + 1,
+        state,
+      );
+    }
+  }
+}
+
 /**
  * 列出目录内容
  * @param dirPath 目录路径
+ * @param options recursive=true 时递归列出（受深度与条目上限约束）
  */
-export async function listDir(dirPath: string): Promise<FileOpResult> {
+export async function listDir(dirPath: string, options?: ListDirOptions): Promise<FileOpResult> {
   const safePath = resolveAndValidatePath(dirPath);
   if (!safePath) {
     return { success: false, content: `无法访问目录: ${dirPath}（路径不在工作区范围内或未打开工作区）` };
@@ -733,16 +988,27 @@ export async function listDir(dirPath: string): Promise<FileOpResult> {
       return { success: false, content: `不是目录: ${safePath}` };
     }
 
-    const entries = await fsp.readdir(safePath, { withFileTypes: true });
+    const workspaceRoot = getWorkspaceRoot();
+    if (!workspaceRoot) {
+      return { success: false, content: `无法访问目录: ${dirPath}（路径不在工作区范围内或未打开工作区）` };
+    }
 
-    // 格式化输出：目录用 📁 前缀，文件用 📄 前缀
-    const lines = entries.map(entry => {
-      const icon = entry.isDirectory() ? '[DIR]' : '[FILE]';
-      return `${icon} ${entry.name}`;
-    });
+    const matcher = createListDirIgnoreMatcher(workspaceRoot);
+    const state: ListDirCollectState = { lines: [], entryCount: 0, truncated: false };
 
-    info(`列出目录: ${safePath} (${entries.length} 项)`);
-    return { success: true, content: lines.join('\n') || '(空目录)' };
+    if (options?.recursive) {
+      await collectListDirRecursive(safePath, safePath, workspaceRoot, matcher, 0, state);
+    } else {
+      await collectListDirShallow(safePath, workspaceRoot, matcher, state);
+    }
+
+    let content = state.lines.join('\n') || '(空目录)';
+    if (state.truncated) {
+      content += `\n\n(已截断：仅显示前 ${LIST_DIR_MAX_ENTRIES} 项或达到最大深度 ${LIST_DIR_RECURSIVE_MAX_DEPTH}。)`;
+    }
+
+    info(`列出目录: ${safePath} (${state.entryCount} 项${options?.recursive ? '，递归' : ''})`);
+    return { success: true, content };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { success: false, content: `列出目录失败: ${msg}` };

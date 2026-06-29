@@ -41,6 +41,8 @@ export interface ParsedToolCall {
   readStartLine?: number;
   /** read_file 读取结束行（1-indexed，含） */
   readEndLine?: number;
+  /** list_dir 是否递归列出子目录 */
+  listRecursive?: boolean;
   /** AST 绕过标记：为 true 时允许 edit_file 编辑 AST 支持的文件（仅 edit_file） */
   astBypass?: boolean;
   /** 搜索模式（仅 search_file） */
@@ -199,10 +201,18 @@ function parseSingleToolCall(inner: string, rawMatch: string): ParsedToolCall | 
     };
   }
 
-  // list_dir: <list_dir path="xxx" />
-  const listMatch = inner.match(/<list_dir\s+path\s*=\s*"([^"]+)"\s*\/>/);
+  // list_dir: <list_dir path="xxx" recursive="true" />
+  const listMatch = inner.match(/<list_dir\s+path\s*=\s*"([^"]+)"((?:\s+[a-z_]+\s*=\s*"[^"]*")*)\s*\/>/);
   if (listMatch) {
-    return { type: 'list_dir', path: listMatch[1], rawMatch };
+    const listAttrs = listMatch[2] ?? '';
+    const recursiveAttr = listAttrs.match(/\brecursive\s*=\s*"([^"]*)"/);
+    const recursive = recursiveAttr ? recursiveAttr[1] === 'true' : false;
+    return {
+      type: 'list_dir',
+      path: listMatch[1],
+      listRecursive: recursive || undefined,
+      rawMatch,
+    };
   }
 
   // write_file: <write_file path="xxx">内容</write_file>
