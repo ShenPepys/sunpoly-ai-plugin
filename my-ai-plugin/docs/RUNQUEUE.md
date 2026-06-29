@@ -103,7 +103,7 @@ npm run build && node -e "const fs=require('fs'); const s=fs.readFileSync('src/p
 
 ### [P0-6] 终端故障排查用户文档
 
-- [ ] 状态：待做
+- [x] 状态：完成
 
 **目标**
 
@@ -521,3 +521,4 @@ npm run test:build && node scripts/run-node-tests.cjs test/dangerousCommands.tes
 | 2026-06-29 | P0-3 完成：子进程 fallback 与 PowerShell 安全参数 |
 | 2026-06-29 | P0-4 完成：terminalExec 接入集成终端统一执行层 |
 | 2026-06-29 | P0-5 完成：系统 Prompt 禁止终端 ls/dir 探索文件 |
+| 2026-06-29 | P0-6 完成：终端故障排查用户文档 |
