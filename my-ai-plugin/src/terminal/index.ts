@@ -28,3 +28,10 @@ export {
 } from './vscodeTerminalProcess';
 export type { TerminalProcessResultPromise, TerminalCompletionDetails } from './vscodeTerminalProcess';
 export { VscodeTerminalManager } from './vscodeTerminalManager';
+export {
+  getShellArgs,
+  isPowerShellShell,
+  SpawnTerminalProcess,
+  execCommandViaSpawn,
+} from './spawnTerminalProcess';
+export type { SpawnCommandResult, SpawnCommandOptions } from './spawnTerminalProcess';

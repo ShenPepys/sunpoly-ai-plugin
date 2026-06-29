@@ -21,45 +21,13 @@
 
 - [x] 状态：已完成（`vscodeTerminalManager/Process`、`getLatestTerminalOutput` + `test/vscodeTerminalProcess.test.ts`）
 
+### [P0-3] 子进程 Fallback 与 Windows PowerShell 安全参数
+
+- [x] 状态：已完成（`spawnTerminalProcess.ts` + `test/spawnTerminalProcess.test.ts`）
+
 ---
 
 ## 队列（按顺序执行，勿跳项）
-
-### [P0-3] 子进程 Fallback 与 Windows PowerShell 安全参数
-
-- [ ] 状态：待做
-
-**目标**
-
-当 Shell Integration 不可用时，使用 `spawn` 子进程执行命令；Windows PowerShell 必须带 `-NoProfile -NonInteractive -ExecutionPolicy Bypass`，避免 conda-hook.ps1 / ExecutionPolicy 报错。
-
-**范围**
-
-- 新增：`src/terminal/spawnTerminalProcess.ts`
-- 新增：`test/spawnTerminalProcess.test.ts`
-- 不改：对外 `execCommand` 接口（下一项接线）
-
-**验收标准**
-
-- `getShellArgs()` 对 powershell/pwsh 返回含 `-NoProfile`、`-ExecutionPolicy`、`Bypass`
-- 对 cmd 使用 `/c`
-- 单元测试断言参数列表
-
-**自动检查**
-
-```bash
-npm run test:build && node scripts/run-node-tests.cjs test/spawnTerminalProcess.test.ts -q
-```
-
-**手动检查**
-
-- 在 ExecutionPolicy Restricted 的 Windows 环境执行 `echo ok`，不应出现 Profile 加载错误
-
-**提交信息模板**
-
-`feat(terminal): spawn fallback with PowerShell bypass flags (P0-3)`
-
----
 
 ### [P0-4] 替换 terminalExec 并保持 execCommand API 兼容
 
@@ -549,3 +517,5 @@ npm run test:build && node scripts/run-node-tests.cjs test/dangerousCommands.tes
 | 2026-06-29 | 从 `GAP_ANALYSIS_VS_CLINE.zh-CN.md` 生成，共 15 项入队，10 项移出 |
 | 2026-06-29 | 与 GAP 对齐修订：P0-2 补终端复用/CWD/快照 fallback；P0-4 补去 exec 硬编码；P1-2 补默认 Profile；P2-4 补环境变量权限；新增 P2-6 危险命令；移出表补多 Provider |
 | 2026-06-29 | P0-1 完成：终端 Shell 检测模块与单元测试 |
+| 2026-06-29 | P0-2 完成：VS Code 集成终端 Shell Integration 执行器 |
+| 2026-06-29 | P0-3 完成：子进程 fallback 与 PowerShell 安全参数 |
