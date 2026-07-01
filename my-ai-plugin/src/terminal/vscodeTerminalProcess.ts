@@ -2,10 +2,10 @@ import { EventEmitter } from 'node:events';
 import * as vscode from 'vscode';
 import { stripAnsi } from './ansiUtils';
 import {
-  NO_SHELL_INTEGRATION_WAIT_MS,
   SHELL_INTEGRATION_STREAM_TIMEOUT_MS,
   MAX_FULL_OUTPUT_SIZE,
 } from './constants';
+import { getTerminalExecutionConfig } from '../config';
 import { getLatestTerminalOutput } from './getLatestTerminalOutput';
 
 type ShellIntegrationCapableTerminal = vscode.Terminal & {
@@ -44,6 +44,10 @@ export class VscodeTerminalProcess extends EventEmitter {
     const timeout = streamTimeoutMs ?? this.streamTimeoutMs;
 
     const appendFallbackSnapshot = async (): Promise<void> => {
+      if (!getTerminalExecutionConfig().showTerminalOnRun) {
+        return;
+      }
+
       try {
         const snapshot = await getLatestTerminalOutput();
         if (snapshot.trim()) {
@@ -95,7 +99,7 @@ export class VscodeTerminalProcess extends EventEmitter {
       }
 
       this.emitRemainingBuffer();
-      if (!this.fullOutput.trim() || streamAborted) {
+      if (!this.fullOutput.trim()) {
         await appendFallbackSnapshot();
       }
 
@@ -105,9 +109,6 @@ export class VscodeTerminalProcess extends EventEmitter {
     }
 
     this.emit('no_shell_integration');
-    terminal.sendText(command, true);
-    await new Promise((resolve) => setTimeout(resolve, NO_SHELL_INTEGRATION_WAIT_MS));
-    await appendFallbackSnapshot();
     this.emit('completed', this.getCompletionDetails());
     this.emit('continue');
   }

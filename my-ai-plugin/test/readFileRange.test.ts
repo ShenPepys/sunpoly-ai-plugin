@@ -26,14 +26,14 @@ test('parseToolCalls 识别 read_file 的 start_line/end_line', () => {
 });
 
 test('sliceFileContentByLineRange 默认返回前 DEFAULT_READ_FILE_MAX_LINES 行', () => {
-  const content = Array.from({ length: 300 }, (_, i) => `line-${i + 1}`).join('\n');
+  const content = Array.from({ length: DEFAULT_READ_FILE_MAX_LINES + 100 }, (_, i) => `line-${i + 1}`).join('\n');
   const result = sliceFileContentByLineRange(content);
 
   assert.equal(result.start, 1);
   assert.equal(result.end, DEFAULT_READ_FILE_MAX_LINES);
-  assert.equal(result.totalLines, 300);
+  assert.equal(result.totalLines, DEFAULT_READ_FILE_MAX_LINES + 100);
   assert.match(result.content, /^line-1\nline-2/);
-  assert.match(result.content, /Use start_line=201 to continue reading/);
+  assert.match(result.content, new RegExp(`Use start_line=${DEFAULT_READ_FILE_MAX_LINES + 1} to continue reading`));
 });
 
 test('sliceFileContentByLineRange 尊重显式 start_line/end_line', () => {
@@ -58,7 +58,7 @@ test('addLineNumbersFromStart 保留续读提示', () => {
 test('readFile 大文件只返回请求行范围与续读提示', async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'read-file-range-'));
   const filePath = path.join(tmpDir, 'large.txt');
-  const lines = Array.from({ length: 250 }, (_, i) => `row-${i + 1}`);
+  const lines = Array.from({ length: DEFAULT_READ_FILE_MAX_LINES + 50 }, (_, i) => `row-${i + 1}`);
   fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
 
   const originalFolders = vscode.workspace.workspaceFolders;
@@ -68,19 +68,19 @@ test('readFile 大文件只返回请求行范围与续读提示', async () => {
     const result = await readFile('large.txt');
     assert.equal(result.success, true);
     assert.match(result.content ?? '', /row-1/);
-    assert.match(result.content ?? '', /row-200/);
-    assert.doesNotMatch(result.content ?? '', /row-201/);
-    assert.match(result.content ?? '', /start_line=201/);
+    assert.match(result.content ?? '', new RegExp(`row-${DEFAULT_READ_FILE_MAX_LINES}`));
+    assert.doesNotMatch(result.content ?? '', new RegExp(`row-${DEFAULT_READ_FILE_MAX_LINES + 1}`));
+    assert.match(result.content ?? '', new RegExp(`start_line=${DEFAULT_READ_FILE_MAX_LINES + 1}`));
     assert.ok(result.fullContentForCache);
     assert.equal(result.readRangeStart, 1);
 
-    const ranged = await readFile('large.txt', { startLine: 201, endLine: 220 });
+    const ranged = await readFile('large.txt', { startLine: DEFAULT_READ_FILE_MAX_LINES + 1, endLine: DEFAULT_READ_FILE_MAX_LINES + 20 });
     assert.equal(ranged.success, true);
-    assert.match(ranged.content ?? '', /row-201/);
-    assert.match(ranged.content ?? '', /row-220/);
-    assert.doesNotMatch(ranged.content ?? '', /row-221/);
-    assert.match(ranged.content ?? '', /start_line=221/);
-    assert.equal(ranged.readRangeStart, 201);
+    assert.match(ranged.content ?? '', new RegExp(`row-${DEFAULT_READ_FILE_MAX_LINES + 1}`));
+    assert.match(ranged.content ?? '', new RegExp(`row-${DEFAULT_READ_FILE_MAX_LINES + 20}`));
+    assert.doesNotMatch(ranged.content ?? '', new RegExp(`row-${DEFAULT_READ_FILE_MAX_LINES + 21}`));
+    assert.match(ranged.content ?? '', new RegExp(`start_line=${DEFAULT_READ_FILE_MAX_LINES + 21}`));
+    assert.equal(ranged.readRangeStart, DEFAULT_READ_FILE_MAX_LINES + 1);
   } finally {
     vscode.workspace.workspaceFolders = originalFolders;
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -104,7 +104,7 @@ test('readFile 超过 512KB 时流式返回前 DEFAULT_READ_FILE_MAX_LINES 行',
     const result = await readFile('huge.json');
     assert.equal(result.success, true);
     assert.match(result.content ?? '', /"id":1/);
-    assert.match(result.content ?? '', /start_line=201/);
+    assert.match(result.content ?? '', new RegExp(`start_line=${DEFAULT_READ_FILE_MAX_LINES + 1}`));
     assert.equal(result.fullContentForCache, undefined);
     assert.equal(result.readRangeStart, 1);
   } finally {

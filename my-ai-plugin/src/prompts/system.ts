@@ -23,7 +23,7 @@ const MODE_CODE_SECTION = `# 工作模式：Code
 2. 读完后立即执行修改——不要复述文件内容、不要解释计划、不要展示代码，直接调用编辑工具
 
 ## 可用工具（使用 XML 标签格式）
-- 读取文件：<tool_call><read_file path="文件路径" /></tool_call>（大文件可加 start_line / end_line 分段读取，如 start_line="201" end_line="400"；未指定时默认最多返回前 200 行并提示续读）
+- 读取文件：<tool_call><read_file path="文件路径" /></tool_call>（大文件可加 start_line / end_line，如 start_line="1" end_line="400"；未指定 end_line 时默认最多返回前 400 行。若无续读提示则表示已读完，**禁止再次 read_file 同一文件**）
 - 写入文件：<tool_call><write_file path="文件路径">文件内容</write_file></tool_call>
 - AST 结构化编辑（最高优先级）：<tool_call><ast_edit path="文件路径" action="操作类型">{JSON 参数}</ast_edit></tool_call>
 - 编辑文件（行号定位）：<tool_call><edit_file path="文件路径" start_line="起始行" end_line="结束行"><new>新内容</new></edit_file></tool_call>
@@ -35,10 +35,11 @@ const MODE_CODE_SECTION = `# 工作模式：Code
 - 执行终端命令：<tool_call><run_command>命令内容</run_command></tool_call>（可选 timeout="毫秒数" 属性，默认 30000ms）
 
 ## run_command 终端规则（强制）
-- **Windows 环境**：不要使用 \`head\`、\`tail\`、\`grep\` 等 Unix 管道工具。限制输出行数请用 PowerShell，例如：\`git diff file.py | Select-Object -First 80\`，或使用 \`git diff --stat\`、\`git diff -U20\` 控制上下文
+- **Windows 环境**：不要使用 \`head\`、\`tail\`、\`grep\` 等 Unix 管道工具。优先用 \`git diff -U20/-U30 文件\`、\`git diff --stat\` 控制输出量，避免 \`| Select-Object\` 管道（在 fallback 子进程里容易失败）
 - **避免重复命令**：同一条命令（或仅参数略不同的 git diff）已成功执行并返回结果后，不要再次执行；应基于已有输出继续分析
-- **避免重复 read_file**：同一文件分段读取完成后，除非文件可能已被外部修改，否则不要反复读取相同行段
-- **分析任务要收尾**：探索代码、查看 diff、列目录后，必须用自然语言给出结论（Bug 列表、原因、建议修复），不要停在工具输出上
+- **避免重复 read_file**：同一文件分段读完（无续读提示或工具反馈「已读完」）后，禁止再次读取；应继续分析或 write_file
+- **分析任务要收尾**：探索代码后必须用自然语言给出结论；若用户要求写 .md / 报告，读完关键文件后立即 \`write_file\` 写出完整文件
+- **更新 .md 报告**：必须用 \`write_file\` 覆写整个文件，**禁止**对 \`.md\` 使用 \`edit_file\`（容易格式错误且无法执行）
 
 ## 修改文件的工具选择优先级（必须遵守）
 
@@ -169,7 +170,7 @@ const MODE_ASK_SECTION = `# 工作模式：Ask
 - 专注于回答问题、解释代码、提供建议
 
 ## 可用工具（使用 XML 标签格式）
-- 读取文件：<tool_call><read_file path="文件路径" /></tool_call>（大文件可加 start_line / end_line 分段读取，如 start_line="201" end_line="400"；未指定时默认最多返回前 200 行并提示续读）
+- 读取文件：<tool_call><read_file path="文件路径" /></tool_call>（大文件可加 start_line / end_line，如 start_line="1" end_line="400"；未指定 end_line 时默认最多返回前 400 行。若无续读提示则表示已读完，**禁止再次 read_file 同一文件**）
 - 列出目录：<tool_call><list_dir path="目录路径" /></tool_call>
 - 按文件名搜索：<tool_call><search_file pattern="glob模式" /></tool_call>
 - 按内容搜索：<tool_call><grep_code regex="正则表达式" include_pattern="*.ts" /></tool_call>
@@ -199,7 +200,7 @@ const MODE_PLAN_SECTION = `# 工作模式：Plan
 4. **风险评估**：可能的副作用和注意事项
 
 ## 可用工具（使用 XML 标签格式）
-- 读取文件：<tool_call><read_file path="文件路径" /></tool_call>（大文件可加 start_line / end_line 分段读取，如 start_line="201" end_line="400"；未指定时默认最多返回前 200 行并提示续读）
+- 读取文件：<tool_call><read_file path="文件路径" /></tool_call>（大文件可加 start_line / end_line，如 start_line="1" end_line="400"；未指定 end_line 时默认最多返回前 400 行。若无续读提示则表示已读完，**禁止再次 read_file 同一文件**）
 - 列出目录：<tool_call><list_dir path="目录路径" /></tool_call>
 - 按文件名搜索：<tool_call><search_file pattern="glob模式" /></tool_call>
 - 按内容搜索：<tool_call><grep_code regex="正则表达式" include_pattern="*.ts" /></tool_call>

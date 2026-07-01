@@ -1546,9 +1546,6 @@
     if (summary.totalSteps > 0) {
       parts.push('已执行 ' + summary.totalSteps + ' 步');
     }
-    if (summary.readCount > 0) {
-      parts.push('读取 ' + summary.readCount);
-    }
     if (summary.listCount > 0) {
       parts.push('列目录 ' + summary.listCount);
     }
@@ -1571,9 +1568,6 @@
   function buildHistoryProcessMetricItems(summary) {
     var items = [];
 
-    if (summary.readCount > 0) {
-      items.push({ label: '读取', value: summary.readCount });
-    }
     if (summary.listCount > 0) {
       items.push({ label: '列目录', value: summary.listCount });
     }

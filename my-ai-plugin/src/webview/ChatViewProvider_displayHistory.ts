@@ -1,4 +1,4 @@
-import { hasToolCalls, parseToolCalls, stripToolCalls } from '../tools/toolParser';
+import { hasToolCalls, parseToolCalls, stripMalformedToolCallTail, stripToolCalls } from '../tools/toolParser';
 import type { ParsedToolCall } from '../tools/toolParser';
 import type {
   ChatSessionDisplayMessage,
@@ -199,16 +199,55 @@ export function analyzeAssistantResponseDisplay(content: string): AssistantRespo
   }
 
   if (hasToolCalls(content)) {
-    const fallbackContent = stripToolCalls(content).trim() || '⚠️ 检测到无效工具调用，未执行任何工具。';
+    const sanitized = stripMalformedToolCallTail(content);
+    if (sanitized !== content) {
+      const recoveredCalls = parseToolCalls(sanitized);
+      if (recoveredCalls.length > 0) {
+        return {
+          kind: 'tool-calls',
+          displayContent: getAssistantDisplayContent(sanitized),
+          parsedToolCalls: recoveredCalls,
+        };
+      }
+
+      const sanitizedDisplay = stripToolCalls(sanitized).trim();
+      if (sanitizedDisplay.length > 0 && !hasToolCalls(sanitized)) {
+        return {
+          kind: 'plain',
+          displayContent: sanitizedDisplay,
+        };
+      }
+    }
+
+    // 最终回退前：反复剥离残留标签片段，尽可能恢复干净文本
+    let bestPlain = stripToolCalls(content).trim();
+    let stripped = bestPlain;
+    for (let i = 0; i < 3; i++) {
+      const next = stripMalformedToolCallTail(stripped);
+      if (next === stripped) { break; }
+      stripped = next.trim();
+    }
+    if (!hasToolCalls(stripped) && stripped.length > 0) {
+      bestPlain = stripped;
+    }
+
+    if (bestPlain.length >= 300) {
+      console.warn('[toolParser] 检测到疑似工具调用但格式不完整，已作为普通文本显示。原文前 120 字:', content.slice(0, 120));
+      return {
+        kind: 'plain',
+        displayContent: bestPlain + '\n\n---\n⚠️ *检测到疑似工具调用但格式不完整，工具未执行。请检查模型输出。*',
+      };
+    }
+
     return {
       kind: 'invalid-tool-call',
-      displayContent: fallbackContent,
+      displayContent: bestPlain || '⚠️ 检测到无效工具调用，未执行任何工具。',
     };
   }
 
   return {
     kind: 'plain',
-    displayContent: content,
+    displayContent: stripMalformedToolCallTail(content),
   };
 }
 

@@ -317,9 +317,6 @@ function buildProcessSummaryParts(message: ChatSessionDisplayMessage): string[] 
   if (message.processSummary.totalSteps > 0) {
     summaryParts.push(`已执行 ${message.processSummary.totalSteps} 步`);
   }
-  if (message.processSummary.readCount > 0) {
-    summaryParts.push(`读取 ${message.processSummary.readCount}`);
-  }
   if (message.processSummary.listCount > 0) {
     summaryParts.push(`列目录 ${message.processSummary.listCount}`);
   }

@@ -87,7 +87,7 @@ function buildLargeFileReadHint(fileSizeBytes: number, startLine: number, endLin
 }
 
 /** 单次 read_file 默认最多返回行数（未指定 end_line 时） */
-export const DEFAULT_READ_FILE_MAX_LINES = 200;
+export const DEFAULT_READ_FILE_MAX_LINES = 400;
 
 
 const READ_FILE_CONTINUATION_HINT_REGEX = /\n\n\(Showing lines \d+-\d+ of \d+ total\. Use start_line=\d+ to continue reading\.\)$/;
@@ -228,6 +228,10 @@ export interface FileOpResult {
   readRangeStart?: number;
   /** read_file 分段读取时用于缓存的完整文件内容 */
   fullContentForCache?: string;
+  /** read_file 本次返回的结束行号（1-indexed） */
+  readRangeEnd?: number;
+  /** read_file 对应文件的总行数 */
+  totalLines?: number;
   /** AST 编辑影响的文件列表，含原始与修改后的内容（仅 ast_edit 操作使用） */
   astAffectedFiles?: AstAffectedFile[];
   /** 编辑成功后 LSP 诊断的文本摘要（仅写操作成功后可能存在） */
@@ -607,10 +611,13 @@ export async function readFile(filePath: string, options?: ReadFileOptions): Pro
       info(
         `读取大文件(流式): ${safePath} (lines ${startLine}-${startLine + lines.length - 1}, ${stat.size} bytes)`,
       );
+      const endLineRead = startLine + lines.length - 1;
       return {
         success: true,
         content,
         readRangeStart: startLine,
+        readRangeEnd: endLineRead,
+        totalLines: undefined,
       };
     }
 
@@ -625,6 +632,8 @@ export async function readFile(filePath: string, options?: ReadFileOptions): Pro
       success: true,
       content: ranged.content,
       readRangeStart: ranged.start,
+      readRangeEnd: ranged.end,
+      totalLines: ranged.totalLines,
       fullContentForCache: isPartialRead ? content : undefined,
     };
   } catch (err) {

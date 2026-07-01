@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { hasToolCalls, parseToolCalls, stripToolCalls } from '../src/tools/toolParser';
+import { hasToolCalls, parseToolCalls, stripMalformedToolCallTail, stripToolCalls } from '../src/tools/toolParser';
 
 test('parseToolCalls 会忽略 fenced code block 中的工具 XML，只解析代码块外调用', () => {
   const content = [
@@ -292,4 +292,26 @@ test('stripToolCalls 能正确剥离 run_command 标签', () => {
   assert.doesNotMatch(stripped, /run_command/);
   assert.match(stripped, /我来执行安装命令/);
   assert.match(stripped, /安装完成/);
+});
+
+test('parseToolCalls 宽松解析截断的 edit_file 行号模式', () => {
+  const content = [
+    '补充分析如下：',
+    '<edit_file path="代码缺陷分析报告.md" start_line="1" end_line="200"><new>',
+    '# 缺陷列表',
+    '- item 1',
+    ']]></edit_file>',
+  ].join('\n');
+
+  const calls = parseToolCalls(content);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].type, 'edit_file');
+  assert.equal(calls[0].path, '代码缺陷分析报告.md');
+  assert.match(calls[0].newContent ?? '', /缺陷列表/);
+});
+
+test('stripMalformedToolCallTail 移除尾部 ]]></edit_file>', () => {
+  const input = '正文内容\n| 表格 |\n]]></edit_file>';
+  const output = stripMalformedToolCallTail(input);
+  assert.equal(output, '正文内容\n| 表格 |');
 });

@@ -29,6 +29,10 @@ export interface FileReadState {
    * 标记为 true 时，edit_file 校验会拒绝——模型必须先显式 read_file
    */
   isPartialView?: boolean;
+  /** 分段读取时已覆盖到的最大行号（1-indexed） */
+  readThroughLine?: number;
+  /** 文件总行数（分段读取时记录） */
+  totalLines?: number;
 }
 
 /** edit_file 执行前的校验结果 */
@@ -281,6 +285,52 @@ export function buildReadFileStubIfUnchanged(
     return {
       useStub: true,
       stubContent: `[文件未变] ${fileName} 的内容与上次读取完全一致（${newContent.length} 字符），无需重复阅读。你可以直接基于之前的理解继续操作。`,
+    };
+  }
+
+  return { useStub: false };
+}
+
+/**
+ * 更新分段读取覆盖范围（取已读区间的并集）。
+ */
+export function updateFileReadCoverage(
+  filePath: string,
+  cache: FileReadStateCache,
+  readThroughLine: number,
+  totalLines: number,
+): void {
+  const state = cache.get(filePath);
+  if (!state || readThroughLine <= 0 || totalLines <= 0) {
+    return;
+  }
+
+  cache.set(filePath, {
+    ...state,
+    readThroughLine: Math.max(state.readThroughLine ?? 0, readThroughLine),
+    totalLines,
+  });
+}
+
+/**
+ * 文件已分段读完时，拒绝再次 read_file，引导模型进入分析/写文件阶段。
+ */
+export function buildReadFileStubIfFullyRead(
+  filePath: string,
+  cache: FileReadStateCache,
+): ReadFileStubResult {
+  const state = cache.get(filePath);
+  if (!state?.totalLines || !state.readThroughLine) {
+    return { useStub: false };
+  }
+
+  if (state.readThroughLine >= state.totalLines) {
+    const fileName = filePath.split(/[\\/]/).pop() || filePath;
+    return {
+      useStub: true,
+      stubContent:
+        `[已读完] ${fileName} 共 ${state.totalLines} 行已全部读取（1-${state.totalLines}）。` +
+        `禁止再次 read_file 该文件；请基于已有内容继续分析，或执行 write_file 输出结果。`,
     };
   }
 

@@ -90,8 +90,12 @@ test('VscodeTerminalProcess 在 Shell Integration 可用时 emit line 与 comple
   assert.equal(completed.length, 1);
 });
 
-test('VscodeTerminalProcess 无 Shell Integration 时 emit no_shell_integration 并 fallback', async () => {
-  setGetLatestTerminalOutputForTesting(async () => 'terminal snapshot text');
+test('VscodeTerminalProcess 无 Shell Integration 时 emit no_shell_integration 并跳过剪贴板 fallback', async () => {
+  let clipboardCalled = false;
+  setGetLatestTerminalOutputForTesting(async () => {
+    clipboardCalled = true;
+    return 'terminal snapshot text';
+  });
 
   const events: string[] = [];
   const lines: string[] = [];
@@ -108,8 +112,9 @@ test('VscodeTerminalProcess 无 Shell Integration 时 emit no_shell_integration 
   await process.run(terminal as never, 'echo fallback');
 
   assert.ok(events.includes('no_shell_integration'));
-  assert.equal(sentCommand, 'echo fallback');
-  assert.ok(lines.some((line) => line.includes('terminal snapshot text')));
+  assert.equal(sentCommand, '');
+  assert.equal(clipboardCalled, false);
+  assert.equal(lines.length, 0);
 
   setGetLatestTerminalOutputForTesting(null);
 });

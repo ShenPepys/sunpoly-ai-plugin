@@ -32,6 +32,7 @@ import {
   beginAssistantStreamingRequest,
   startBasicAssistantStreamRequest,
   executeToolCallBatchRound,
+  getLastUserMessageText,
 } from './ChatViewProvider_requestExecution';
 import {
   consumeRunCompletionState,
@@ -417,6 +418,8 @@ export async function executeToolCallsFlow(options: ExecuteToolCallsFlowOptions)
       setLoadingText: text => {
         options.postSessionMessage(sessionId, { type: 'setLoading', loading: true, text });
       },
+      toolCallRound: options.getSessionToolCallRound(sessionId),
+      lastUserMessage: getLastUserMessageText(sessionChatHistory),
     });
 
     options.setSessionStepSequence(sessionId, batchRound.nextStepSequence);

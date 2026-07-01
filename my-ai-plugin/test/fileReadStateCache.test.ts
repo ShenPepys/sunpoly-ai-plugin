@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { FileReadStateCache, validateFileReadState, buildReadFileStubIfUnchanged } from '../src/tools/fileReadStateCache';
+import { FileReadStateCache, validateFileReadState, buildReadFileStubIfUnchanged, buildReadFileStubIfFullyRead, updateFileReadCoverage } from '../src/tools/fileReadStateCache';
 
 // ==================== FileReadStateCache 基础操作 ====================
 
@@ -253,4 +253,24 @@ test('buildReadFileStubIfUnchanged: partial 视图不做 stub 比较', () => {
 
   const result = buildReadFileStubIfUnchanged('/a.ts', 'partial', cache);
   assert.equal(result.useStub, false, 'partial 视图即使内容相同也不应返回 stub');
+});
+
+test('updateFileReadCoverage + buildReadFileStubIfFullyRead: 读完文件后返回 stub', () => {
+  const cache = new FileReadStateCache();
+  cache.set('/a.ts', { content: 'full file', timestamp: Date.now() });
+
+  updateFileReadCoverage('/a.ts', cache, 252, 252);
+
+  const result = buildReadFileStubIfFullyRead('/a.ts', cache);
+  assert.equal(result.useStub, true);
+  assert.match(result.stubContent ?? '', /已读完/);
+  assert.match(result.stubContent ?? '', /禁止再次 read_file/);
+});
+
+test('buildReadFileStubIfFullyRead: 未读完时不返回 stub', () => {
+  const cache = new FileReadStateCache();
+  cache.set('/a.ts', { content: 'partial', timestamp: Date.now(), readThroughLine: 200, totalLines: 400 });
+
+  const result = buildReadFileStubIfFullyRead('/a.ts', cache);
+  assert.equal(result.useStub, false);
 });

@@ -57,7 +57,11 @@ export class VscodeTerminalManager {
     this.terminalReuseEnabled = enabled;
   }
 
-  runCommand(terminalInfo: TerminalInfo, command: string): TerminalProcessResultPromise {
+  runCommand(
+    terminalInfo: TerminalInfo,
+    command: string,
+    streamTimeoutMs?: number,
+  ): TerminalProcessResultPromise {
     terminalInfo.busy = true;
     terminalInfo.lastCommand = command;
 
@@ -82,7 +86,11 @@ export class VscodeTerminalManager {
       if (process.waitForShellIntegration && !getShellIntegration(terminalInfo.terminal)) {
         await waitForShellIntegration(terminalInfo.terminal, this.shellIntegrationTimeout);
       }
-      await process.run(terminalInfo.terminal, command, this.shellIntegrationStreamTimeout);
+      await process.run(
+        terminalInfo.terminal,
+        command,
+        streamTimeoutMs ?? this.shellIntegrationStreamTimeout,
+      );
     };
 
     void start().catch((error) => {

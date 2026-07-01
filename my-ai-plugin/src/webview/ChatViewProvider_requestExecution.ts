@@ -56,6 +56,18 @@ import type {
   WorkMode,
 } from './messageTypes';
 
+export function getLastUserMessageText(history: ChatSessionHistoryMessage[]): string {
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const entry = history[index];
+    if (entry.role !== 'user') {
+      continue;
+    }
+    const content = entry.content;
+    return typeof content === 'string' ? content : '';
+  }
+  return '';
+}
+
 export type PrepareUserTurnRequestOptions = {
   text: string;
   retryRequestId: string;
@@ -161,6 +173,10 @@ export type ExecuteToolCallBatchRoundOptions = {
   recoverableWriteFailRounds: number;
   /** 设置加载提示文本的回调函数 */
   setLoadingText?: (text: string) => void;
+  /** 当前工具续轮序号（用于分析任务收尾引导） */
+  toolCallRound?: number;
+  /** 本轮对话最近一条用户消息（用于识别是否要产出 md 等交付物） */
+  lastUserMessage?: string;
 };
 
 export type ExecuteToolCallBatchRoundResult =
@@ -288,6 +304,8 @@ export async function executeToolCallBatchRound(
     duplicateReadOnlyToolCallsSkippedCount: batchExecution.duplicateReadOnlyToolCallsSkippedCount,
     recoverableWriteFailCount: writeFailureFollowUpState.recoverableWriteFailCount,
     remainingRecoverableWriteFailureFollowUpRounds: writeFailureFollowUpState.remainingRecoverableWriteFailureFollowUpRounds,
+    toolCallRound: options.toolCallRound,
+    lastUserMessage: options.lastUserMessage,
   });
   options.chatHistory.push({ role: 'user', content: toolFeedback });
   options.saveChatHistory();

@@ -190,6 +190,32 @@ function buildWriteResultSummary(result: ToolExecutionResult): string {
   return sections.join('\n');
 }
 
+function buildRunCommandResultSummary(result: ToolExecutionResult): string {
+  const command = result.toolCall.command || '(未知命令)';
+  const content = truncateFeedbackText(
+    result.result.content || '',
+    MAX_TOOL_RESULT_SNIPPET_CHARS,
+    `...(输出已压缩，原始长度 ${(result.result.content || '').length} 字符)`,
+  );
+
+  const sections = [
+    `### run_command \`${command}\``,
+    `- 状态：${result.result.success ? '成功' : '失败'}`,
+    '- 输出：',
+    '```',
+    content || '(无输出)',
+    '```',
+  ];
+
+  if (!result.result.success) {
+    sections.push(
+      '- 恢复建议：命令失败后请换用更简单的方式继续（例如 `git diff -U30 文件` 或 `git diff --stat`，避免 `| Select-Object` 管道）；若已有足够 diff/读文件结果，直接给出 Bug 分析结论，不要停在失败上。',
+    );
+  }
+
+  return sections.join('\n');
+}
+
 function buildSingleToolResultSummary(result: ToolExecutionResult): string {
   if (result.toolCall.type === 'read_file') {
     return buildReadResultSummary(result);
@@ -197,6 +223,10 @@ function buildSingleToolResultSummary(result: ToolExecutionResult): string {
 
   if (result.toolCall.type === 'list_dir') {
     return buildListResultSummary(result);
+  }
+
+  if (result.toolCall.type === 'run_command') {
+    return buildRunCommandResultSummary(result);
   }
 
   return buildWriteResultSummary(result);
@@ -208,7 +238,14 @@ function buildDeferredToolCallsSummary(toolCalls: ParsedToolCall[]): string {
   }
 
   const visibleToolCalls = toolCalls.slice(0, MAX_DEFERRED_TOOL_CALLS_IN_FEEDBACK);
-  const lines = visibleToolCalls.map(toolCall => `- ${toolCall.type} ${toolCall.path}`);
+  const lines = visibleToolCalls.map(toolCall => {
+    const subject = toolCall.path
+      ?? (toolCall.type === 'search_file' ? toolCall.pattern : undefined)
+      ?? (toolCall.type === 'grep_code' ? toolCall.regex : undefined)
+      ?? (toolCall.type === 'run_command' ? toolCall.command : undefined)
+      ?? '';
+    return `- ${toolCall.type} ${subject}`;
+  });
 
   if (toolCalls.length > visibleToolCalls.length) {
     lines.push(`- ...(其余 ${toolCalls.length - visibleToolCalls.length} 个待执行工具已省略)`);
@@ -216,6 +253,7 @@ function buildDeferredToolCallsSummary(toolCalls: ParsedToolCall[]): string {
 
   return [
     '## 待执行工具（上一轮计划但本轮未执行）',
+    '以下工具调用因本轮限额被延后，请在下一轮优先以标准 XML 标签格式重新发出这些调用：',
     ...lines,
   ].join('\n');
 }
@@ -228,6 +266,8 @@ export function buildToolFeedback(options: {
   duplicateReadOnlyToolCallsSkippedCount: number;
   recoverableWriteFailCount: number;
   remainingRecoverableWriteFailureFollowUpRounds: number;
+  toolCallRound?: number;
+  lastUserMessage?: string;
 }): string {
   const sections: string[] = [
     '以下是本轮工具执行后的阶段摘要。不要原样复述这些结果，请基于它们继续分析并决定下一步。',
@@ -257,6 +297,18 @@ export function buildToolFeedback(options: {
       : '当前已经用完恢复续轮额度；如果下一轮写操作仍失败，系统将停止本次自动续轮。';
     sections.push(
       `本轮有 ${options.recoverableWriteFailCount} 个可恢复的写失败，系统允许继续续轮自动修正。请优先基于失败结果里的真实文件内容、自动重读片段或降级提示修正，不要盲目重复相同参数。${followUpHint}`,
+    );
+  }
+
+  const onlyReadExploration = options.toolResults.length > 0
+    && options.toolResults.every(result => result.toolCall.type === 'read_file' || result.toolCall.type === 'list_dir');
+  if (onlyReadExploration && (options.toolCallRound ?? 0) >= 12) {
+    const wantsDeliverable = /(?:\.md\b|markdown|写.*(?:文件|报告|md)|输出.*(?:报告|文档|md)|缺陷.*列出)/i.test(options.lastUserMessage ?? '');
+    const deliverableHint = wantsDeliverable
+      ? '用户明确要求产出文档（如 .md 缺陷列表），请立即用 write_file 写出结论，不要继续 read_file。'
+      : '若关键文件已读完，请用自然语言给出 Bug 分析结论，不要 endless read_file。';
+    sections.push(
+      `当前已是第 ${options.toolCallRound} 轮工具续行且仍在只读探索。${deliverableHint} 同一文件若工具反馈含「已读完」，禁止再次 read_file。`,
     );
   }
 

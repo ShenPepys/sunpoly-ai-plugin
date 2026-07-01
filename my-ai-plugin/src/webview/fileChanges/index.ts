@@ -30,7 +30,7 @@ export type {
 
 // Diff algorithm — extracted to diff.ts
 export { splitContentToLines, buildDiffOperationTypes } from './diff';
-import { executeToolCalls, readFile, validateFileReadState, buildReadFileStubIfUnchanged, isToolReadOnly, getToolIcon, getToolStepText, addLineNumbers, addLineNumbersFromStart } from '../../tools';
+import { executeToolCalls, readFile, validateFileReadState, buildReadFileStubIfUnchanged, buildReadFileStubIfFullyRead, updateFileReadCoverage, isToolReadOnly, getToolIcon, getToolStepText, addLineNumbers, addLineNumbersFromStart } from '../../tools';
 import { shouldInvalidateFileReadStateAfterCommand } from '../../tools/runCommandCachePolicy';
 import { confirmRunCommand, COMMAND_DENIED_MESSAGE } from '../../tools/commandApproval';
 import type { ParsedToolCall, ToolCallType, ToolExecutionResult } from '../../tools';
@@ -1075,6 +1075,29 @@ export async function executeToolCallBatch(options: {
       continue;
     }
 
+    if (toolCall.type === 'read_file' && options.fileReadStateCache && toolCall.path?.trim()) {
+      const resolvedPath = resolveAndValidatePath(toolCall.path);
+      if (resolvedPath) {
+        const fullyReadStub = buildReadFileStubIfFullyRead(resolvedPath, options.fileReadStateCache);
+        if (fullyReadStub.useStub && fullyReadStub.stubContent) {
+          info(`文件已读完，返回 stub: ${resolvedPath}`);
+          const stubResult: ToolExecutionResult = {
+            toolCall,
+            result: { success: true, content: fullyReadStub.stubContent },
+          };
+          toolResults.push(stubResult);
+          executionRecords.push({ toolCall, success: true });
+          options.postMessage({
+            type: 'updateStep',
+            stepId,
+            status: 'done',
+            elapsed: Date.now() - startTime,
+          });
+          continue;
+        }
+      }
+    }
+
     const result = await executeToolCalls(
       [toolCall],
       options.requestMode,
@@ -1100,6 +1123,15 @@ export async function executeToolCallBatch(options: {
             : (singleResult.result.fullContentForCache ?? singleResult.result.content),
           timestamp: Date.now(),
         });
+
+        if (singleResult.result.readRangeEnd && singleResult.result.totalLines) {
+          updateFileReadCoverage(
+            resolvedPath,
+            options.fileReadStateCache,
+            singleResult.result.readRangeEnd,
+            singleResult.result.totalLines,
+          );
+        }
 
         // 缓存更新后，对返回给模型的内容添加行号（stub 消息不加行号）
         if (!stubResult.useStub) {

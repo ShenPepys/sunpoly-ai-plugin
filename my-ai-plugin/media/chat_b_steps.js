@@ -342,6 +342,10 @@
     setProcessPanelCollapsed(sections.container, false);
   }
 
+  function isReadingProcessStep(description) {
+    return String(description || '').indexOf('Reading ') === 0;
+  }
+
   function getProcessKindFromDescription(description) {
     if (!description) { return ''; }
     if (description.indexOf('Reading ') === 0) { return 'reading'; }
@@ -530,6 +534,7 @@
       }
 
       var processKind = getProcessKindFromDescription(description);
+      if (processKind === 'reading') { return; }
       var processLabel = getProcessLabelFromDescription(processKind, description);
       if (!processKind || !groups[processKind]) { return; }
       addProcessGroupItem(groups[processKind], processLabel, itemState);
@@ -569,7 +574,7 @@
   }
 
   function renderProcessGroups(groups) {
-    var groupOrder = ['thinking', 'listing', 'reading', 'command', 'modifying', 'creating', 'undoing', 'failed'];
+    var groupOrder = ['thinking', 'listing', 'command', 'modifying', 'creating', 'undoing', 'failed'];
     var html = '';
 
     Array.prototype.forEach.call(groupOrder, function (groupKey) {
@@ -603,9 +608,6 @@
     if (summary.totalSteps > 0) {
       parts.push('已执行 ' + summary.totalSteps + ' 步');
     }
-    if (summary.readCount > 0) {
-      parts.push('读取 ' + summary.readCount);
-    }
     if (summary.listCount > 0) {
       parts.push('列目录 ' + summary.listCount);
     }
@@ -630,9 +632,6 @@
 
     if (summary && typeof summary.thinkingElapsedMs === 'number' && summary.thinkingElapsedMs > 1000) {
       items.push({ label: '思考', value: formatElapsed(summary.thinkingElapsedMs) });
-    }
-    if (summary.readCount > 0) {
-      items.push({ label: '读取', value: summary.readCount });
     }
     if (summary.listCount > 0) {
       items.push({ label: '列目录', value: summary.listCount });
@@ -662,9 +661,6 @@
     }
     if (groups.listing.items.length > 0) {
       parts.push('列目录 ' + groups.listing.items.length);
-    }
-    if (groups.reading.items.length > 0) {
-      parts.push('读取 ' + groups.reading.items.length);
     }
     if (groups.command.items.length > 0) {
       parts.push('终端 ' + groups.command.items.length);
@@ -812,6 +808,10 @@
   }
 
   function addStep(data) {
+    if (isReadingProcessStep(data.description)) {
+      return;
+    }
+
     var sections = getStepSections(data.messageId);
     if (!sections) { return; }
     activateProcessPanel(data.messageId, sections);
@@ -842,6 +842,9 @@
   function updateStep(data) {
     var stepEl = document.querySelector('[data-step-id="' + data.stepId + '"]');
     if (!stepEl) { return; }
+    if (data.description !== undefined && isReadingProcessStep(data.description)) {
+      return;
+    }
 
     // 更新 CSS 类
     stepEl.className = 'step-item step-' + data.status;

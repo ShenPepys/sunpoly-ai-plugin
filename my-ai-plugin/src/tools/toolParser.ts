@@ -109,13 +109,16 @@ function buildOutsideFencedCodeSegments(text: string): string[] {
 
 function replaceToolCallsInPlainText(text: string): string {
   let result = text.replace(new RegExp(WRAPPED_TOOL_CALL_REGEX_SOURCE, 'g'), '');
-  result = result.replace(/<(?:read_file|list_dir)\s+path\s*=\s*"[^"]+"(?:\s+[a-z_]+\s*=\s*"[^"]*")*\s*\/>/g, '');
+  // 自闭合标签使用更宽松的匹配（兼容截断的 /> 或 "）
+  result = result.replace(/<(?:read_file|list_dir)\s+path\s*=\s*"[^"]+"(?:\s+[a-z_]+\s*=\s*"[^"]*")*\s*\/?>/g, '');
   result = result.replace(/<write_file\s+path\s*=\s*"[^"]+">[\s\S]*<\/write_file>/g, '');
   result = result.replace(/<edit_file\s+path\s*=\s*"[^"]+"(?:\s+[a-z_]+\s*=\s*"[^"]*")*>[\s\S]*<\/edit_file>/g, '');
   result = result.replace(/<ast_edit\s+path\s*=\s*"[^"]+"\s+action\s*=\s*"[^"]+">[\s\S]*<\/ast_edit>/g, '');
-  result = result.replace(/<search_file\s+pattern\s*=\s*"[^"]+"\s*\/>/g, '');
-  result = result.replace(/<grep_code\s+regex\s*=\s*"[^"]+"(?:\s+[a-z_]+\s*=\s*"[^"]*")*\s*\/>/g, '');
+  result = result.replace(/<search_file\s+pattern\s*=\s*"[^"]+"(?:\s+[a-z_]+\s*=\s*"[^"]*")*\s*\/?>/g, '');
+  result = result.replace(/<grep_code(?:\s+[a-z_]+\s*=\s*"[^"]*")*\s*\/?>/g, '');
   result = result.replace(/<run_command(?:\s+[a-z_]+\s*=\s*"[^"]*")*>([\s\S]*)<\/run_command>/g, '');
+  result = result.replace(/\]+\s*>\s*<\/edit_file>\s*$/u, '');
+  result = result.replace(/<\/edit_file>\s*$/u, '');
   return result;
 }
 
@@ -153,6 +156,22 @@ function parseToolCallsFromSegments(segments: string[]): ParsedToolCall[] {
       const parsed = parseSingleToolCall(rawMatch, rawMatch);
       if (parsed) {
         results.push(parsed);
+        matchedRanges.push([start, end]);
+      }
+    }
+
+    // --- Lenient pass: 对最后一个完整匹配之后的尾部做宽松解析，捕获截断标签 ---
+    if (matchedRanges.length > 0) {
+      const lastEnd = Math.max(...matchedRanges.map(([, e]) => e));
+      const tail = segment.slice(lastEnd);
+      if (tail.length > 0) {
+        for (const parser of LENIENT_PARSERS) {
+          const lenientResult = parser(tail);
+          if (lenientResult) {
+            results.push(lenientResult);
+            break;
+          }
+        }
       }
     }
   }
@@ -184,8 +203,14 @@ export function parseToolCalls(text: string): ParsedToolCall[] {
     return fullTextResults;
   }
 
-  const lenientRunCommand = tryParseLenientRunCommand(text);
-  return lenientRunCommand ? [lenientRunCommand] : [];
+  // 标准解析和代码块回退均失败，尝试所有工具的宽松解析
+  for (const parser of LENIENT_PARSERS) {
+    const result = parser(text);
+    if (result) {
+      return [result];
+    }
+  }
+  return [];
 }
 
 /**
@@ -220,6 +245,288 @@ function tryParseLenientRunCommand(text: string): ParsedToolCall | null {
     command,
     rawMatch: text.slice(openIdx, rawEnd),
   };
+}
+
+/**
+ * 宽松解析 edit_file：兼容流式截断、未闭合的 <new>、或尾部残留 ]]></edit_file> 等情况。
+ */
+function tryParseLenientEditFile(text: string): ParsedToolCall | null {
+  const openTag = '<edit_file';
+  const openIdx = text.lastIndexOf(openTag);
+  if (openIdx === -1) {
+    return null;
+  }
+
+  const tail = text.slice(openIdx);
+  const headerMatch = tail.match(
+    /^<edit_file\s+path\s*=\s*"([^"]+)"((?:\s+[a-z_]+\s*=\s*"[^"]*")*)>/,
+  );
+  if (!headerMatch) {
+    return null;
+  }
+
+  const path = headerMatch[1];
+  const editAttrs = headerMatch[2] ?? '';
+  const bodyStart = openIdx + headerMatch[0].length;
+  const closeIdx = text.indexOf('</edit_file>', bodyStart);
+  let body = closeIdx === -1 ? text.slice(bodyStart) : text.slice(bodyStart, closeIdx);
+  body = body.replace(/\[\]+\s*$/u, '').trimEnd();
+
+  const startLineAttr = editAttrs.match(/\bstart_line\s*=\s*"(\d+)"/);
+  const endLineAttr = editAttrs.match(/\bend_line\s*=\s*"(\d+)"/);
+  const astBypassAttr = editAttrs.match(/\bast_bypass\s*=\s*"([^"]*)"/);
+  const replaceAllAttr = editAttrs.match(/\breplace_all\s*=\s*"([^"]*)"/);
+
+  const rawEnd = closeIdx === -1 ? text.length : closeIdx + '</edit_file>'.length;
+  const rawMatch = text.slice(openIdx, rawEnd);
+
+  if (startLineAttr) {
+    const newMatch = body.match(/<new>([\s\S]*)/);
+    const newContent = (newMatch ? newMatch[1] : body).trim();
+    if (!newContent) {
+      return null;
+    }
+
+    return {
+      type: 'edit_file',
+      path,
+      newContent,
+      startLine: Number.parseInt(startLineAttr[1], 10),
+      endLine: endLineAttr ? Number.parseInt(endLineAttr[1], 10) : undefined,
+      astBypass: astBypassAttr ? astBypassAttr[1] === 'true' : undefined,
+      rawMatch,
+    };
+  }
+
+  const oldMatch = body.match(/<old>([\s\S]*?)(?:<\/old>|$)/);
+  const newMatch = body.match(/<new>([\s\S]*)/);
+  if (!oldMatch || !newMatch) {
+    return null;
+  }
+
+  const oldContent = oldMatch[1].trim();
+  const newContent = newMatch[1].trim();
+  if (!oldContent || !newContent) {
+    return null;
+  }
+
+  return {
+    type: 'edit_file',
+    path,
+    oldContent,
+    newContent,
+    replaceAll: replaceAllAttr ? replaceAllAttr[1] === 'true' : undefined,
+    astBypass: astBypassAttr ? astBypassAttr[1] === 'true' : undefined,
+    rawMatch,
+  };
+}
+
+/**
+ * 宽松解析 read_file：兼容缺少闭合 /> 的截断标签。
+ */
+function tryParseLenientReadFile(text: string): ParsedToolCall | null {
+  const openTag = '<read_file';
+  const openIdx = text.indexOf(openTag);
+  if (openIdx === -1) { return null; }
+  const tail = text.slice(openIdx);
+  const pathMatch = tail.match(/^<read_file\s+path\s*=\s*"([^"]+)"/);
+  if (!pathMatch) { return null; }
+  const attrs = tail.match(/^<read_file\s+([^>]*)/);
+  const attrStr = attrs ? attrs[1] : '';
+  const startLineAttr = attrStr.match(/\bstart_line\s*=\s*"(\d+)"/);
+  const endLineAttr = attrStr.match(/\bend_line\s*=\s*"(\d+)"/);
+  const rawEnd = tail.indexOf('/>') !== -1 ? openIdx + tail.indexOf('/>') + 2 : text.length;
+  return {
+    type: 'read_file',
+    path: pathMatch[1],
+    readStartLine: startLineAttr ? Number.parseInt(startLineAttr[1], 10) : undefined,
+    readEndLine: endLineAttr ? Number.parseInt(endLineAttr[1], 10) : undefined,
+    rawMatch: text.slice(openIdx, rawEnd),
+  };
+}
+
+/**
+ * 宽松解析 list_dir：兼容缺少闭合 /> 的截断标签。
+ */
+function tryParseLenientListDir(text: string): ParsedToolCall | null {
+  const openTag = '<list_dir';
+  const openIdx = text.indexOf(openTag);
+  if (openIdx === -1) { return null; }
+  const tail = text.slice(openIdx);
+  const pathMatch = tail.match(/^<list_dir\s+path\s*=\s*"([^"]+)"/);
+  if (!pathMatch) { return null; }
+  const attrs = tail.match(/^<list_dir\s+([^>]*)/);
+  const attrStr = attrs ? attrs[1] : '';
+  const recursiveAttr = attrStr.match(/\brecursive\s*=\s*"([^"]*)"/);
+  const rawEnd = tail.indexOf('/>') !== -1 ? openIdx + tail.indexOf('/>') + 2 : text.length;
+  return {
+    type: 'list_dir',
+    path: pathMatch[1],
+    listRecursive: recursiveAttr ? recursiveAttr[1] === 'true' : undefined,
+    rawMatch: text.slice(openIdx, rawEnd),
+  };
+}
+
+/**
+ * 宽松解析 search_file：兼容缺少闭合 /> 的截断标签。
+ */
+function tryParseLenientSearchFile(text: string): ParsedToolCall | null {
+  const openTag = '<search_file';
+  const openIdx = text.indexOf(openTag);
+  if (openIdx === -1) { return null; }
+  const tail = text.slice(openIdx);
+  const patternMatch = tail.match(/^<search_file\s+pattern\s*=\s*"([^"]+)"/);
+  if (!patternMatch) { return null; }
+  const rawEnd = tail.indexOf('/>') !== -1 ? openIdx + tail.indexOf('/>') + 2 : text.length;
+  return {
+    type: 'search_file',
+    pattern: patternMatch[1],
+    rawMatch: text.slice(openIdx, rawEnd),
+  };
+}
+
+/**
+ * 宽松解析 grep_code：兼容缺少闭合 /> 的截断标签。
+ */
+function tryParseLenientGrepCode(text: string): ParsedToolCall | null {
+  const openTag = '<grep_code';
+  const openIdx = text.indexOf(openTag);
+  if (openIdx === -1) { return null; }
+  const tail = text.slice(openIdx);
+  const headerMatch = tail.match(/^<grep_code((?:\s+[a-z_]+\s*=\s*"[^"]*")*)\s*\/?>/);
+  if (!headerMatch) { return null; }
+  const attrStr = headerMatch[1] ?? '';
+  const regexAttr = attrStr.match(/\bregex\s*=\s*"([^"]+)"/);
+  if (!regexAttr) { return null; }
+  const includeAttr = attrStr.match(/\binclude_pattern\s*=\s*"([^"]*)"/);
+  const caseAttr = attrStr.match(/\bcase_sensitive\s*=\s*"([^"]*)"/);
+  const rawEnd = tail.indexOf('/>') !== -1 ? openIdx + tail.indexOf('/>') + 2 : text.length;
+  return {
+    type: 'grep_code',
+    regex: regexAttr[1],
+    includePattern: includeAttr ? includeAttr[1] : undefined,
+    caseSensitive: caseAttr ? caseAttr[1] === 'true' : false,
+    rawMatch: text.slice(openIdx, rawEnd),
+  };
+}
+
+/**
+ * 宽松解析 ast_edit：兼容缺少闭合标签或 JSON 参数不完整的情况。
+ */
+function tryParseLenientAstEdit(text: string): ParsedToolCall | null {
+  const openTag = '<ast_edit';
+  const openIdx = text.indexOf(openTag);
+  if (openIdx === -1) { return null; }
+  const tail = text.slice(openIdx);
+  const headerMatch = tail.match(/^<ast_edit\s+path\s*=\s*"([^"]+)"\s+action\s*=\s*"([^"]+)"/);
+  if (!headerMatch) { return null; }
+  const astPath = headerMatch[1];
+  const astAction = headerMatch[2] as AstEditAction;
+  const bodyStart = openIdx + headerMatch[0].length;
+  const closeIdx = text.indexOf('</ast_edit>', bodyStart);
+  let body = (closeIdx === -1 ? text.slice(bodyStart) : text.slice(bodyStart, closeIdx)).trim();
+  body = body.replace(/^>/, '').trim();
+  const astParams = parseAstParams(body);
+  if (!astParams) { return null; }
+  const rawEnd = closeIdx === -1 ? text.length : closeIdx + '</ast_edit>'.length;
+  return { type: 'ast_edit', path: astPath, astAction, astParams, rawMatch: text.slice(openIdx, rawEnd) };
+}
+
+/**
+ * 宽松解析 write_file：兼容流式截断、未闭合的 write_file 标签。
+ */
+function tryParseLenientWriteFile(text: string): ParsedToolCall | null {
+  const openTag = '<write_file';
+  const openIdx = text.indexOf(openTag);
+  if (openIdx === -1) { return null; }
+  const tail = text.slice(openIdx);
+  const pathMatch = tail.match(/^<write_file\s+path\s*=\s*"([^"]+)"/);
+  if (!pathMatch) { return null; }
+  const closeTag = '</write_file>';
+  const closeIdx = text.indexOf(closeTag, openIdx + pathMatch[0].length);
+  if (closeIdx !== -1) {
+    const content = text.slice(openIdx + pathMatch[0].length, closeIdx);
+    return { type: 'write_file', path: pathMatch[1], content, rawMatch: text.slice(openIdx, closeIdx + closeTag.length) };
+  }
+  const openEnd = text.indexOf('>', openIdx);
+  if (openEnd === -1) { return null; }
+  const content = text.slice(openEnd + 1).trim();
+  if (!content) { return null; }
+  return { type: 'write_file', path: pathMatch[1], content, rawMatch: text.slice(openIdx) };
+}
+
+/** 所有工具的宽松解析器列表，按优先级排序 */
+const LENIENT_PARSERS: Array<(text: string) => ParsedToolCall | null> = [
+  tryParseLenientWriteFile,
+  tryParseLenientEditFile,
+  tryParseLenientAstEdit,
+  tryParseLenientReadFile,
+  tryParseLenientListDir,
+  tryParseLenientSearchFile,
+  tryParseLenientGrepCode,
+  tryParseLenientRunCommand,
+];
+
+/**
+ * 剥离尾部残缺工具标签（如 ]]></edit_file>、未闭合的 <edit_file...）。
+ * 覆盖所有 8 种工具类型。
+ */
+export function stripMalformedToolCallTail(text: string): string {
+  let result = text;
+
+  // --- edit_file / write_file 特定残留清理 ---
+  result = result.replace(/\]+\s*>\s*<\/edit_file>\s*$/u, '');
+  result = result.replace(/\]+\s*>\s*<\/write_file>\s*$/u, '');
+  result = result.replace(/\]+\s*<\/edit_file>\s*$/u, '');
+  result = result.replace(/\]+\s*<\/write_file>\s*$/u, '');
+  result = result.replace(/>\s*<\/edit_file>\s*$/u, '');
+  result = result.replace(/>\s*<\/write_file>\s*$/u, '');
+  result = result.replace(/\]+\s*$/u, '');
+  result = result.replace(/<\/edit_file>\s*$/u, '');
+  result = result.replace(/<\/write_file>\s*$/u, '');
+
+  // --- edit_file / write_file 未闭合开标签 ---
+  const openIdx = result.lastIndexOf('<edit_file');
+  if (openIdx !== -1) {
+    const tail = result.slice(openIdx);
+    if (!tail.includes('</edit_file>') && /<edit_file\s+path\s*=\s*"[^"]+"/.test(tail)) {
+      result = result.slice(0, openIdx).trimEnd();
+    }
+  }
+
+  const writeOpenIdx = result.lastIndexOf('<write_file');
+  if (writeOpenIdx !== -1) {
+    const tail = result.slice(writeOpenIdx);
+    if (!tail.includes('</write_file>') && /<write_file\s+path\s*=\s*"[^"]+"/.test(tail)) {
+      result = result.slice(0, writeOpenIdx).trimEnd();
+    }
+  }
+
+  // --- 自闭合标签（read_file / list_dir / search_file / grep_code）未闭合 ---
+  const selfClosingTagNames = ['read_file', 'list_dir', 'search_file', 'grep_code'] as const;
+  for (const tagName of selfClosingTagNames) {
+    const tagOpen = `<${tagName}`;
+    const lastOpen = result.lastIndexOf(tagOpen);
+    if (lastOpen !== -1) {
+      const afterOpen = result.slice(lastOpen);
+      if (!afterOpen.includes('/>') && new RegExp(`<${tagName}\\s+`).test(afterOpen)) {
+        result = result.slice(0, lastOpen).trimEnd();
+      }
+    }
+  }
+
+  // --- 成对标签（run_command / ast_edit）缺少闭合标签 ---
+  const pairTagNames = ['run_command', 'ast_edit'] as const;
+  for (const tagName of pairTagNames) {
+    const closeTag = `</${tagName}>`;
+    const openTag = `<${tagName}`;
+    const lastOpen = result.lastIndexOf(openTag);
+    if (lastOpen !== -1 && !result.slice(lastOpen).includes(closeTag)) {
+      result = result.slice(0, lastOpen).trimEnd();
+    }
+  }
+
+  return result.trimEnd();
 }
 
 /**
@@ -330,18 +637,22 @@ function parseSingleToolCall(inner: string, rawMatch: string): ParsedToolCall | 
   }
 
   // grep_code: <grep_code regex="func\\s+test" include_pattern="*.ts" case_sensitive="false" />
-  const grepMatch = inner.match(/<grep_code\s+regex\s*=\s*"([^"]+)"((?:\s+[a-z_]+\s*=\s*"[^"]*")*)\s*\/>/);
+  // 属性顺序无关：先匹配完整开标签，再逐个提取属性
+  const grepMatch = inner.match(/<grep_code((?:\s+[a-z_]+\s*=\s*"[^"]*")*)\s*\/>/);
   if (grepMatch) {
-    const grepAttrs = grepMatch[2] || '';
-    const includePatternAttr = grepAttrs.match(/\binclude_pattern\s*=\s*"([^"]*)"/);
-    const caseSensitiveAttr = grepAttrs.match(/\bcase_sensitive\s*=\s*"([^"]*)"/);
-    return {
-      type: 'grep_code',
-      regex: grepMatch[1],
-      includePattern: includePatternAttr ? includePatternAttr[1] : undefined,
-      caseSensitive: caseSensitiveAttr ? caseSensitiveAttr[1] === 'true' : false,
-      rawMatch,
-    };
+    const grepAttrs = grepMatch[1] || '';
+    const regexAttr = grepAttrs.match(/\bregex\s*=\s*"([^"]+)"/);
+    if (regexAttr) {
+      const includePatternAttr = grepAttrs.match(/\binclude_pattern\s*=\s*"([^"]*)"/);
+      const caseSensitiveAttr = grepAttrs.match(/\bcase_sensitive\s*=\s*"([^"]*)"/);
+      return {
+        type: 'grep_code',
+        regex: regexAttr[1],
+        includePattern: includePatternAttr ? includePatternAttr[1] : undefined,
+        caseSensitive: caseSensitiveAttr ? caseSensitiveAttr[1] === 'true' : false,
+        rawMatch,
+      };
+    }
   }
 
   // run_command: <run_command timeout="30000">npm install</run_command>

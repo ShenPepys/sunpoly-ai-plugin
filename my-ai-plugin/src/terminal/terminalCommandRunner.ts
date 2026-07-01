@@ -53,7 +53,7 @@ async function runViaIntegratedTerminal(
   let exitCode: number | null = null;
   let noShellIntegration = false;
 
-  const process = manager.runCommand(terminalInfo, command);
+  const process = manager.runCommand(terminalInfo, command, timeoutMs);
   process.on('line', (line: string) => lines.push(line));
   process.on('no_shell_integration', () => {
     noShellIntegration = true;
@@ -74,6 +74,10 @@ async function runViaIntegratedTerminal(
   }
 
   const output = lines.join('\n');
+  if (!output.trim()) {
+    throw new Error('NO_SHELL_INTEGRATION');
+  }
+
   const success = exitCode === 0 || exitCode === null;
   return {
     success,
